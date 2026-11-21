@@ -1,0 +1,18 @@
+.DS_Store
+**/.DS_Store
+
+# Secrets — never commit API keys / DB credentials
+.env
+.env.*
+# Python
+__pycache__/
+*.pyc
+# Runtime / notebook run artifacts
+temp/
+*-executed.ipynb
+v1-run.ipynb
+# Runtime EC-optimization / analysis caches (regenerated per run)
+trials/*/ec_optimization.pkl
+trials/*/state_ec_optim.pkl
+# Local MIMIC-IV trial outputs may contain restricted patient data.
+trials/NCT00475852/

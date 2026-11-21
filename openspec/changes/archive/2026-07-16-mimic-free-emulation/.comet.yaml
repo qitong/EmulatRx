@@ -1,0 +1,19 @@
+workflow: full
+phase: archive
+build_mode: subagent-driven-development
+build_pause: null
+isolation: branch
+verify_mode: full
+base_ref: e353ee46e189b692a62b9cc3cba3bbc73a7ab531
+design_doc: docs/superpowers/specs/2026-07-15-mimic-free-emulation-design.md
+plan: docs/superpowers/plans/2026-07-15-mimic-free-emulation.md
+verify_result: pass
+verification_report: docs/superpowers/reports/2026-07-16-mimic-free-emulation-verify.md
+build_command: /Users/qitonghu/anaconda3/envs/emulatrx/bin/python -m pytest scripts/ -q
+verify_command: /Users/qitonghu/anaconda3/envs/emulatrx/bin/python -m pytest scripts/ -q
+branch_status: handled
+created_at: 2026-07-15
+verified_at: 2026-07-16
+archived: true
+handoff_context: openspec/changes/mimic-free-emulation/.comet/handoff/design-context.json
+handoff_hash: 3ff9677c10da2a0c3f4a424209dfe9a385015e5a7101c847cfa386170121c9cd

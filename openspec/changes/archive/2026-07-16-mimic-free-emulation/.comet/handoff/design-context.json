@@ -1,0 +1,15 @@
+{
+  "change": "mimic-free-emulation",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "3ff9677c10da2a0c3f4a424209dfe9a385015e5a7101c847cfa386170121c9cd",
+  "files": [
+    { "path": "openspec/changes/mimic-free-emulation/proposal.md", "sha256": "d001e550eba3f122794942d86261bd63187348a5450736ad2543da4e8983283d" },
+    { "path": "openspec/changes/mimic-free-emulation/design.md", "sha256": "95eae7b6c4d400ebccc697599a08d61d3cca268d823f38a5275029dac6a3d6ea" },
+    { "path": "openspec/changes/mimic-free-emulation/tasks.md", "sha256": "36940fed34ffc2d29fd58bbcea22662a861a76d872275b7e85a729e7c0860000" },
+    { "path": "openspec/changes/mimic-free-emulation/specs/deepseek-trial-parsing/spec.md", "sha256": "6c1cc571deb38962efb2325437e2695867d316cd7a048cd1db17501cfa02ba76" },
+    { "path": "openspec/changes/mimic-free-emulation/specs/substitute-data-source/spec.md", "sha256": "0a29752afdca73963ebf59043bb9321df2472ae52a5ab0d3a05041041df82ed5" }
+  ]
+}

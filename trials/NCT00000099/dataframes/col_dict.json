@@ -1,0 +1,25 @@
+{
+    "covariate_cols": [
+        "age",
+        "sex_male",
+        "ecog_ps",
+        "smoking",
+        "histology_adeno",
+        "stage_iv",
+        "pdl1_tps",
+        "egfr_mut",
+        "hemoglobin",
+        "albumin",
+        "ldh",
+        "neutrophils"
+    ],
+    "treatment_cols": "treatment",
+    "outcome_cols": [
+        "event"
+    ],
+    "duration_cols": [
+        "duration_day"
+    ],
+    "treatment_time_cols": "treatment_time_delta",
+    "patient_id": "stay_id"
+}
