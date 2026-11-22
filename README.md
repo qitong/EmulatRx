@@ -72,6 +72,14 @@ python -m emulatrx_demo validate --template examples/synthetic_demo_v1.json --ou
 python -m emulatrx_demo demo --template examples/synthetic_demo_v1.json --out /tmp/emulatrx-teaching-demo
 ```
 
+### Public registration source receipt
+
+The separate [`metadata` command](docs/public-metadata-receipt-v1.md) requests a current ClinicalTrials.gov record and writes only provenance hashes and source details. Set `NCT_ID` to a public record you choose. This command does not feed the synthetic demo.
+
+```bash
+python -m emulatrx_demo metadata --nct-id "$NCT_ID" --out /tmp/emulatrx-source-receipt
+```
+
 ### Running an Emulation
 Launch Jupyter:
 ```bash

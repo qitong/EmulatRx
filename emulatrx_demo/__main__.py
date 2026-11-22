@@ -15,17 +15,12 @@ import tempfile
 from datetime import datetime, timezone
 
 from . import GENERATOR_VERSION, MAX_CASES, SCENARIO, SIMULATION_LABEL, TEMPLATE_VERSION
+from ._common import ContractError, _check_destination, _json_bytes
 
 
 FIELDS = ("template_version", "scenario", "case_count", "seed", "simulation_label")
 MAX_TEMPLATE_BYTES = 16 * 1024
 MAX_SEED = 2**32 - 1
-
-
-class ContractError(Exception):
-    def __init__(self, code, detail):
-        super().__init__(detail)
-        self.code = code
 
 
 def _unique_pairs(pairs):
@@ -96,17 +91,6 @@ def _code_provenance():
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ContractError("CODE_VERSION_UNAVAILABLE", "git commit is invalid")
     return commit, bool(status.stdout.strip())
-
-
-def _json_bytes(value):
-    return (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
-
-
-def _check_destination(out):
-    if os.path.lexists(out):
-        raise ContractError("OUTPUT_EXISTS", str(out))
-    if not out.parent.is_dir():
-        raise ContractError("OUTPUT_PARENT_MISSING", str(out.parent))
 
 
 def _sha256_file(path):
@@ -240,9 +224,18 @@ def main(argv=None):
     demo_command = subparsers.add_parser("demo", help="generate an offline synthetic teaching demo")
     demo_command.add_argument("--template", type=Path, required=True)
     demo_command.add_argument("--out", type=Path, required=True)
+    source_command = subparsers.add_parser("metadata", help="fetch a live public registration source receipt")
+    source_command.add_argument("--nct-id", required=True)
+    source_command.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
+    from .public_metadata import fetch_receipt
     try:
-        result = validate(args.template, args.out) if args.command == "validate" else demo(args.template, args.out)
+        if args.command == "validate":
+            result = validate(args.template, args.out)
+        elif args.command == "demo":
+            result = demo(args.template, args.out)
+        else:
+            result = fetch_receipt(args.nct_id, args.out)
     except ContractError as exc:
         print(f"{exc.code}: {exc}", file=sys.stderr)
         return 2

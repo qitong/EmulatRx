@@ -17,3 +17,5 @@ jobs:
         run: PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_demo_contract.py' -v
       - name: Test offline synthetic demo
         run: PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_synthetic_demo.py' -v
+      - name: Test public metadata receipt with synthetic HTTP only
+        run: PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_public_metadata.py' -v
