@@ -8,7 +8,7 @@
   "properties": {
     "template_version": {"const": "1.0"},
     "scenario": {"const": "synthetic_tutorial_v1"},
-    "case_count": {"type": "integer", "minimum": 1},
+    "case_count": {"type": "integer", "minimum": 1, "maximum": 10000},
     "seed": {"type": "integer", "minimum": 0, "maximum": 4294967295},
     "simulation_label": {"const": "教学模拟，非真实患者、非临床疗效证据"}
   }

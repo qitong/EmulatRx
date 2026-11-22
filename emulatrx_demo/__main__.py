@@ -1,10 +1,12 @@
-"""Run with ``python -m emulatrx_demo validate`` from a clean clone."""
+"""Offline synthetic template validation and case generation."""
 
 import argparse
+import csv
 import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import shutil
 import subprocess
@@ -12,7 +14,7 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 
-from . import SCENARIO, SIMULATION_LABEL, TEMPLATE_VERSION
+from . import GENERATOR_VERSION, MAX_CASES, SCENARIO, SIMULATION_LABEL, TEMPLATE_VERSION
 
 
 FIELDS = ("template_version", "scenario", "case_count", "seed", "simulation_label")
@@ -68,8 +70,8 @@ def _validate(obj):
         raise ContractError("UNKNOWN_VERSION", obj["template_version"])
     if obj["scenario"] != SCENARIO:
         raise ContractError("INVALID_SCENARIO", obj["scenario"])
-    if obj["case_count"] <= 0:
-        raise ContractError("INVALID_CASE_COUNT", "case_count must be positive")
+    if not 1 <= obj["case_count"] <= MAX_CASES:
+        raise ContractError("INVALID_CASE_COUNT", f"case_count must be in 1..{MAX_CASES}")
     if not 0 <= obj["seed"] <= MAX_SEED:
         raise ContractError("INVALID_SEED", f"seed must be in 0..{MAX_SEED}")
     if obj["simulation_label"] != SIMULATION_LABEL:
@@ -100,12 +102,100 @@ def _json_bytes(value):
     return (json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
 
 
-def validate(template, out):
-    # Check the destination before preparing any result files.
+def _check_destination(out):
     if os.path.lexists(out):
         raise ContractError("OUTPUT_EXISTS", str(out))
     if not out.parent.is_dir():
         raise ContractError("OUTPUT_PARENT_MISSING", str(out.parent))
+
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(65536), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _write_cases(path, seed, case_count):
+    """Use SHA-256 counter bytes so generation has no RNG state or platform dependence."""
+    groups = {"A": 0, "B": 0}
+    score_sum = 0
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.writer(stream, lineterminator="\n")
+        writer.writerow(("synthetic_case_id", "simulation_label", "synthetic_group", "synthetic_score"))
+        for index in range(1, case_count + 1):
+            bits = hashlib.sha256(f"emulatrx-demo-v1:{seed}:{index}".encode("ascii")).digest()
+            group = "A" if bits[0] % 2 == 0 else "B"
+            score = int.from_bytes(bits[1:5], "big") % 101
+            writer.writerow((f"SYN-{index:06d}", SIMULATION_LABEL, group, score))
+            groups[group] += 1
+            score_sum += score
+    return groups, score_sum
+
+
+def demo(template, out):
+    _check_destination(out)
+    raw, obj = _read_template(template)
+    normalized = _validate(obj)
+    commit, code_dirty = _code_provenance()
+    stage = None
+    try:
+        stage = Path(tempfile.mkdtemp(prefix=".emulatrx-stage-", dir=out.parent))
+        (stage / "synthetic").mkdir()
+        (stage / "results").mkdir()
+        groups, score_sum = _write_cases(stage / "synthetic" / "cases.csv", normalized["seed"], normalized["case_count"])
+        summary = {
+            "status": "synthetic_demo_generated",
+            "simulation_label": SIMULATION_LABEL,
+            "case_count": normalized["case_count"],
+            "synthetic_group_counts": groups,
+            "synthetic_score_sum": score_sum,
+            "score_description": "Arbitrary synthetic teaching score (0..100); not a health outcome or treatment effect.",
+        }
+        (stage / "results" / "summary.json").write_bytes(_json_bytes(summary))
+        (stage / "PURPOSE.txt").write_text(
+            f"{SIMULATION_LABEL}\n"
+            "Offline fixed-template teaching example. All case identifiers, groups, and scores are generated from a seed.\n"
+            "Scores are arbitrary teaching values, not health outcomes or treatment effects.\n"
+            "No patient records, trial results, public metadata, APIs, or credentials are read.\n",
+            encoding="utf-8",
+        )
+        paths = ("synthetic/cases.csv", "results/summary.json", "PURPOSE.txt")
+        manifest = {
+            "status": "synthetic_demo_generated",
+            "source_type": "fixed_synthetic_template",
+            "activity": "offline_synthetic_generation",
+            "simulation_label": SIMULATION_LABEL,
+            "template_version": TEMPLATE_VERSION,
+            "generator_version": GENERATOR_VERSION,
+            "seed": normalized["seed"],
+            "case_count": normalized["case_count"],
+            "input_sha256": hashlib.sha256(raw).hexdigest(),
+            "code_commit": commit,
+            "code_dirty": code_dirty,
+            "dependency_versions": {"python": platform.python_version(), "external_packages": {}},
+            "output_paths": list(paths),
+            "output_sha256": {path: _sha256_file(stage / path) for path in paths},
+            "run_at_utc": datetime.now(timezone.utc).isoformat(),
+        }
+        (stage / "run_manifest.json").write_bytes(_json_bytes(manifest))
+        if os.path.lexists(out):
+            raise ContractError("OUTPUT_EXISTS", str(out))
+        stage.rename(out)
+        stage = None
+    except OSError as exc:
+        raise ContractError("OUTPUT_IO_ERROR", str(exc)) from exc
+    finally:
+        if stage is not None:
+            shutil.rmtree(stage)
+    return {"status": "synthetic_demo_generated", "simulation_label": SIMULATION_LABEL,
+            "output_path": str(out)}
+
+
+def validate(template, out):
+    # Check the destination before preparing any result files.
+    _check_destination(out)
     raw, obj = _read_template(template)
     normalized = _validate(obj)
     commit, code_dirty = _code_provenance()
@@ -147,9 +237,12 @@ def main(argv=None):
     command = subparsers.add_parser("validate", help="validate a synthetic template")
     command.add_argument("--template", type=Path, required=True)
     command.add_argument("--out", type=Path, required=True)
+    demo_command = subparsers.add_parser("demo", help="generate an offline synthetic teaching demo")
+    demo_command.add_argument("--template", type=Path, required=True)
+    demo_command.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
-        result = validate(args.template, args.out)
+        result = validate(args.template, args.out) if args.command == "validate" else demo(args.template, args.out)
     except ContractError as exc:
         print(f"{exc.code}: {exc}", file=sys.stderr)
         return 2
