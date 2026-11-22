@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/qitong/EmulatRx/blob/main/schemas/synthetic-demo-template-v1.schema.json",
+  "title": "EmulatRx synthetic teaching template v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["template_version", "scenario", "case_count", "seed", "simulation_label"],
+  "properties": {
+    "template_version": {"const": "1.0"},
+    "scenario": {"const": "synthetic_tutorial_v1"},
+    "case_count": {"type": "integer", "minimum": 1},
+    "seed": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+    "simulation_label": {"const": "教学模拟，非真实患者、非临床疗效证据"}
+  }
+}

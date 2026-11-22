@@ -1,0 +1,7 @@
+{
+  "template_version": "1.0",
+  "scenario": "synthetic_tutorial_v1",
+  "case_count": 12,
+  "seed": 42,
+  "simulation_label": "教学模拟，非真实患者、非临床疗效证据"
+}

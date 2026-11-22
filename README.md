@@ -63,6 +63,14 @@ export OPENAI_API_KEY="your_openai_key_here"
 ## 🏃 Usage
 The core workflow is driven by the Jupyter Notebook `v1-codebase.ipynb`.
 
+### Standalone synthetic template validation
+
+The [v1 synthetic teaching contract](docs/synthetic-demo-contract-v1.md) has an independent standard-library entry point. It validates a fixed, fully synthetic template and writes a normalized copy plus a run manifest. This command creates no cases or clinical results and requires no notebook, database, model, or API key.
+
+```bash
+python -m emulatrx_demo validate --template examples/synthetic_demo_v1.json --out /tmp/emulatrx-template-check
+```
+
 ### Running an Emulation
 Launch Jupyter:
 ```bash
