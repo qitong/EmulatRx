@@ -675,6 +675,7 @@ def diagnose_cohort(
             "simulation_or_data_label": protocol["simulation_or_data_label"],
             "methodological_disclaimer": METHODOLOGICAL_DISCLAIMER,
             "protocol_sha256": sha256_bytes(raw_proto),
+            "normalized_protocol_sha256": sha256_bytes(json_bytes(protocol)),
             "cohort_sha256": sha256_bytes(raw_cohort_bytes),
             "code_commit": commit,
             "code_dirty": code_dirty,
