@@ -164,6 +164,11 @@ class PreviewServiceTests(unittest.TestCase):
         with self.assertRaises(ContractError) as raised:
             self.service.runner.validate(missing_variable)
         self.assertEqual(raised.exception.code, "UNAVAILABLE_ELIGIBILITY_VARIABLE")
+        premature_criterion = json.loads(json.dumps(PROTOCOL))
+        premature_criterion["eligibility"]["inclusion_criteria"][0]["assessed_day_offset"] = -1
+        with self.assertRaises(ContractError) as raised:
+            self.service.runner.validate(premature_criterion)
+        self.assertEqual(raised.exception.code, "ELIGIBILITY_MEASUREMENT_AFTER_ASSESSMENT")
 
     def test_authentication_input_and_path_gates(self):
         self.assertEqual(self.client.get("/").status_code, 401)

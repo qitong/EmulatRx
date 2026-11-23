@@ -13,13 +13,18 @@ ATTRITION_FIELDS = ("step_order", "step_id", "description", "remaining_n", "excl
 
 def validate_screening_criteria(protocol):
     """Reject unavailable or post-event variables before any work starts."""
-    available = {cov["name"] for cov in protocol.get("covariates", [])}
+    available = {cov["name"]: cov["assessed_day_offset"] for cov in protocol.get("covariates", [])}
     for kind in ("inclusion_criteria", "exclusion_criteria"):
         for criterion in protocol["eligibility"][kind]:
             variable = criterion["variable"]
             if variable not in available:
                 raise ContractError("UNAVAILABLE_ELIGIBILITY_VARIABLE",
                                     f"{variable} is not a generated baseline covariate")
+            if available[variable] > criterion["assessed_day_offset"]:
+                raise ContractError("ELIGIBILITY_MEASUREMENT_AFTER_ASSESSMENT",
+                                    f"{variable} is measured on day {available[variable]}, after "
+                                    f"criterion {criterion['id']} is assessed on day "
+                                    f"{criterion['assessed_day_offset']}")
             value = criterion["value"]
             values = value if criterion["operator"] in ("in", "not_in") else [value]
             if any(not is_strict_number(item) for item in values):
