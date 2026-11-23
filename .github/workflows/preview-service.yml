@@ -15,15 +15,22 @@ jobs:
       - run: PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_preview_service.py' -v
   arm64-image:
     runs-on: ubuntu-24.04-arm
+    env:
+      TTE_DEPENDENCY_COMMIT: fedbc754a1fea22bde559b2575c462829db23f95
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
       - name: Build reviewed source revision
-        run: docker build --platform linux/arm64 --build-arg CODE_COMMIT="$(git rev-parse HEAD)" -f Dockerfile.preview -t "emulatrx-preview:$(git rev-parse HEAD)" .
+        run: |
+          git merge-base --is-ancestor "$TTE_DEPENDENCY_COMMIT" HEAD
+          test -z "$(git diff --name-only "$TTE_DEPENDENCY_COMMIT" HEAD -- emulatrx_tte | grep -v '^emulatrx_tte/_common.py$')"
+          docker build --platform linux/arm64 --build-arg CODE_COMMIT="$(git rev-parse HEAD)" --build-arg TTE_DEPENDENCY_COMMIT="$TTE_DEPENDENCY_COMMIT" -f Dockerfile.preview -t "emulatrx-preview:$(git rev-parse HEAD)" .
       - name: Check architecture and export exact image
         run: |
           test "$(docker image inspect "emulatrx-preview:$(git rev-parse HEAD)" --format '{{.Architecture}}')" = arm64
+          docker run --rm "emulatrx-preview:$(git rev-parse HEAD)" python -m emulatrx_tte run-synthetic --protocol /app/examples/tte_preview_v1.json --seed 42 --cases 1000 --weight-method overlap --bootstrap-iterations 20 --out /tmp/arm-smoke
           docker save "emulatrx-preview:$(git rev-parse HEAD)" | gzip -1 > emulatrx-preview-arm64.tar.gz
           sha256sum emulatrx-preview-arm64.tar.gz > emulatrx-preview-arm64.tar.gz.sha256
       - uses: actions/upload-artifact@v4

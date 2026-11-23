@@ -6,6 +6,7 @@ services:
       dockerfile: Dockerfile.preview
       args:
         CODE_COMMIT: ${EMULATRX_CODE_COMMIT:?Set tested full commit SHA}
+        TTE_DEPENDENCY_COMMIT: ${EMULATRX_TTE_DEPENDENCY_COMMIT:?Set pinned reviewed PR 14 commit SHA}
     image: emulatrx-preview:${EMULATRX_CODE_COMMIT:?Set tested full commit SHA}
     init: true
     restart: unless-stopped
@@ -14,10 +15,10 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     pids_limit: 128
-    mem_limit: 256m
+    mem_limit: 768m
     cpus: 1.0
     tmpfs:
-      - /tmp:size=16m,mode=1777
+      - /tmp:size=64m,mode=1777
     ports:
       - "${EMULATRX_BIND_IP:-127.0.0.1}:8602:8000"
     environment:

@@ -133,6 +133,13 @@ def sha256_file(path: Path) -> str:
 
 
 def code_provenance() -> tuple[str, bool]:
+    image_commit = os.environ.get("EMULATRX_CODE_COMMIT")
+    if image_commit is not None:
+        if not re.fullmatch(r"[0-9a-f]{40}", image_commit):
+            raise ContractError("CODE_VERSION_UNAVAILABLE", "Invalid image commit SHA")
+        if os.environ.get("EMULATRX_CODE_DIRTY") != "false":
+            raise ContractError("CODE_VERSION_UNAVAILABLE", "Image source state is not clean")
+        return image_commit, False
     root = Path(__file__).resolve().parents[1]
     try:
         rev = subprocess.run(

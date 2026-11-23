@@ -1,0 +1,98 @@
+{
+  "protocol_version": "1.0",
+  "study_title": "Synthetic two-arm TTE preview with competing mortality and explicit eligibility screening",
+  "simulation_or_data_label": "教学与方法学合成基准，非真实患者数据、非临床疗效证据",
+  "eligibility": {
+    "inclusion_criteria": [
+      {
+        "id": "inc_synthetic_age_index",
+        "variable": "x_age_std",
+        "operator": ">=",
+        "value": -1.0,
+        "assessed_day_offset": 0,
+        "description": "Synthetic standardized baseline age index; method demonstration threshold only"
+      }
+    ],
+    "exclusion_criteria": [
+      {
+        "id": "exc_synthetic_high_risk",
+        "variable": "x_high_risk_bin",
+        "operator": "==",
+        "value": 1,
+        "assessed_day_offset": 0,
+        "description": "Synthetic baseline binary risk flag; method demonstration threshold only"
+      }
+    ]
+  },
+  "time_zero": {
+    "anchor_event": "first_eligible_strategy_initiation",
+    "day_offset": 0,
+    "landmark_day": 0,
+    "description": "Baseline treatment initiation anchor (day 0)"
+  },
+  "treatment_strategies": [
+    {
+      "id": "strategy_control",
+      "label": "Synthetic Comparator Regimen A",
+      "role": "control"
+    },
+    {
+      "id": "strategy_active",
+      "label": "Synthetic Active Regimen B",
+      "role": "active"
+    }
+  ],
+  "assignment_mode": "observational_baseline",
+  "followup": {
+    "horizon_days": [
+      90.0,
+      180.0,
+      365.0
+    ],
+    "administrative_end_day": 540.0
+  },
+  "outcomes": {
+    "primary_event_code": 1,
+    "competing_event_codes": [
+      2
+    ],
+    "censor_code": 0,
+    "competing_event_handling": "explicit_cif_and_subdistribution"
+  },
+  "estimand": {
+    "target_estimand": "ATO",
+    "effect_measures": [
+      "RD",
+      "RR_CIF",
+      "sHR",
+      "csHR"
+    ],
+    "diagnostic_gates": {
+      "max_abs_smd": 0.1,
+      "min_ess_ratio": 0.25,
+      "positivity_epsilon": 0.01
+    }
+  },
+  "covariates": [
+    {
+      "name": "x_age_std",
+      "type": "continuous",
+      "assessed_day_offset": 0
+    },
+    {
+      "name": "x_biomarker_std",
+      "type": "continuous",
+      "assessed_day_offset": 0
+    },
+    {
+      "name": "x_comorbidity_bin",
+      "type": "binary",
+      "assessed_day_offset": 0
+    },
+    {
+      "name": "x_high_risk_bin",
+      "type": "binary",
+      "assessed_day_offset": 0
+    }
+  ]
+}

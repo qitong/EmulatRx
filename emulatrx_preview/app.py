@@ -1,6 +1,5 @@
-"""Authenticated private preview. No patient data or file uploads are accepted."""
+"""Private browser and MCP entry points for the pinned synthetic TTE pipeline."""
 
-import asyncio
 import base64
 from contextlib import asynccontextmanager
 import html
@@ -16,13 +15,16 @@ from starlette.applications import Starlette
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from starlette.routing import Mount, Route
 
-from emulatrx_demo import SCENARIO, SIMULATION_LABEL, TEMPLATE_VERSION
-from emulatrx_demo._common import ContractError
-from .runner import Runner
+from emulatrx_tte._common import ContractError
+from .tte_runner import TTERunner
+from .tte_views import ELEMENTS, form, result_view
 
 
-NOTICE = "教学模拟，非真实患者、非临床疗效证据。无 TTE、竞争风险估计、真实数据或治疗效果分析。"
-runner = Runner(os.environ.get("EMULATRX_RUNS_DIR", "/tmp/emulatrx-preview-runs"))
+NOTICE = "完全合成 TTE 方法学预览；非真实患者、非临床疗效证据、非因果实证证明。禁止上传患者数据。"
+DEFAULT_PROTOCOL = json.loads((Path(__file__).resolve().parents[1] / "examples" / "tte_preview_v1.json").read_text(encoding="utf-8"))
+SIMULATION_LABEL = DEFAULT_PROTOCOL["simulation_or_data_label"]
+DEPENDENCY_COMMIT = os.environ.get("EMULATRX_TTE_DEPENDENCY_COMMIT", "development checkout")
+runner = TTERunner(os.environ.get("EMULATRX_RUNS_DIR", "/tmp/emulatrx-tte-preview-runs"))
 
 
 def _read_secret(name):
@@ -30,8 +32,8 @@ def _read_secret(name):
     if not path:
         raise RuntimeError(f"{name} is required")
     value = Path(path).read_text(encoding="utf-8").strip()
-    if len(value) < 32 or len(value) > 256:
-        raise RuntimeError(f"{name} must contain 32..256 characters")
+    if len(value) < 32 or len(value) > 256 or not value.isascii():
+        raise RuntimeError(f"{name} must contain 32..256 ASCII characters")
     return value
 
 
@@ -43,135 +45,142 @@ if secrets.compare_digest(WEB_PASSWORD, MCP_TOKEN):
 allowed_hosts = [item.strip() for item in os.environ.get("EMULATRX_ALLOWED_HOSTS", "localhost:8000").split(",") if item.strip()]
 if not allowed_hosts:
     raise RuntimeError("EMULATRX_ALLOWED_HOSTS must not be empty")
-mcp = FastMCP("EmulatRx synthetic preview", instructions=NOTICE,
-              stateless_http=True, json_response=True, max_request_body_size=4096,
+mcp = FastMCP("EmulatRx synthetic TTE preview", instructions=NOTICE,
+              stateless_http=True, json_response=True, max_request_body_size=20 * 1024,
               transport_security=TransportSecuritySettings(allowed_hosts=allowed_hosts,
                   allowed_origins=[f"https://{host}" for host in allowed_hosts] + [f"http://{host}" for host in allowed_hosts]))
 
 
-@mcp.tool(description="Generate only seeded synthetic teaching cases and an arbitrary teaching score. No clinical emulation.")
-def run_synthetic_demo(case_count: int = 12, seed: int = 42) -> dict:
-    template = {"template_version": TEMPLATE_VERSION, "scenario": SCENARIO,
-                "case_count": case_count, "seed": seed, "simulation_label": SIMULATION_LABEL}
-    return runner.run(template)
+@mcp.tool(description="Validate and normalize a seven-element synthetic TTE protocol. No patient data is accepted.")
+def validate_tte_protocol(protocol: dict) -> dict:
+    return {"status": "valid", "source_mode": "synthetic_only", "normalized_protocol": runner.validate(protocol),
+            "analysis_dependency_commit": DEPENDENCY_COMMIT}
 
 
-@mcp.tool(description="Read a recent synthetic run by its server generated run ID.")
-def get_synthetic_run(run_id: str) -> dict:
-    return runner.get(run_id)
+@mcp.tool(description="Start an asynchronous, fully synthetic TTE protocol → cohort → diagnostics → estimates → report run. The default is 2,000 synthetic rows.")
+def start_synthetic_tte(protocol: dict, cases: int = 2000, seed: int = 42, bootstrap_iterations: int = 100) -> dict:
+    return runner.start(protocol, cases=cases, seed=seed, bootstrap_iterations=bootstrap_iterations)
 
 
-@mcp.tool(description="Optionally fetch a provenance-only receipt for a public ClinicalTrials.gov NCT ID. It does not affect the synthetic demo.")
-def fetch_public_source_receipt(nct_id: str) -> dict:
-    return runner.receipt(nct_id)
+@mcp.tool(description="Read the status and bounded summary of a synthetic TTE run. Estimates are omitted when the diagnostic gate blocks.")
+def get_tte_run(run_id: str) -> dict:
+    result = runner.get(run_id)
+    if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 32 * 1024:
+        return {"run_id": result["run_id"], "state": result["state"], "gate_status": result.get("gate_status"),
+                "cohort_rows": result.get("cohort_rows"), "available_artifacts": result.get("available_artifacts", []),
+                "truncated": True, "hint": "Read specific artifacts with read_tte_artifact"}
+    return result
 
 
-def page(body, title="EmulatRx · 合成演示预览", status=200):
-    document = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)}</title>
-<style>body{{font:16px/1.6 system-ui,sans-serif;background:#f5f7fa;color:#17324d;margin:0}}
-main{{max-width:850px;margin:40px auto;padding:28px;background:white;border-radius:12px;box-shadow:0 2px 12px #17324d16}}
-h1{{margin:0 0 8px}}.notice{{background:#fff2d8;border-left:5px solid #a65a00;padding:12px;margin:20px 0}}
-label{{display:block;margin:15px 0}}input{{font:inherit;padding:8px;width:180px}}button{{font:inherit;background:#174c78;color:white;border:0;border-radius:6px;padding:10px 18px;cursor:pointer}}
-pre{{white-space:pre-wrap;word-break:break-word;background:#eef2f6;padding:14px;border-radius:6px;overflow:auto}}
-table{{border-collapse:collapse;width:100%}}td,th{{padding:6px;border-bottom:1px solid #ddd;text-align:left}}
-a{{color:#174c78}}</style></head><body><main><h1>EmulatRx 合成演示预览</h1>
-<div class="notice"><strong>模拟标识：</strong>{html.escape(NOTICE)}</div>{body}</main></body></html>"""
+@mcp.tool(description="Read a permitted synthetic artifact in base64 chunks of at most 16 KiB; use next_offset for pagination.")
+def read_tte_artifact(run_id: str, name: str, offset: int = 0, limit: int = 16384) -> dict:
+    return runner.read_artifact(run_id, name, offset=offset, limit=limit)
+
+
+def page(body, status=200, refresh=False):
+    refresh_tag = '<meta http-equiv="refresh" content="2">' if refresh else ""
+    document = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">{refresh_tag}
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>EmulatRx · 合成 TTE 预览</title>
+<style>body{{font:15px/1.6 system-ui,sans-serif;background:#f3f6f9;color:#19324a;margin:0}}
+main{{max-width:1120px;margin:32px auto;padding:28px;background:white;border-radius:12px;box-shadow:0 2px 12px #19324a16}}
+h1{{margin:0 0 6px}}h2{{margin-top:30px;border-bottom:1px solid #dce5eb;padding-bottom:5px}}
+.notice{{background:#fff2d8;border-left:5px solid #a65a00;padding:12px;margin:20px 0}}.error{{background:#fff0ef;border-left:5px solid #b42318;padding:12px}}
+fieldset{{border:1px solid #d7e0e7;border-radius:8px;margin:16px 0;padding:14px}}legend{{font-weight:700;color:#164b76}}fieldset p{{margin:0 0 8px;color:#506577}}
+input,textarea{{font:inherit;box-sizing:border-box;border:1px solid #abbcca;border-radius:5px;padding:8px}}input[type=number]{{width:150px}}input[name=study_title]{{width:100%}}
+textarea{{width:100%;min-height:90px;font:13px/1.4 ui-monospace,monospace}}label{{display:inline-block;margin-right:20px}}
+button{{font:inherit;background:#174c78;color:white;border:0;border-radius:6px;padding:10px 18px;cursor:pointer}}button:hover{{background:#0e3657}}
+pre{{white-space:pre-wrap;word-break:break-word;background:#eef2f6;padding:14px;border-radius:6px;max-height:550px;overflow:auto}}
+.scroll{{overflow-x:auto}}table{{border-collapse:collapse;width:100%;font-size:13px}}td,th{{padding:6px 9px;border-bottom:1px solid #dce5eb;text-align:left;white-space:nowrap}}
+figure{{display:inline-block;max-width:48%;min-width:330px;margin:8px 1% 8px 0}}figure svg{{width:100%;height:auto;background:#f8fafc}}figcaption{{font-weight:700}}
+.bar{{background:#1a6aaa;height:12px;min-width:2px}}.legend{{font-size:12px}}a{{color:#174c78}}code{{font-size:13px}}</style></head><body><main>
+<h1>EmulatRx 合成 TTE 工作台</h1><div class="notice"><strong>模拟标识：</strong>{html.escape(NOTICE)}<br>
+分析依赖：PR #14 固定提交 <code>{html.escape(DEPENDENCY_COMMIT)}</code>（预览依赖，不代表已合入 main）。</div>{body}</main></body></html>"""
     return HTMLResponse(document, status_code=status, headers={"Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'", "X-Content-Type-Options": "nosniff"})
 
 
+def _strict_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+async def _form_fields(request):
+    origin = request.headers.get("origin")
+    if origin and urlsplit(origin).netloc != request.headers.get("host"):
+        raise ContractError("ORIGIN_MISMATCH", "request origin does not match host")
+    if request.headers.get("content-type", "").split(";", 1)[0].lower() != "application/x-www-form-urlencoded":
+        raise ContractError("INVALID_MEDIA_TYPE", "only the fixed form is accepted")
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > 64 * 1024:
+            raise ContractError("INPUT_TOO_LARGE", "form exceeds 64 KiB")
+        body.extend(chunk)
+    fields = parse_qs(body.decode("utf-8"), strict_parsing=True)
+    expected = {"study_title", "cases", "seed", "bootstrap_iterations", *[key for key, _, _ in ELEMENTS]}
+    if set(fields) != expected or any(len(values) != 1 for values in fields.values()):
+        raise ContractError("INVALID_FORM", "unexpected or missing form field")
+    return {key: values[0] for key, values in fields.items()}
+
+
+def _protocol_from_form(fields):
+    protocol = {"protocol_version": "1.0", "study_title": fields["study_title"],
+                "simulation_or_data_label": SIMULATION_LABEL}
+    for key, _, _ in ELEMENTS:
+        protocol[key] = json.loads(fields[key], object_pairs_hook=_strict_pairs,
+                                   parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+    protocol["covariates"] = DEFAULT_PROTOCOL["covariates"]
+    return protocol
+
+
 async def home(request):
-    return page("""<p>选择固定模板的病例数量和种子。病例、分组和分数完全由种子生成；分数没有医学含义。</p>
-<form method="post" action="/runs"><input type="hidden" name="template_version" value="1.0">
-<label>合成病例数量（1–10000）<br><input name="case_count" type="number" min="1" max="10000" value="12" required></label>
-<label>种子（0–4294967295）<br><input name="seed" type="number" min="0" max="4294967295" value="42" required></label>
-<button type="submit">运行合成演示</button></form>
-<h2>可选：公开登记来源收据</h2><p>仅保存 ClinicalTrials.gov 来源、时间和哈希；不会载入试验结果，也不会进入合成计算。</p>
-<form method="post" action="/receipts"><label>NCT 编号<br><input name="nct_id" pattern="NCT[0-9]{8}" placeholder="NCT00000000" required></label><button type="submit">获取来源收据</button></form>
-<p>每次运行有独立编号，最多保存 24 小时或 100 次运行。最多同时运行 1 次，合成计算上限 25 秒，收据上限 40 秒，产物上限 2 MiB。</p>""")
+    return page(form(DEFAULT_PROTOCOL))
+
+
+async def validate_form(request):
+    fields = {}
+    try:
+        fields = await _form_fields(request)
+        normalized = runner.validate(_protocol_from_form(fields))
+        return page(form(DEFAULT_PROTOCOL, values=fields, normalized=normalized))
+    except (ContractError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
+        detail = f"{exc.code}: {exc}" if isinstance(exc, ContractError) else str(exc)
+        return page(form(DEFAULT_PROTOCOL, values=fields, error=detail), status=400)
 
 
 async def create_run(request):
-    origin = request.headers.get("origin")
-    if origin and urlsplit(origin).netloc != request.headers.get("host"):
-        return page("请求来源不匹配。", status=403)
-    if request.headers.get("content-type", "").split(";", 1)[0].lower() != "application/x-www-form-urlencoded":
-        return page("只接受固定表单。", status=415)
-    body = bytearray()
-    async for chunk in request.stream():
-        if len(body) + len(chunk) > 4096:
-            return page("输入过大。", status=413)
-        body.extend(chunk)
+    fields = {}
     try:
-        fields = parse_qs(body.decode("utf-8"), strict_parsing=True)
-        if set(fields) != {"template_version", "case_count", "seed"} or any(len(v) != 1 for v in fields.values()):
-            raise ValueError("表单字段不匹配")
-        if fields["template_version"][0] != TEMPLATE_VERSION:
-            raise ValueError("模板版本不匹配")
-        template = {"template_version": TEMPLATE_VERSION, "scenario": SCENARIO,
-                    "case_count": int(fields["case_count"][0]), "seed": int(fields["seed"][0]),
-                    "simulation_label": SIMULATION_LABEL}
-        result = await asyncio.to_thread(runner.run, template)
-    except (UnicodeError, ValueError, ContractError) as exc:
-        detail = exc.code if isinstance(exc, ContractError) else "INVALID_FORM"
-        return page(f"<p>输入或运行被拒绝：{html.escape(detail)}</p><p><a href='/'>返回</a></p>", status=400)
-    return RedirectResponse(f"/runs/{result['run_id']}", status_code=303)
-
-
-async def create_receipt(request):
-    origin = request.headers.get("origin")
-    if origin and urlsplit(origin).netloc != request.headers.get("host"):
-        return page("请求来源不匹配。", status=403)
-    if request.headers.get("content-type", "").split(";", 1)[0].lower() != "application/x-www-form-urlencoded":
-        return page("只接受固定表单。", status=415)
-    body = bytearray()
-    async for chunk in request.stream():
-        if len(body) + len(chunk) > 4096:
-            return page("输入过大。", status=413)
-        body.extend(chunk)
-    try:
-        fields = parse_qs(body.decode("utf-8"), strict_parsing=True)
-        if set(fields) != {"nct_id"} or len(fields["nct_id"]) != 1:
-            raise ValueError("invalid form")
-        result = await asyncio.to_thread(runner.receipt, fields["nct_id"][0])
-    except (UnicodeError, ValueError, ContractError) as exc:
-        detail = exc.code if isinstance(exc, ContractError) else "INVALID_FORM"
-        return page(f"<p>来源收据被拒绝：{html.escape(detail)}</p><p><a href='/'>返回</a></p>", status=400)
-    return RedirectResponse(f"/runs/{result['run_id']}", status_code=303)
+        fields = await _form_fields(request)
+        protocol = _protocol_from_form(fields)
+        run = runner.start(protocol, cases=int(fields["cases"]), seed=int(fields["seed"]),
+                           bootstrap_iterations=int(fields["bootstrap_iterations"]))
+        return RedirectResponse(f"/runs/{run['run_id']}", status_code=303)
+    except (ContractError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
+        detail = f"{exc.code}: {exc}" if isinstance(exc, ContractError) else str(exc)
+        return page(form(DEFAULT_PROTOCOL, values=fields, error=detail), status=400)
 
 
 async def show_run(request):
     try:
         result = runner.get(request.path_params["run_id"])
-    except (ContractError, OSError):
+    except (ContractError, OSError, ValueError):
         return page("运行不存在或已过期。", status=404)
-    if result["kind"] == "public_source_receipt":
-        return page(f"<p><strong>收据编号：</strong>{result['run_id']}</p>"
-                    "<p>公开登记来源收据与合成计算相互独立，不含研究结果数值。</p>"
-                    f"<pre>{html.escape(json.dumps(result['receipt'], ensure_ascii=False, indent=2))}</pre>"
-                    "<p><a href='/'>返回</a></p>")
-    summary = result["summary"]
-    manifest = result["manifest"]
-    rows = "".join("<tr>" + "".join(f"<td>{html.escape(str(v))}</td>" for v in row.values()) + "</tr>" for row in result["sample_cases"])
-    columns = "".join(f"<th>{html.escape(k)}</th>" for k in result["sample_cases"][0]) if result["sample_cases"] else ""
-    return page(f"<p><strong>运行编号：</strong>{result['run_id']}</p>"
-                f"<h2>合成汇总</h2><pre>{html.escape(json.dumps(summary, ensure_ascii=False, indent=2))}</pre>"
-                f"<h2>前十个合成病例</h2><table><tr>{columns}</tr>{rows}</table>"
-                f"<p><a href='/runs/{result['run_id']}/cases.csv'>下载合成 CSV</a></p>"
-                f"<h2>运行清单与可追溯来源</h2><pre>{html.escape(json.dumps(manifest, ensure_ascii=False, indent=2))}</pre>"
-                "<p><a href='/'>新建运行</a></p>")
+    return page(result_view(result, runner.root), refresh=result["state"] in ("queued", "running"))
 
 
-async def cases(request):
+async def download_artifact(request):
     try:
-        path = runner.cases_path(request.path_params["run_id"])
-    except (ContractError, OSError):
-        return page("运行不存在或已过期。", status=404)
-    return FileResponse(path, media_type="text/csv", filename="synthetic-cases.csv", headers={"Cache-Control": "no-store"})
+        path = runner.artifact_path(request.path_params["run_id"], request.path_params["name"])
+    except (ContractError, OSError, ValueError):
+        return page("产物不存在或不可访问。", status=404)
+    return FileResponse(path, filename=path.name, headers={"Cache-Control": "no-store"})
 
 
 async def health(request):
-    return JSONResponse({"status": "ok", "service": "emulatrx-synthetic-preview"})
+    return JSONResponse({"status": "ok", "service": "emulatrx-synthetic-tte-preview"})
 
 
 mcp_app = mcp.streamable_http_app()
@@ -184,10 +193,10 @@ async def lifespan(app):
 
 
 inner = Starlette(routes=[Route("/healthz", health), Route("/", home),
+                          Route("/validate", validate_form, methods=["POST"]),
                           Route("/runs", create_run, methods=["POST"]),
-                          Route("/receipts", create_receipt, methods=["POST"]),
                           Route("/runs/{run_id}", show_run),
-                          Route("/runs/{run_id}/cases.csv", cases),
+                          Route("/runs/{run_id}/artifacts/{name:path}", download_artifact),
                           Mount("/", app=mcp_app)], lifespan=lifespan)
 
 
@@ -212,7 +221,7 @@ class AuthenticationGate:
                 valid = scheme.lower() == b"basic" and user == "preview" and secrets.compare_digest(password, WEB_PASSWORD)
             except (ValueError, UnicodeError):
                 valid = False
-            challenge = b'Basic realm="EmulatRx synthetic preview"'
+            challenge = b'Basic realm="EmulatRx synthetic TTE preview"'
         if not valid:
             response = JSONResponse({"error": "authentication required"}, status_code=401,
                                     headers={"WWW-Authenticate": challenge.decode("ascii"), "Cache-Control": "no-store"})

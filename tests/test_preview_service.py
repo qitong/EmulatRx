@@ -1,105 +1,202 @@
-"""End-to-end service boundaries using only synthetic inputs."""
+"""Real synthetic TTE browser/MCP flows and service boundaries."""
 
 import base64
+import csv
+import hashlib
 import importlib
 import json
 import os
 from pathlib import Path
 import tempfile
-import threading
+import time
 import unittest
 from unittest import mock
 
 from starlette.testclient import TestClient
 
-from emulatrx_demo import SIMULATION_LABEL
-from emulatrx_demo.__main__ import _code_provenance
-from emulatrx_demo._common import ContractError
-from emulatrx_preview.runner import Runner
+from emulatrx_tte._common import ContractError, code_provenance
+from emulatrx_preview.tte_runner import TTERunner
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PROTOCOL = json.loads((ROOT / "examples" / "tte_preview_v1.json").read_text(encoding="utf-8"))
+ELEMENT_KEYS = ("eligibility", "time_zero", "treatment_strategies", "assignment_mode", "followup", "outcomes", "estimand")
 
 
 class PreviewServiceTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        root = Path(self.temp.name)
-        (root / "web").write_text("web-" + "w" * 40)
-        (root / "mcp").write_text("agent-" + "a" * 40)
-        patcher = mock.patch.dict(os.environ, {
-            "EMULATRX_RUNS_DIR": str(root / "runs"),
-            "EMULATRX_WEB_PASSWORD_FILE": str(root / "web"),
-            "EMULATRX_MCP_TOKEN_FILE": str(root / "mcp"),
+        base = Path(self.temp.name)
+        (base / "web").write_text("w" * 40)
+        (base / "agent").write_text("a" * 40)
+        patch = mock.patch.dict(os.environ, {
+            "EMULATRX_RUNS_DIR": str(base / "runs"),
+            "EMULATRX_WEB_PASSWORD_FILE": str(base / "web"),
+            "EMULATRX_MCP_TOKEN_FILE": str(base / "agent"),
             "EMULATRX_CODE_COMMIT": "b" * 40,
             "EMULATRX_CODE_DIRTY": "false",
             "EMULATRX_ALLOWED_HOSTS": "testserver",
+            "EMULATRX_TTE_DEPENDENCY_COMMIT": "fedbc754a1fea22bde559b2575c462829db23f95",
         })
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        patch.start()
+        self.addCleanup(patch.stop)
         from emulatrx_preview import app
         self.service = importlib.reload(app)
-        self.web_auth = {"Authorization": "Basic " + base64.b64encode(("preview:" + (root / "web").read_text()).encode()).decode()}
-        self.mcp_auth = {"Authorization": "Bearer " + (root / "mcp").read_text()}
+        self.web_auth = {"Authorization": "Basic " + base64.b64encode(("preview:" + "w" * 40).encode()).decode()}
+        self.mcp_auth = {"Authorization": "Bearer " + "a" * 40, "Accept": "application/json, text/event-stream"}
         self.client = TestClient(self.service.app)
         self.client.__enter__()
         self.addCleanup(self.client.__exit__, None, None, None)
 
-    def test_authentication_and_browser_end_to_end(self):
-        self.assertEqual(self.client.get("/").status_code, 401)
-        self.assertEqual(self.client.get("/mcp", headers=self.web_auth).status_code, 401)
-        self.assertEqual(self.client.get("/", headers=self.mcp_auth).status_code, 401)
-        page = self.client.get("/", headers=self.web_auth)
-        self.assertEqual(page.status_code, 200)
-        self.assertIn("非真实患者", page.text)
-        created = self.client.post("/runs", data={"template_version": "1.0", "case_count": "12", "seed": "42"},
-                                   headers=self.web_auth, follow_redirects=False)
+    def form(self, protocol=None, cases="2000", bootstrap="100"):
+        protocol = protocol or PROTOCOL
+        values = {"study_title": protocol["study_title"], "cases": cases, "seed": "42", "bootstrap_iterations": bootstrap}
+        values.update({key: json.dumps(protocol[key]) for key in ELEMENT_KEYS})
+        return values
+
+    def wait_run(self, run_id):
+        for _ in range(200):
+            result = self.service.runner.get(run_id)
+            if result["state"] not in ("queued", "running"):
+                return result
+            time.sleep(0.1)
+        self.fail("TTE run did not finish in 20 seconds")
+
+    def mcp_call(self, name, arguments, rpc_id=1):
+        response = self.client.post("/mcp", headers=self.mcp_auth,
+                                    json={"jsonrpc": "2.0", "id": rpc_id, "method": "tools/call",
+                                          "params": {"name": name, "arguments": arguments}})
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()["result"]
+        self.assertFalse(result["isError"], result)
+        return json.loads(result["content"][0]["text"])
+
+    def test_browser_seven_element_full_flow_and_benchmark(self):
+        home = self.client.get("/", headers=self.web_auth)
+        self.assertEqual(home.status_code, 200)
+        self.assertIn("七要素", home.text)
+        self.assertIn("非真实患者", home.text)
+        validated = self.client.post("/validate", headers=self.web_auth, data=self.form())
+        self.assertEqual(validated.status_code, 200, validated.text[:300])
+        self.assertIn("规范化方案", validated.text)
+        created = self.client.post("/runs", headers=self.web_auth, data=self.form(), follow_redirects=False)
         self.assertEqual(created.status_code, 303, created.text)
-        run_page = self.client.get(created.headers["location"], headers=self.web_auth)
-        self.assertEqual(run_page.status_code, 200)
-        self.assertIn("code_commit", run_page.text)
-        self.assertIn("Arbitrary synthetic", run_page.text)
-        csv_response = self.client.get(created.headers["location"] + "/cases.csv", headers=self.web_auth)
-        self.assertEqual(csv_response.status_code, 200)
-        self.assertIn(SIMULATION_LABEL, csv_response.text)
-        self.assertEqual(self.client.get(created.headers["location"] + "/cases.csv").status_code, 401)
+        run_id = created.headers["location"].split("/")[-1]
+        result = self.wait_run(run_id)
+        self.assertEqual(result["state"], "completed")
+        self.assertEqual(result["gate_status"], "passed")
+        self.assertEqual(result["cohort_rows"], 2000)
+        self.assertEqual(result["eligible_rows"], 954)
+        self.assertGreaterEqual(len(result["cohort_columns"]), 10)
+        self.assertEqual(result["preview_manifest"]["code_commit"], "b" * 40)
+        self.assertEqual(result["diagnostics"]["gate_status"], "passed")
+        self.assertGreater(result["diagnostics"]["ess_diagnostics"]["min_ess_ratio_observed"], 0.25)
+        row = result["estimates"]["co_presented_comparison_table"][0]
+        self.assertAlmostEqual(row["rd_primary"], -0.0309042318, delta=0.005)
+        self.assertAlmostEqual(row["shr_primary"], 0.820865552, delta=0.03)
+        self.assertAlmostEqual(row["cshr_primary"], 0.7649949755, delta=0.03)
+        self.assertLessEqual(row["cif_primary_active"] + row["cif_competing_active"], 1)
+        result_page = self.client.get(created.headers["location"], headers=self.web_auth)
+        self.assertEqual(result_page.status_code, 200)
+        for expected in ("2000 行", "954 行", "筛选流失", "倾向分数分布", "目标事件 CIF", "竞争事件 CIF", "RD", "RR(CIF)", "sHR", "csHR", "rd_primary_ci_lower", "方法限制与警示", "完整审计报告"):
+            self.assertIn(expected, result_page.text)
+        cohort = self.client.get(f"/runs/{run_id}/artifacts/cohort/cohort.csv", headers=self.web_auth)
+        self.assertEqual(cohort.status_code, 200)
+        rows = list(csv.DictReader(cohort.text.splitlines()))
+        self.assertEqual(len(rows), 2000)
+        self.assertEqual(set(row["event_code"] for row in rows), {"0", "1", "2"})
+        selected = self.client.get(f"/runs/{run_id}/artifacts/screen/eligible_cohort.csv", headers=self.web_auth)
+        self.assertEqual(len(list(csv.DictReader(selected.text.splitlines()))), 954)
+        digest = hashlib.sha256(selected.content).hexdigest()
+        diag_manifest = json.loads(self.client.get(f"/runs/{run_id}/artifacts/diagnostics/run_manifest.json", headers=self.web_auth).text)
+        self.assertEqual(diag_manifest["cohort_sha256"], digest)
+        self.assertEqual(self.client.get(f"/runs/{run_id}/artifacts/cohort/cohort.csv").status_code, 401)
+        restarted = TTERunner(self.service.runner.root)
+        self.assertEqual(restarted.get(run_id)["cohort_rows"], 2000)
 
-    def test_mcp_streamable_http_calls_same_runner(self):
-        headers = {**self.mcp_auth, "Accept": "application/json, text/event-stream"}
-        listed = self.client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, headers=headers)
+    def test_mcp_validate_run_status_and_chunked_artifact(self):
+        listed = self.client.post("/mcp", headers=self.mcp_auth, json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         self.assertEqual(listed.status_code, 200, listed.text)
-        self.assertIn("run_synthetic_demo", listed.text)
-        called = self.client.post("/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "run_synthetic_demo", "arguments": {"case_count": 12, "seed": 42}}}, headers=headers)
-        self.assertEqual(called.status_code, 200, called.text)
-        self.assertIn("synthetic_demo_generated", called.text)
-        self.assertIn("b" * 40, called.text)
-        self.assertEqual(self.client.post("/mcp", json={"jsonrpc": "2.0", "id": 3, "method": "tools/list"}).status_code, 401)
+        for tool in ("validate_tte_protocol", "start_synthetic_tte", "get_tte_run", "read_tte_artifact"):
+            self.assertIn(tool, listed.text)
+        validated = self.mcp_call("validate_tte_protocol", {"protocol": PROTOCOL})
+        self.assertEqual(validated["normalized_protocol"]["study_title"], PROTOCOL["study_title"])
+        started = self.mcp_call("start_synthetic_tte", {"protocol": PROTOCOL, "cases": 1000, "seed": 42, "bootstrap_iterations": 20})
+        final = self.wait_run(started["run_id"])
+        self.assertEqual(final["state"], "completed")
+        remote = self.mcp_call("get_tte_run", {"run_id": started["run_id"]})
+        self.assertEqual(remote["cohort_rows"], 1000)
+        self.assertIn("estimates", remote)
+        chunk = self.mcp_call("read_tte_artifact", {"run_id": started["run_id"], "name": "estimates/audit_report.md", "limit": 128})
+        self.assertEqual(chunk["encoding"], "base64")
+        self.assertLessEqual(chunk["next_offset"], 128)
+        self.assertEqual(self.client.post("/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).status_code, 401)
 
-    def test_error_gates_and_recovery(self):
-        data = {"template_version": "1.0", "case_count": "12", "seed": "42"}
-        self.assertEqual(self.client.post("/runs", data=data, headers={**self.web_auth, "Origin": "https://other.example", "Host": "testserver"}).status_code, 403)
-        self.assertEqual(self.client.post("/runs", json={"patient_file": "x"}, headers=self.web_auth).status_code, 415)
-        self.assertEqual(self.client.post("/runs", data={**data, "patient_id": "x"}, headers=self.web_auth).status_code, 400)
-        self.assertEqual(self.client.post("/runs", data={**data, "case_count": "10001"}, headers=self.web_auth).status_code, 400)
-        self.assertEqual(self.client.get("/runs/../bad", headers=self.web_auth).status_code, 404)
-        result = self.service.runner.run({"template_version": "1.0", "scenario": "synthetic_tutorial_v1", "case_count": 12, "seed": 42, "simulation_label": SIMULATION_LABEL})
-        restarted = Runner(self.service.runner.root)
-        self.assertEqual(restarted.get(result["run_id"])["summary"], result["summary"])
-        self.assertEqual(result["manifest"]["code_commit"], "b" * 40)
+    def test_blocked_gate_exposes_diagnostics_without_estimates(self):
+        protocol = json.loads(json.dumps(PROTOCOL))
+        protocol["estimand"]["diagnostic_gates"]["positivity_epsilon"] = 0.49
+        started = self.service.runner.start(protocol, cases=1000, seed=42, bootstrap_iterations=20)
+        result = self.wait_run(started["run_id"])
+        self.assertEqual(result["state"], "blocked")
+        self.assertEqual(result["gate_status"], "blocked")
+        self.assertEqual(result["cohort_rows"], 1000)
+        self.assertNotIn("estimates", result)
+        self.assertIn("POSITIVITY_VIOLATION", str(result["diagnostics"]["gate_failures"]))
+        self.assertFalse(any("estimates.json" in name for name in result["available_artifacts"]))
+        self.assertEqual(self.client.get(f"/runs/{started['run_id']}/artifacts/estimates/estimates.json", headers=self.web_auth).status_code, 404)
+        page = self.client.get(f"/runs/{started['run_id']}", headers=self.web_auth)
+        self.assertIn("估计结果与曲线不生成", page.text)
+        self.assertNotIn("完整审计报告", page.text)
 
-    def test_busy_gate(self):
-        runner = self.service.runner
-        self.assertTrue(runner._slot.acquire(blocking=False))
+    def test_edited_eligibility_actually_changes_screening_and_blocks_empty_risk_set(self):
+        protocol = json.loads(json.dumps(PROTOCOL))
+        protocol["eligibility"]["inclusion_criteria"][0]["value"] = 3.5
+        started = self.service.runner.start(protocol, cases=1000, seed=42, bootstrap_iterations=20)
+        result = self.wait_run(started["run_id"])
+        self.assertEqual(result["state"], "blocked")
+        self.assertEqual(result["eligible_rows"], 0)
+        self.assertEqual(result["attrition"][1]["excluded_n"], "1000")
+        self.assertIn("NO_ELIGIBLE_SYNTHETIC_RISK_SET", str(result["diagnostics"]["gate_failures"]))
+        self.assertNotIn("estimates", result)
+        missing_variable = json.loads(json.dumps(PROTOCOL))
+        missing_variable["eligibility"]["exclusion_criteria"][0]["variable"] = "prior_event_before_t0"
+        with self.assertRaises(ContractError) as raised:
+            self.service.runner.validate(missing_variable)
+        self.assertEqual(raised.exception.code, "UNAVAILABLE_ELIGIBILITY_VARIABLE")
+
+    def test_authentication_input_and_path_gates(self):
+        self.assertEqual(self.client.get("/").status_code, 401)
+        self.assertEqual(self.client.get("/", headers=self.mcp_auth).status_code, 401)
+        self.assertEqual(self.client.post("/mcp", headers=self.web_auth, json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).status_code, 401)
+        self.assertEqual(self.client.post("/runs", headers={**self.web_auth, "Origin": "https://wrong.example"}, data=self.form()).status_code, 400)
+        self.assertEqual(self.client.post("/runs", headers=self.web_auth, json={"patient_file": "forbidden"}).status_code, 400)
+        self.assertEqual(self.client.post("/runs", headers=self.web_auth, data={**self.form(), "patient_id": "x"}).status_code, 400)
+        self.assertEqual(self.client.post("/runs", headers=self.web_auth, data=self.form(cases="5001")).status_code, 400)
+        changed = json.loads(json.dumps(PROTOCOL))
+        changed["time_zero"]["day_offset"] = 1
+        self.assertEqual(self.client.post("/validate", headers=self.web_auth, data=self.form(changed)).status_code, 400)
+        with self.assertRaises(ContractError):
+            self.service.runner.artifact_path("a" * 32, "../../secrets/web_password")
+        self.assertTrue(self.service.runner._slot.acquire(blocking=False))
         try:
             with self.assertRaises(ContractError) as raised:
-                runner.run({"template_version": "1.0", "scenario": "synthetic_tutorial_v1", "case_count": 1, "seed": 1, "simulation_label": SIMULATION_LABEL})
+                self.service.runner.start(PROTOCOL, cases=1000, seed=42, bootstrap_iterations=20)
             self.assertEqual(raised.exception.code, "BUSY")
         finally:
-            runner._slot.release()
+            self.service.runner._slot.release()
 
-    def test_build_provenance_requires_valid_commit(self):
-        self.assertEqual(_code_provenance(), ("b" * 40, False))
+    def test_build_provenance_and_interrupted_restart(self):
+        self.assertEqual(code_provenance(), ("b" * 40, False))
         with mock.patch.dict(os.environ, {"EMULATRX_CODE_COMMIT": "bad"}):
             with self.assertRaises(ContractError):
-                _code_provenance()
+                code_provenance()
+        run_id = "c" * 32
+        path = self.service.runner.root / run_id
+        path.mkdir()
+        (path / "status.json").write_text(json.dumps({"run_id": run_id, "state": "running"}))
+        recovered = TTERunner(self.service.runner.root)
+        self.assertEqual(recovered.get(run_id)["state"], "interrupted")
 
 
 if __name__ == "__main__":
