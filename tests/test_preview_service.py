@@ -17,7 +17,7 @@ from starlette.testclient import TestClient
 
 from emulatrx_tte._common import ContractError, code_provenance
 from emulatrx_preview.tte_runner import TTERunner
-from emulatrx_preview.tte_views import curves_svg
+from emulatrx_preview.tte_views import curves_svg, report_view
 from emulatrx_preview.web_protocol import default_fields
 
 
@@ -156,6 +156,14 @@ class PreviewServiceTests(unittest.TestCase):
         for expected in ("研究方案与分析报告", "研究方案", "合成数据与分析方法", "筛选与诊断", "各时点对比估计", "方法限制与版本", "emulatrx-preview:"):
             self.assertIn(expected, readable_report.text)
         self.assertNotIn("<textarea", readable_report.text)
+        self.assertIn("运行特定警示", readable_report.text)
+        alerted = json.loads(json.dumps(result))
+        alerted["estimates"]["methodological_warnings"]["competing_mortality_divergence_alert"] = {
+            "triggered": True, "detail": "Contrast-specific scientific warning"}
+        alerted_report = report_view(alerted, self.service.runner.root)
+        self.assertIn("本次运行触发竞争事件分歧警示", alerted_report)
+        self.assertIn("本次 sHR", alerted_report)
+        self.assertIn("Contrast-specific scientific warning", alerted_report)
         downloaded_report = self.client.get(f"/runs/{run_id}/report?download=1", headers=self.web_auth)
         self.assertEqual(downloaded_report.status_code, 200)
         self.assertIn("attachment", downloaded_report.headers["content-disposition"])
@@ -205,10 +213,13 @@ class PreviewServiceTests(unittest.TestCase):
         self.assertEqual(self.client.get(f"/runs/{started['run_id']}/artifacts/estimates/estimates.json", headers=self.web_auth).status_code, 404)
         page = self.client.get(f"/runs/{started['run_id']}", headers=self.web_auth)
         self.assertIn("估计结果与曲线不生成", page.text)
+        self.assertIn("正性门禁未通过", page.text)
+        self.assertIn("技术详情：门禁代码和原始诊断", page.text)
         self.assertNotIn("完整审计报告", page.text)
         blocked_report = self.client.get(f"/runs/{started['run_id']}/report", headers=self.web_auth)
         self.assertEqual(blocked_report.status_code, 200)
         self.assertIn("门禁未通过，不生成估计", blocked_report.text)
+        self.assertIn("正性门禁未通过", blocked_report.text)
         self.assertNotIn("各时点对比估计", blocked_report.text)
 
     def test_edited_eligibility_actually_changes_screening_and_blocks_empty_risk_set(self):
@@ -250,6 +261,7 @@ class PreviewServiceTests(unittest.TestCase):
         page = self.client.get(f"/runs/{run_id}", headers=self.web_auth)
         self.assertIn(fields["study_title"], page.text)
         self.assertIn("估计结果与曲线不生成", page.text)
+        self.assertIn("入排筛选后至少一个比较策略没有合格合成记录", page.text)
         self.assertNotIn("目标 RD（95%区间）", page.text)
 
     def test_authentication_input_and_path_gates(self):

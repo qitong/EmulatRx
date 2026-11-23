@@ -280,6 +280,49 @@ def attrition_table(result):
                  {"step": "筛选步骤", "remaining": "剩余行数", "excluded": "本步排除", "arms": "各策略行数"})
 
 
+def gate_failure_view(diagnostic, protocol):
+    """Explain blocked estimates in Chinese; retain exact machine reasons in disclosure."""
+    gates = protocol["estimand"]["diagnostic_gates"]
+    propensity = diagnostic.get("propensity_diagnostics", {})
+    ess = diagnostic.get("ess_diagnostics", {})
+    explanations = {
+        "NO_ELIGIBLE_SYNTHETIC_RISK_SET": "入排筛选后至少一个比较策略没有合格合成记录，无法建立两臂风险集。请放宽筛选条件后重试。",
+        "ZERO_RISK_SET": "时间零点后至少一个策略的风险集为空，无法比较两臂。请检查筛选与时间零点。",
+        "POSITIVITY_VIOLATION": ("正性门禁未通过：观察到的倾向分数范围为 "
+                                  f"{_fmt(propensity.get('min_propensity'))}–{_fmt(propensity.get('max_propensity'))}；"
+                                  f"方案要求远离 0 和 1，正性下界为 {esc(gates['positivity_epsilon'])}。"),
+        "ESS_RATIO_BELOW_MIN": ("有效样本量门禁未通过：最小 ESS 比为 "
+                                f"{_fmt(ess.get('min_ess_ratio_observed'))}，低于方案下限 {esc(gates['min_ess_ratio'])}。"),
+        "SMD_EXCEEDS_MAX": ("协变量均衡门禁未通过：加权后最大 |SMD| 为 "
+                            f"{_fmt(diagnostic.get('max_abs_smd_weighted'))}，高于方案上限 {esc(gates['max_abs_smd'])}。"),
+    }
+    failures = diagnostic.get("gate_failures", [])
+    items = "".join(f"<li>{explanations.get(item.get('code'), '其他诊断门禁未通过；请查看技术详情。')}</li>"
+                    for item in failures if isinstance(item, dict))
+    if not items:
+        items = "<li>诊断门禁未通过；请检查方案与技术详情。</li>"
+    raw = esc(json.dumps(failures, ensure_ascii=False, indent=2))
+    return (f"<ul>{items}</ul><details class='technical-details print-hide'><summary>技术详情：门禁代码和原始诊断</summary>"
+            f"<pre>{raw}</pre></details>")
+
+
+def warning_view(warnings, comparison):
+    """Carry methodological and run-specific warnings into both readable surfaces."""
+    parts = ["<p>亚分布风险比 sHR 与原因别风险比 csHR 使用不同风险集；风险比要与目标和竞争事件的累计发生率一同阅读。"
+             "csHR 条件于仍无事件者，存在事件后选择问题。规则检查无法发现未测混杂、测量误差或信息性删失。</p>"]
+    alert = warnings.get("competing_mortality_divergence_alert", {})
+    if alert.get("triggered"):
+        first = comparison[0] if comparison else {}
+        parts.append("<div class='error'><strong>本次运行触发竞争事件分歧警示。</strong>"
+                     "<p>合成比较策略的目标事件 sHR 下降，但目标 csHR 未同步下降，竞争事件 csHR 升高。"
+                     "目标事件累计发生率降低可能由竞争事件更早发生造成，不能视为直接保护作用。"
+                     f"本次 sHR {_fmt(first.get('shr_primary'))}、目标 csHR {_fmt(first.get('cshr_primary'))}、"
+                     f"竞争 csHR {_fmt(first.get('cshr_competing'))}。</p></div>")
+    parts.append("<details class='technical-details print-hide'><summary>技术详情：原始方法警示</summary>"
+                 f"<pre>{esc(json.dumps(warnings, ensure_ascii=False, indent=2))}</pre></details>")
+    return "".join(parts)
+
+
 def report_view(result, root):
     """Self-contained, print-friendly scientific reading surface, with no JSON required."""
     run_id = result["run_id"]
@@ -320,8 +363,12 @@ def report_view(result, root):
                       "必须与目标和竞争事件 CIF 一起阅读。</p>"])
     else:
         parts.append("<div class='error'><strong>诊断门禁未通过，不生成估计。</strong>"
-                     f"<p>{esc(json.dumps(diagnostic.get('gate_failures', []), ensure_ascii=False))}</p></div>")
-    parts.extend(["<h2>六、方法限制与版本</h2>"
+                     + gate_failure_view(diagnostic, result["normalized_protocol"]) + "</div>")
+    if result["gate_status"] == "passed":
+        parts.append("<h2>六、运行特定警示</h2>" + warning_view(
+            result["estimates"]["methodological_warnings"],
+            result["estimates"]["co_presented_comparison_table"]))
+    parts.extend(["<h2>七、方法限制与版本</h2>"
                   "<p>仅检查可观察的方案结构和时间规则；不能识别未测混杂、测量误差或信息性删失。"
                   "Bootstrap 区间固定第一阶段倾向权重，未计入其模型估计不确定性。"
                   "所有阈值和数字仅用于合成教学，不得解释为临床决策依据。</p>"
@@ -401,7 +448,7 @@ def result_view(result, root):
                                              {"covariate": "合成变量", "abs_smd_unweighted": "加权前 |SMD|", "abs_smd_weighted": "加权后 |SMD|"}))
     if gate == "blocked":
         parts.append("<div class='error'><strong>诊断门禁未通过。估计结果与曲线不生成。</strong>"
-                     f"<pre>{esc(json.dumps(diagnostic.get('gate_failures', []), ensure_ascii=False, indent=2))}</pre></div>")
+                     + gate_failure_view(diagnostic, result["normalized_protocol"]) + "</div>")
         parts.append(f"<p><a href='{base}diagnostics/diagnostics_summary.json'>下载诊断</a> · <a href='{base}diagnostics/balance_diagnostics.csv'>下载均衡表</a> · <a href='{base}screen/eligibility_attrition.csv'>下载筛选流失表</a></p>")
     else:
         active_id = result["normalized_protocol"]["treatment_strategies"][1]["id"]
@@ -414,10 +461,8 @@ def result_view(result, root):
         parts.append(comparison_table(result))
         parts.append("<p>sHR 与 csHR 描述不同的风险集；所有数值仅来自合成基准，不能解释为真实治疗效果。Bootstrap 区间固定已估计的基线倾向权重，不包含重新拟合倾向模型的不确定性。</p>")
         warnings = result["estimates"]["methodological_warnings"]
-        parts.append("<h3>方法限制与警示</h3>"
-                     "<p>风险比需要结合目标及竞争事件的累计发生率解读；csHR 的风险集受事件后选择影响，"
-                     "sHR 的降低也可能来自竞争事件增多。可观察的门禁不能排除未测混杂、测量误差或信息性删失。</p>"
-                     f"<details><summary>查看完整方法警示（技术详情）</summary><pre>{esc(json.dumps(warnings, ensure_ascii=False, indent=2))}</pre></details>")
+        parts.append("<h3>方法限制与警示</h3>" + warning_view(
+            warnings, result["estimates"]["co_presented_comparison_table"]))
         report = (root / "estimates" / "audit_report.md").read_text(encoding="utf-8")
         parts.append(f"<h2 id='audit'>7 · 完整审计报告</h2><p><a href='/runs/{run_id}/report'>阅读和打印中文研究方案与分析报告</a> · <a href='{base}estimates/audit_report.md'>下载审计 Markdown</a> · <a href='{base}estimates/estimates.json'>下载完整估计 JSON</a> · <a href='{base}estimates/run_manifest.json'>下载估计清单</a></p><details><summary>查看完整审计 Markdown（技术详情）</summary><pre>{esc(report)}</pre></details>")
     parts.append(f"<h2>产物与清单</h2><p>可下载产物 {len(result['available_artifacts'])} 项；审计提交 {esc(result['preview_manifest']['code_commit'])}。</p>")
