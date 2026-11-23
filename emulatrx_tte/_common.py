@@ -17,10 +17,19 @@ import tempfile
 
 
 PROTOCOL_VERSION = "1.0"
-PACKAGE_VERSION = "0.1.0"
+PACKAGE_VERSION = "0.2.0"
 MAX_PROTOCOL_BYTES = 64 * 1024
 MAX_SYNTH_CASES = 20000
+MAX_BOOTSTRAP_ITERATIONS = 5000
 MAX_SEED = 2**32 - 1
+
+SOURCE_MODE_SYNTHETIC_ONLY = "synthetic_only"
+
+PROHIBITED_CLAIMS = (
+    "非真实患者数据 (not_real_patient_data: synthetic-only benchmark cohort; contains zero real-world patient records)",
+    "非临床疗效证据 (not_clinical_efficacy_evidence: must never be cited or interpreted as clinical treatment efficacy or safety evidence)",
+    "非因果实证证明 (not_causal_proof: observable-rule checks, propensity balance, and sensitivity E-values do not prove absence of unmeasured confounding or causal validity)",
+)
 
 METHODOLOGICAL_DISCLAIMER = (
     "Methodological boundary: observable-rule checking detects only structural/timestamp "
@@ -32,9 +41,25 @@ METHODOLOGICAL_DISCLAIMER = (
 class ContractError(Exception):
     """Deterministic contract / input validation error mapped to CLI exit code 2."""
 
+    exit_code = 2
+
     def __init__(self, code: str, detail: str):
         super().__init__(detail)
         self.code = code
+
+
+class GateBlockedError(Exception):
+    """Fail-closed statistical / upstream diagnostic gate block mapped to CLI exit code 3."""
+
+    exit_code = 3
+
+    def __init__(self, code: str, detail: str, *, gate_failures: list[dict] | None = None):
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
+        self.gate_failures = (
+            list(gate_failures) if gate_failures is not None else [{"code": code, "detail": detail}]
+        )
 
 
 def is_strict_int(value: object) -> bool:

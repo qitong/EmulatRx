@@ -49,3 +49,9 @@ python -m emulatrx_tte diagnose \
 1. **Observable-rule checking boundary**: `validate-protocol` and `diagnose` detect only structural and explicit timestamp rule violations in supplied metadata/columns (`assessed_day_offset > landmark_day`). They cannot detect unmeasured confounding, measurement error, informative censoring, or prove causal validity.
 2. **Synthetic DGP boundary**: `dgp_truth.json` records `synthetic_dgp_parameters` generated from `np.random.default_rng(seed)` for estimator verification only; it contains zero patient data and carries zero clinical meaning.
 3. **E-value competing-risks boundary**: `emulatrx_tte.evalue.compute_evalue` supports `"RR"`, `"RR_CIF"`, and single-event `"HR"` (fixing the `0.5 ** sqrt(HR)` exponentiation formula in `emulation_utils.py::calculate_evalues`). It explicitly rejects Fine–Gray `"sHR"` and competing-risks `"csHR"` / `"HR"` when `outcome_incidence > 0.15` (`UNSUPPORTED_EVALUE_MEASURE`), requiring explicit horizon `"RR_CIF"` instead. An E-value never proves absence of unmeasured confounding.
+
+## Competing-Risks Estimation & External Agent Contract (Issue #9)
+
+For `python -m emulatrx_tte estimate`, `python -m emulatrx_tte run-synthetic`, weighted Aalen–Johansen CIF, Fine–Gray `sHR`, cause-specific Cox `csHR`, and external Agent invocation rules, see:
+- [`docs/tte-cli-and-agent-contract-v1.md`](tte-cli-and-agent-contract-v1.md)
+- [`skills/emulatrx-tte/SKILL.md`](../skills/emulatrx-tte/SKILL.md)
