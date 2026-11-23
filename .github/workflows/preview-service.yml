@@ -16,7 +16,7 @@ jobs:
   arm64-image:
     runs-on: ubuntu-24.04-arm
     env:
-      TTE_DEPENDENCY_COMMIT: fedbc754a1fea22bde559b2575c462829db23f95
+      TTE_DEPENDENCY_COMMIT: 152af0610d4317cd18691da1173cd297566fee09
     steps:
       - uses: actions/checkout@v4
         with:

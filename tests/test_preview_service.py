@@ -37,7 +37,7 @@ class PreviewServiceTests(unittest.TestCase):
             "EMULATRX_CODE_COMMIT": "b" * 40,
             "EMULATRX_CODE_DIRTY": "false",
             "EMULATRX_ALLOWED_HOSTS": "testserver",
-            "EMULATRX_TTE_DEPENDENCY_COMMIT": "fedbc754a1fea22bde559b2575c462829db23f95",
+            "EMULATRX_TTE_DEPENDENCY_COMMIT": "152af0610d4317cd18691da1173cd297566fee09",
         })
         patch.start()
         self.addCleanup(patch.stop)
