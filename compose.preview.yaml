@@ -19,7 +19,7 @@ services:
     tmpfs:
       - /tmp:size=16m,mode=1777
     ports:
-      - "127.0.0.1:8602:8000"
+      - "${EMULATRX_BIND_IP:-127.0.0.1}:8602:8000"
     environment:
       EMULATRX_WEB_PASSWORD_FILE: /run/secrets/web_password
       EMULATRX_MCP_TOKEN_FILE: /run/secrets/mcp_token
