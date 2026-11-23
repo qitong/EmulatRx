@@ -1,6 +1,6 @@
 {
   "protocol_version": "1.0",
-  "study_title": "Synthetic two-arm TTE preview with competing mortality and explicit eligibility screening",
+  "study_title": "两策略竞争风险目标试验模拟教学方案",
   "simulation_or_data_label": "教学与方法学合成基准，非真实患者数据、非临床疗效证据",
   "eligibility": {
     "inclusion_criteria": [
@@ -33,12 +33,12 @@
   "treatment_strategies": [
     {
       "id": "strategy_control",
-      "label": "Synthetic Comparator Regimen A",
+      "label": "合成对照策略 A",
       "role": "control"
     },
     {
       "id": "strategy_active",
-      "label": "Synthetic Active Regimen B",
+      "label": "合成比较策略 B",
       "role": "active"
     }
   ],

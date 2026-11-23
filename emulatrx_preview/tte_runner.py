@@ -2,6 +2,7 @@
 
 import base64
 import csv
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -138,7 +139,8 @@ class TTERunner:
             (path / "protocol.json").write_bytes(_bytes(protocol))
             status = {"run_id": run_id, "state": "queued", "kind": "synthetic_tte",
                       "case_count": cases, "seed": seed, "bootstrap_iterations": bootstrap_iterations,
-                      "weight_method": weight_method, "gate_status": None}
+                      "weight_method": weight_method, "gate_status": None, "stage": "queued",
+                      "started_utc": datetime.now(timezone.utc).isoformat(timespec="seconds")}
             self._write_status(path, status)
             threading.Thread(target=self._execute, args=(path, status, normalized), daemon=True).start()
             return status
@@ -172,19 +174,26 @@ class TTERunner:
     def _execute(self, path, status, protocol):
         try:
             status = dict(status, state="running")
-            self._write_status(path, status)
+
+            def advance(stage):
+                status["stage"] = stage
+                self._write_status(path, status)
+
+            advance("protocol_validation")
             deadline = time.monotonic() + RUN_TIMEOUT_SECONDS
             env = {**os.environ, "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}
             protocol_path = str(path / "protocol.json")
             prefix = [sys.executable, "-m", "emulatrx_tte"]
             self._command([*prefix, "validate-protocol", "--protocol", protocol_path,
                            "--out", str(path / "protocol_check")], deadline, env)
+            advance("synthetic_generation")
             self._command([*prefix, "synth", "--protocol", protocol_path, "--seed", str(status["seed"]),
                            "--cases", str(status["case_count"]), "--out", str(path / "cohort")], deadline, env)
             cohort_file = path / "cohort" / "cohort.csv"
             cohort_manifest = json.loads((path / "cohort" / "run_manifest.json").read_text(encoding="utf-8"))
             if cohort_manifest["output_sha256"]["cohort.csv"] != _sha256(cohort_file):
                 raise RuntimeError("generated cohort hash mismatch")
+            advance("eligibility_screening")
             screen = screen_cohort(protocol, cohort_file, path / "screen")
             status["cohort_rows"] = screen["generated_rows"]
             status["eligible_rows"] = screen["eligible_rows"]
@@ -195,6 +204,7 @@ class TTERunner:
                 self._empty_eligibility_gate(path, screen)
                 status["gate_status"] = "blocked"
             else:
+                advance("diagnostics")
                 diag_code = self._command([*prefix, "diagnose", "--protocol", protocol_path,
                                            "--cohort", str(eligible_file), "--weight-method", "overlap",
                                            "--out", str(path / "diagnostics")], deadline, env, permitted=(0, 3))
@@ -203,6 +213,7 @@ class TTERunner:
                 if diag_manifest["cohort_sha256"] != _sha256(eligible_file) or diag_manifest["gate_status"] != status["gate_status"]:
                     raise RuntimeError("diagnostic input or gate hash mismatch")
                 if diag_code == 0:
+                    advance("estimation")
                     self._command([*prefix, "estimate", "--protocol", protocol_path,
                                    "--diagnostics-dir", str(path / "diagnostics"), "--seed", str(status["seed"]),
                                    "--bootstrap-iterations", str(status["bootstrap_iterations"]),
@@ -210,6 +221,7 @@ class TTERunner:
                     est_manifest = json.loads((path / "estimates" / "run_manifest.json").read_text(encoding="utf-8"))
                     if est_manifest["diagnostics_manifest_sha256"] != _sha256(path / "diagnostics" / "run_manifest.json"):
                         raise RuntimeError("estimate diagnostic lineage mismatch")
+            advance("artifact_audit")
             files = [p for p in path.rglob("*") if p.is_file()]
             total_bytes = sum(p.stat().st_size for p in files)
             if total_bytes > MAX_ARTIFACT_BYTES:
@@ -225,9 +237,18 @@ class TTERunner:
                                           if p.name != "status.json" and not p.name.startswith(".status-")}}
             (path / "preview_manifest.json").write_bytes(_bytes(manifest))
             status["state"] = "completed" if status["gate_status"] == "passed" else "blocked"
+            status["stage"] = "complete"
+            status["finished_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
             self._write_status(path, status)
-        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired, TimeoutError, ContractError):
-            self._write_status(path, dict(status, state="failed", error="TTE execution failed or exceeded resource limits"))
+        except (subprocess.TimeoutExpired, TimeoutError):
+            self._write_status(path, dict(status, state="failed", error="运行超过 90 秒，请减少队列行数或 Bootstrap 次数。",
+                                          finished_utc=datetime.now(timezone.utc).isoformat(timespec="seconds")))
+        except ContractError as exc:
+            self._write_status(path, dict(status, state="failed", error=f"{exc.code}: {exc}",
+                                          finished_utc=datetime.now(timezone.utc).isoformat(timespec="seconds")))
+        except (OSError, ValueError, RuntimeError):
+            self._write_status(path, dict(status, state="failed", error="运行在当前阶段失败；请检查方案、门禁或资源配额。",
+                                          finished_utc=datetime.now(timezone.utc).isoformat(timespec="seconds")))
         finally:
             self._slot.release()
 

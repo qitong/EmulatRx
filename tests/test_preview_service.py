@@ -7,6 +7,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 import time
 import unittest
@@ -16,11 +17,32 @@ from starlette.testclient import TestClient
 
 from emulatrx_tte._common import ContractError, code_provenance
 from emulatrx_preview.tte_runner import TTERunner
+from emulatrx_preview.tte_views import curves_svg
+from emulatrx_preview.web_protocol import default_fields
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PROTOCOL = json.loads((ROOT / "examples" / "tte_preview_v1.json").read_text(encoding="utf-8"))
-ELEMENT_KEYS = ("eligibility", "time_zero", "treatment_strategies", "assignment_mode", "followup", "outcomes", "estimand")
+class CurveRenderingTests(unittest.TestCase):
+    def test_cif_uses_event_time_steps_without_dropping_intermediate_jumps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "curve.csv"
+            with path.open("w", encoding="utf-8", newline="") as stream:
+                writer = csv.DictWriter(stream, fieldnames=["treatment_arm", "time_day", "cif_primary"])
+                writer.writeheader()
+                for day in range(201):
+                    writer.writerow({"treatment_arm": "strategy_active", "time_day": day,
+                                     "cif_primary": day / 500})
+            markup = curves_svg([path], "cif_primary", "目标事件 CIF")
+        self.assertNotIn("<polyline", markup)
+        path_data = re.search(r"<path class='cif-step' d='([^']+)'", markup)
+        self.assertIsNotNone(path_data)
+        commands = path_data.group(1)
+        self.assertEqual(commands.count(" H"), 201)
+        self.assertEqual(commands.count(" V"), 201)
+        self.assertNotIn(" L", commands)
+        self.assertIn("H43.1 V239.6 H46.2 V239.2", commands)
+        self.assertTrue(commands.endswith("H660.0 V156.0"))
 
 
 class PreviewServiceTests(unittest.TestCase):
@@ -51,8 +73,9 @@ class PreviewServiceTests(unittest.TestCase):
 
     def form(self, protocol=None, cases="2000", bootstrap="100"):
         protocol = protocol or PROTOCOL
-        values = {"study_title": protocol["study_title"], "cases": cases, "seed": "42", "bootstrap_iterations": bootstrap}
-        values.update({key: json.dumps(protocol[key]) for key in ELEMENT_KEYS})
+        values = default_fields(protocol)
+        values["cases"] = cases
+        values["bootstrap_iterations"] = bootstrap
         return values
 
     def wait_run(self, run_id):
@@ -77,9 +100,22 @@ class PreviewServiceTests(unittest.TestCase):
         self.assertEqual(home.status_code, 200)
         self.assertIn("七要素", home.text)
         self.assertIn("非真实患者", home.text)
+        for expected in ("方案 → 运行 → 结果", "默认示例", "2,000 行", "10 列", "954 行", "全量 CSV 下载"):
+            self.assertIn(expected, home.text)
+        self.assertIn("载入可运行的合成教学实例", home.text)
+        editor = self.client.get("/protocol/new", headers=self.web_auth)
+        self.assertEqual(editor.status_code, 200)
+        self.assertNotIn("<textarea", editor.text)
+        for expected in ("目标人群", "时间零点", "比较策略", "目标事件与竞争事件", "随访与评估时点", "目标估计量", "诊断门禁", "合成标准化年龄指标"):
+            self.assertIn(expected, editor.text)
         validated = self.client.post("/validate", headers=self.web_auth, data=self.form())
         self.assertEqual(validated.status_code, 200, validated.text[:300])
-        self.assertIn("规范化方案", validated.text)
+        self.assertIn("运行前方案摘要", validated.text)
+        self.assertIn("确认并运行合成 TTE", validated.text)
+        self.assertIn("技术详情：规范化方案 JSON", validated.text)
+        edited = self.client.post("/protocol/edit", headers=self.web_auth, data=self.form())
+        self.assertEqual(edited.status_code, 200)
+        self.assertIn("合成 TTE 教学方案", edited.text)
         created = self.client.post("/runs", headers=self.web_auth, data=self.form(), follow_redirects=False)
         self.assertEqual(created.status_code, 303, created.text)
         run_id = created.headers["location"].split("/")[-1]
@@ -88,6 +124,8 @@ class PreviewServiceTests(unittest.TestCase):
         self.assertEqual(result["gate_status"], "passed")
         self.assertEqual(result["cohort_rows"], 2000)
         self.assertEqual(result["eligible_rows"], 954)
+        self.assertIn("T", result["started_utc"])
+        self.assertIn("T", result["finished_utc"])
         self.assertGreaterEqual(len(result["cohort_columns"]), 10)
         self.assertEqual(result["preview_manifest"]["code_commit"], "b" * 40)
         self.assertEqual(result["diagnostics"]["gate_status"], "passed")
@@ -99,8 +137,28 @@ class PreviewServiceTests(unittest.TestCase):
         self.assertLessEqual(row["cif_primary_active"] + row["cif_competing_active"], 1)
         result_page = self.client.get(created.headers["location"], headers=self.web_auth)
         self.assertEqual(result_page.status_code, 200)
-        for expected in ("2000 行", "954 行", "筛选流失", "倾向分数分布", "目标事件 CIF", "竞争事件 CIF", "RD", "RR(CIF)", "sHR", "csHR", "rd_primary_ci_lower", "方法限制与警示", "完整审计报告"):
+        for expected in ("2000 行", "954 行", "筛选流失", "倾向分数分布", "目标事件 CIF", "竞争事件 CIF", "RD", "RR(CIF)", "sHR", "csHR", "目标 RD（95%区间）", "方法限制与警示", "完整审计报告"):
             self.assertIn(expected, result_page.text)
+        for expected in ("本次运行概览", "10 列", "下载完整生成队列 CSV", "诊断与门禁", "指定时点对比估计", "查看完整规范化 JSON"):
+            self.assertIn(expected, result_page.text)
+        self.assertLess(result_page.text.index("本次运行概览"), result_page.text.index("查看完整规范化 JSON"))
+        self.assertIn("分页查看全部记录", result_page.text)
+        self.assertIn("阅读、打印或下载研究方案与分析报告", result_page.text)
+        self.assertIn("class='cif-step'", result_page.text)
+        cohort_page = self.client.get(f"/runs/{run_id}/cohort?page=1", headers=self.web_auth)
+        self.assertEqual(cohort_page.status_code, 200)
+        self.assertEqual(cohort_page.text.count("<tr>"), 26)  # header plus 25 records
+        self.assertIn("下一页", cohort_page.text)
+        self.assertIn("合成标准化年龄指标", cohort_page.text)
+        self.assertEqual(self.client.get(f"/runs/{run_id}/cohort?page=999", headers=self.web_auth).status_code, 404)
+        readable_report = self.client.get(f"/runs/{run_id}/report", headers=self.web_auth)
+        self.assertEqual(readable_report.status_code, 200)
+        for expected in ("研究方案与分析报告", "研究方案", "合成数据与分析方法", "筛选与诊断", "各时点对比估计", "方法限制与版本", "emulatrx-preview:"):
+            self.assertIn(expected, readable_report.text)
+        self.assertNotIn("<textarea", readable_report.text)
+        downloaded_report = self.client.get(f"/runs/{run_id}/report?download=1", headers=self.web_auth)
+        self.assertEqual(downloaded_report.status_code, 200)
+        self.assertIn("attachment", downloaded_report.headers["content-disposition"])
         cohort = self.client.get(f"/runs/{run_id}/artifacts/cohort/cohort.csv", headers=self.web_auth)
         self.assertEqual(cohort.status_code, 200)
         rows = list(csv.DictReader(cohort.text.splitlines()))
@@ -148,6 +206,10 @@ class PreviewServiceTests(unittest.TestCase):
         page = self.client.get(f"/runs/{started['run_id']}", headers=self.web_auth)
         self.assertIn("估计结果与曲线不生成", page.text)
         self.assertNotIn("完整审计报告", page.text)
+        blocked_report = self.client.get(f"/runs/{started['run_id']}/report", headers=self.web_auth)
+        self.assertEqual(blocked_report.status_code, 200)
+        self.assertIn("门禁未通过，不生成估计", blocked_report.text)
+        self.assertNotIn("各时点对比估计", blocked_report.text)
 
     def test_edited_eligibility_actually_changes_screening_and_blocks_empty_risk_set(self):
         protocol = json.loads(json.dumps(PROTOCOL))
@@ -170,6 +232,26 @@ class PreviewServiceTests(unittest.TestCase):
             self.service.runner.validate(premature_criterion)
         self.assertEqual(raised.exception.code, "ELIGIBILITY_MEASUREMENT_AFTER_ASSESSMENT")
 
+    def test_human_form_edits_drive_screening_without_exposing_estimates_on_block(self):
+        fields = self.form(cases="1000", bootstrap="20")
+        fields["study_title"] = "中文教学：严格筛选后无合格记录"
+        fields["inc_value"] = "3.5"
+        review = self.client.post("/validate", headers=self.web_auth, data=fields)
+        self.assertEqual(review.status_code, 200)
+        self.assertIn(fields["study_title"], review.text)
+        self.assertIn("3.5", review.text)
+        created = self.client.post("/runs", headers=self.web_auth, data=fields, follow_redirects=False)
+        self.assertEqual(created.status_code, 303)
+        run_id = created.headers["location"].rsplit("/", 1)[-1]
+        result = self.wait_run(run_id)
+        self.assertEqual(result["state"], "blocked")
+        self.assertEqual(result["eligible_rows"], 0)
+        self.assertNotIn("estimates", result)
+        page = self.client.get(f"/runs/{run_id}", headers=self.web_auth)
+        self.assertIn(fields["study_title"], page.text)
+        self.assertIn("估计结果与曲线不生成", page.text)
+        self.assertNotIn("目标 RD（95%区间）", page.text)
+
     def test_authentication_input_and_path_gates(self):
         self.assertEqual(self.client.get("/").status_code, 401)
         self.assertEqual(self.client.get("/", headers=self.mcp_auth).status_code, 401)
@@ -178,9 +260,14 @@ class PreviewServiceTests(unittest.TestCase):
         self.assertEqual(self.client.post("/runs", headers=self.web_auth, json={"patient_file": "forbidden"}).status_code, 400)
         self.assertEqual(self.client.post("/runs", headers=self.web_auth, data={**self.form(), "patient_id": "x"}).status_code, 400)
         self.assertEqual(self.client.post("/runs", headers=self.web_auth, data=self.form(cases="5001")).status_code, 400)
-        changed = json.loads(json.dumps(PROTOCOL))
-        changed["time_zero"]["day_offset"] = 1
-        self.assertEqual(self.client.post("/validate", headers=self.web_auth, data=self.form(changed)).status_code, 400)
+        changed = self.form()
+        changed["horizon_1"] = "700"
+        self.assertEqual(self.client.post("/validate", headers=self.web_auth, data=changed).status_code, 400)
+        wrong_binary = self.form()
+        wrong_binary["exc_value"] = "3"
+        validation_error = self.client.post("/validate", headers=self.web_auth, data=wrong_binary)
+        self.assertEqual(validation_error.status_code, 400)
+        self.assertIn("二元标记只能与 0 或 1 比较", validation_error.text)
         with self.assertRaises(ContractError):
             self.service.runner.artifact_path("a" * 32, "../../secrets/web_password")
         self.assertTrue(self.service.runner._slot.acquire(blocking=False))
