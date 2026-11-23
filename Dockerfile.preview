@@ -11,7 +11,6 @@ RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin preview
 WORKDIR /app
 COPY requirements-preview.txt ./
 RUN pip install --no-cache-dir -r requirements-preview.txt
-COPY emulatrx_demo ./emulatrx_demo
 COPY emulatrx_tte ./emulatrx_tte
 COPY emulatrx_preview ./emulatrx_preview
 COPY examples/tte_preview_v1.json ./examples/tte_preview_v1.json
