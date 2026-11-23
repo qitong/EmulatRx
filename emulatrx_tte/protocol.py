@@ -36,7 +36,9 @@ REQUIRED_ROOT_FIELDS = (
 )
 OPTIONAL_ROOT_FIELDS = ("covariates", "methodological_disclaimer")
 ALLOWED_OPERATORS = frozenset(("==", "!=", "<", "<=", ">", ">=", "in", "not_in"))
-ALLOWED_ROLES = frozenset(("control", "reference", "active", "experimental", "comparator"))
+REFERENCE_ROLES = frozenset(("control", "reference", "comparator"))
+INVESTIGATIONAL_ROLES = frozenset(("active", "experimental"))
+ALLOWED_ROLES = REFERENCE_ROLES | INVESTIGATIONAL_ROLES
 ALLOWED_ASSIGNMENT_MODES = frozenset(("observational_baseline", "observational_landmark"))
 ALLOWED_COMPETING_HANDLING = frozenset(("none", "explicit_cif_and_subdistribution"))
 ALLOWED_ESTIMANDS = frozenset(("ATE", "ATO", "PAIRWISE_ATO", "GENERALIZED_ATO"))
@@ -211,6 +213,14 @@ def validate_protocol_dict(obj: dict) -> dict:
             "INVALID_ASSIGNMENT_MODE",
             f"assignment_mode must be one of {sorted(ALLOWED_ASSIGNMENT_MODES)}",
         )
+    if assignment_mode == "observational_baseline" and landmark_day != 0:
+        raise ContractError(
+            "INVALID_TIME_ZERO",
+            f"assignment_mode='observational_baseline' requires time_zero.landmark_day == 0 "
+            f"(got {landmark_day}) so post-time-zero eligibility criteria and covariates cannot "
+            "bypass baseline checks. Hint: Set time_zero.landmark_day=0 for baseline assignment, "
+            "or set assignment_mode='observational_landmark' for an explicit landmark design.",
+        )
     if assignment_mode == "observational_landmark" and landmark_day <= 0:
         raise ContractError(
             "INVALID_ASSIGNMENT_MODE",
@@ -277,6 +287,23 @@ def validate_protocol_dict(obj: dict) -> dict:
                 raise ContractError("INVALID_TYPE", f"{ctx}.description must be a string")
             norm_s["description"] = strat["description"]
         norm_strategies.append(norm_s)
+
+    ref_indices = [idx for idx, s in enumerate(norm_strategies) if s["role"] in REFERENCE_ROLES]
+    if len(ref_indices) != 1:
+        raise ContractError(
+            "INVALID_STRATEGIES",
+            f"treatment_strategies must contain exactly 1 reference/comparator strategy with role in "
+            f"{sorted(REFERENCE_ROLES)} (found {len(ref_indices)}). "
+            f"Hint: Designate the single reference arm as 'control'/'comparator'/'reference' at index 0 "
+            f"and mark remaining arm(s) with role in {sorted(INVESTIGATIONAL_ROLES)}.",
+        )
+    if ref_indices[0] != 0:
+        raise ContractError(
+            "INVALID_STRATEGIES",
+            f"The reference/comparator strategy ('{norm_strategies[ref_indices[0]]['id']}', "
+            f"role='{norm_strategies[ref_indices[0]]['role']}') must be placed first "
+            "(treatment_strategies[0]) to match deterministic reference arm indexing.",
+        )
 
     # 5. followup
     followup = obj["followup"]

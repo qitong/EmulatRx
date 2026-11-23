@@ -70,6 +70,30 @@
     "treatment_strategies": {
       "type": "array",
       "minItems": 2,
+      "prefixItems": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "label", "role"],
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$"
+            },
+            "label": {
+              "type": "string",
+              "minLength": 1
+            },
+            "role": {
+              "type": "string",
+              "enum": ["control", "reference", "comparator"]
+            },
+            "description": {
+              "type": "string"
+            }
+          }
+        }
+      ],
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -85,7 +109,7 @@
           },
           "role": {
             "type": "string",
-            "enum": ["control", "reference", "active", "experimental", "comparator"]
+            "enum": ["active", "experimental"]
           },
           "description": {
             "type": "string"
@@ -210,6 +234,41 @@
       "type": "string"
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "assignment_mode": {"const": "observational_baseline"}
+        }
+      },
+      "then": {
+        "properties": {
+          "time_zero": {
+            "properties": {
+              "landmark_day": {"const": 0}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "assignment_mode": {"const": "observational_landmark"}
+        }
+      },
+      "then": {
+        "properties": {
+          "time_zero": {
+            "required": ["landmark_day"],
+            "properties": {
+              "landmark_day": {"type": "integer", "minimum": 1}
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "criterion": {
       "type": "object",

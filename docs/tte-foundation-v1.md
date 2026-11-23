@@ -34,7 +34,7 @@ python -m emulatrx_tte diagnose \
 | Exit Code | Meaning | Output Directory Behavior |
 | --- | --- | --- |
 | `0` | Success (`validate-protocol`, `synth`, or `diagnose` with `gate_status: "passed"`) | Full outputs + `run_manifest.json` atomically published |
-| `2` | `ContractError` (malformed JSON, missing `time_zero`, `POST_TIME_ZERO_ELIGIBILITY`, `UNHANDLED_COMPETING_EVENT`, `MISSING_HORIZON`, `POST_LANDMARK_COVARIATE_LEAK`, etc.) | Nothing published; temporary stage cleaned up |
+| `2` | `ContractError` (malformed JSON, missing `time_zero`, `INVALID_TIME_ZERO` such as `observational_baseline` with `landmark_day > 0`, `POST_TIME_ZERO_ELIGIBILITY`, `INVALID_STRATEGIES` including missing/ambiguous/non-index-0 `control`/`comparator`/`reference` arm, `UNHANDLED_COMPETING_EVENT`, `MISSING_HORIZON`, `POST_LANDMARK_COVARIATE_LEAK`, etc.) | Nothing published; temporary stage cleaned up |
 | `3` | Statistical diagnostic gate blocked (`POSITIVITY_VIOLATION`, `ESS_RATIO_BELOW_MIN`, `SMD_EXCEEDS_MAX`, or `ZERO_RISK_SET`) | Publishes `attrition_table.csv`, `balance_diagnostics.csv`, `diagnostics_summary.json` (`gate_status: "blocked"`), and `run_manifest.json`, omitting `weighted_cohort.csv` |
 
 ## Supported Weighting Methods

@@ -176,6 +176,48 @@ class TTEProtocolContractTests(unittest.TestCase):
             validate_protocol_dict(one_strat)
         self.assertEqual(ctx.exception.code, "INVALID_STRATEGIES")
 
+        # 6b. All-'active' strategies (missing reference/comparator role), duplicate reference roles,
+        #     or non-index-0 reference arm -> INVALID_STRATEGIES (exit code 2)
+        both_active = copy.deepcopy(self.protocol)
+        both_active["treatment_strategies"][0]["role"] = "active"
+        both_active["treatment_strategies"][1]["role"] = "active"
+        p_both_active = self.write_protocol(both_active, "both_active.json")
+        r_active = self.run_cli(
+            "validate-protocol", ["--protocol", str(p_both_active), "--out", str(self.base / "o_active")]
+        )
+        self.assertEqual(r_active.returncode, 2)
+        self.assertIn("INVALID_STRATEGIES", r_active.stderr)
+        self.assertFalse((self.base / "o_active").exists())
+
+        two_refs = copy.deepcopy(self.protocol)
+        two_refs["treatment_strategies"][0]["role"] = "control"
+        two_refs["treatment_strategies"][1]["role"] = "comparator"
+        with self.assertRaises(ContractError) as ctx_two_refs:
+            validate_protocol_dict(two_refs)
+        self.assertEqual(ctx_two_refs.exception.code, "INVALID_STRATEGIES")
+
+        swapped_ref = copy.deepcopy(self.protocol)
+        swapped_ref["treatment_strategies"][0]["role"] = "active"
+        swapped_ref["treatment_strategies"][1]["role"] = "control"
+        with self.assertRaises(ContractError) as ctx_swap:
+            validate_protocol_dict(swapped_ref)
+        self.assertEqual(ctx_swap.exception.code, "INVALID_STRATEGIES")
+
+        # 6c. observational_baseline with positive landmark_day=30 (even with day-20 post-baseline
+        #     eligibility/covariates) MUST fail with INVALID_TIME_ZERO (exit code 2)
+        baseline_with_landmark = copy.deepcopy(self.protocol)
+        baseline_with_landmark["assignment_mode"] = "observational_baseline"
+        baseline_with_landmark["time_zero"]["landmark_day"] = 30
+        baseline_with_landmark["eligibility"]["inclusion_criteria"][0]["assessed_day_offset"] = 20
+        baseline_with_landmark["covariates"][0]["assessed_day_offset"] = 20
+        p_base_lm = self.write_protocol(baseline_with_landmark, "baseline_with_landmark.json")
+        r_base_lm = self.run_cli(
+            "validate-protocol", ["--protocol", str(p_base_lm), "--out", str(self.base / "o_base_lm")]
+        )
+        self.assertEqual(r_base_lm.returncode, 2)
+        self.assertIn("INVALID_TIME_ZERO", r_base_lm.stderr)
+        self.assertFalse((self.base / "o_base_lm").exists())
+
         # 7. Missing or out-of-range diagnostic gates & existing output preservation
         bad_gate = copy.deepcopy(self.protocol)
         bad_gate["estimand"]["diagnostic_gates"]["positivity_epsilon"] = 0.55
@@ -386,7 +428,7 @@ class TTESyntheticAndWeightingTests(unittest.TestCase):
     def test_multi_arm_generalized_overlap_vs_pairwise_overlap_transitivity_metadata(self):
         proto_3arm = copy.deepcopy(self.protocol)
         proto_3arm["treatment_strategies"].append(
-            {"id": "strategy_alt", "label": "Synthetic Regimen C", "role": "comparator"}
+            {"id": "strategy_alt", "label": "Synthetic Regimen C", "role": "experimental"}
         )
         proto_3arm["estimand"]["target_estimand"] = "GENERALIZED_ATO"
         proto_3arm_path = self.base / "proto_3arm.json"
