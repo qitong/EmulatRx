@@ -10,18 +10,35 @@ import math
 
 from sklearn.linear_model import LogisticRegression, LinearRegression
 from sklearn.metrics import roc_auc_score
-import statsmodels.api as sm
-from lifelines import KaplanMeierFitter
-import matplotlib.pyplot as plt
-import seaborn as sns
-import causallib
-from causallib.estimation import IPW, Standardization, StratifiedStandardization
-from causallib.estimation import AIPW, PropensityFeatureStandardization, WeightedStandardization
-from causallib.evaluation import evaluate
 from sklearn.model_selection import train_test_split
-from sksurv.ensemble import RandomSurvivalForest
+from lifelines import KaplanMeierFitter
 from lifelines.utils import survival_table_from_events
 from joblib import Parallel, delayed
+
+try:
+    import statsmodels.api as sm
+except ImportError:  # pragma: no cover - optional outside full notebook env
+    sm = None
+
+try:
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+except ImportError:  # pragma: no cover - optional outside full notebook env
+    plt = None
+    sns = None
+
+try:
+    import causallib
+    from causallib.estimation import IPW, Standardization, StratifiedStandardization
+    from causallib.estimation import AIPW, PropensityFeatureStandardization, WeightedStandardization
+    from causallib.evaluation import evaluate
+except ImportError:  # pragma: no cover - optional outside full notebook env
+    causallib = None
+
+try:
+    from sksurv.ensemble import RandomSurvivalForest
+except ImportError:  # pragma: no cover - optional outside full notebook env
+    RandomSurvivalForest = None
 
 
 def check_balance_after_matching(X, all_vars, treatment_col):
@@ -132,43 +149,6 @@ def matching_propensity(X, unbalanced_covariates, treatment_col, N=1, allow_repe
         caliper = 1 * mad(flat_distances)        
     pairs = match_pairs(distances, treated_idx, control_idx, N=N, caliper=caliper)
     return pairs, X_ps
-
-
-def perform_balancing_method(df, continuous_variables, categorical_variables, treatment_col, use_caliper=True, smd_threshold=0.1, matching_ratio='1:1'):
-    # Scaling continuous variables
-    scaler = sklearn.preprocessing.MinMaxScaler()
-    X = df.copy(deep=True)
-    X[continuous_variables] = scaler.fit_transform(X[continuous_variables])
-    # Matching Based on Propensity Scores
-    all_vars = continuous_variables + categorical_variables
-    balances = check_balance_after_matching(X, all_vars, treatment_col)
-    if matching_ratio == '1:1':
-        Ns = [1]
-    elif matching_ratio == '1:2':
-        Ns = [2]
-    elif matching_ratio == '1:3':
-        Ns = [3]
-    elif matching_ratio == '1:4':
-        Ns = [4]
-    for N in Ns:
-        threshs = [0]
-        thresh_dict = dict.fromkeys(threshs)
-        for thresh in threshs:
-            thresh_dict[thresh] = {}
-            balances_tuples = balances[balances > thresh]
-            unbalanced_covariates = list(balances_tuples.sort_values(ascending=False).index)
-            matched_pairs, X_ps = matching_propensity(X, unbalanced_covariates, treatment_col, N=N, use_caliper=use_caliper)
-            matched_indices = [idx for pair in matched_pairs for idx in pair]
-            X_matched = X_ps.loc[matched_indices].reset_index(drop=True)
-            new_balances = check_balance_after_matching(X_matched, all_vars, treatment_col)
-            new_balances_tuples = new_balances[new_balances > smd_threshold]
-            new_unbalanced_covariates = list(new_balances_tuples.sort_values(ascending=False).index)
-            thresh_dict[thresh]['data'] = X_matched
-            thresh_dict[thresh]['unbalanced_covars'] = new_unbalanced_covariates
-            if len(new_unbalanced_covariates) == 0:
-                return X_matched, scaler
-    min_key, items = min(thresh_dict.items(), key=lambda x: len(x[1]['unbalanced_covars']))
-    return items['data'], scaler
 
 
 def perform_balancing_method(df, continuous_variables, categorical_variables, treatment_col, use_caliper=True, smd_threshold=0.1, matching_ratio='1:1'):
@@ -928,13 +908,24 @@ def compute_cox_sample_size(df, treatment_col, outcome_col, duration_col, HR,
     }
 
 
-def calculate_evalues(balanced_df: pd.DataFrame, primary_outcome_col: str, hr: float):
+def calculate_evalues(
+    balanced_df: pd.DataFrame,
+    primary_outcome_col: str,
+    hr: float,
+    ci_lower: float = None,
+    ci_upper: float = None,
+):
     """
     Calculates the E-value for a given hazard ratio (HR) and its confidence interval.
 
     This function assesses the robustness of an observed hazard ratio to unmeasured confounding.
     It automatically determines whether the outcome is "rare" or "common" based on its
-    incidence in the provided DataFrame and applies the appropriate E-value formula.
+    incidence in the provided DataFrame and applies the appropriate E-value formula
+    (VanderWeele & Ding, Ann Intern Med 2017;167:268-274).
+
+    Note: Single-event HR-to-RR conversion assumes absence of competing risks when
+    outcome incidence > 0.15; for competing-risks settings, use emulatrx_tte.evalue.compute_evalue
+    with explicit horizon RR_CIF.
 
     Args:
         balanced_df (pd.DataFrame): A pandas DataFrame containing the study data.
@@ -942,11 +933,11 @@ def calculate_evalues(balanced_df: pd.DataFrame, primary_outcome_col: str, hr: f
                                     of the population for incidence calculation.
         primary_outcome_col (str): The name of the column in balanced_df that
                                    represents the primary outcome (1 for event, 0 for no event).
-        hr (float): The observed hazard ratio (point estimate).
+        hr (float): The observed hazard ratio (point estimate, strictly > 0).
         ci_lower (float, optional): The lower bound of the confidence interval for the HR.
-                                    If provided, an E-value for this limit will be calculated.
+                                    If provided, an E-value for the CI bound closer to null is calculated.
         ci_upper (float, optional): The upper bound of the confidence interval for the HR.
-                                    If provided, an E-value for this limit will be calculated.
+                                    If provided, an E-value for the CI bound closer to null is calculated.
 
     Returns:
         dict: A dictionary containing the E-value for the point estimate and,
@@ -955,54 +946,76 @@ def calculate_evalues(balanced_df: pd.DataFrame, primary_outcome_col: str, hr: f
     """
     if primary_outcome_col not in balanced_df.columns:
         raise ValueError(f"Outcome column '{primary_outcome_col}' not found in the DataFrame.")
+    if hr is None or not np.isfinite(hr) or hr <= 0:
+        raise ValueError("Hazard ratio 'hr' must be a finite positive number.")
+    if ci_lower is not None and (not np.isfinite(ci_lower) or ci_lower <= 0):
+        raise ValueError("'ci_lower' must be a finite positive number when provided.")
+    if ci_upper is not None and (not np.isfinite(ci_upper) or ci_upper <= 0):
+        raise ValueError("'ci_upper' must be a finite positive number when provided.")
+    if ci_lower is not None and ci_upper is not None and ci_lower > ci_upper:
+        raise ValueError("'ci_lower' cannot exceed 'ci_upper'.")
 
     # --- Step 1: Calculate Outcome Incidence ---
     # Determine if the outcome is "rare" or "common".
     # The threshold is typically set at 15%.
-    outcome_incidence = balanced_df[primary_outcome_col].mean()
+    outcome_incidence = float(balanced_df[primary_outcome_col].mean())
     is_rare = outcome_incidence <= 0.15
 
     results = {
         "outcome_incidence": f"{outcome_incidence:.4f}",
-        "is_rare_outcome": is_rare,
+        "is_rare_outcome": bool(is_rare),
         "calculation_method": "Direct HR" if is_rare else "HR to RR Approximation",
-        "e_values": {}
+        "e_values": {},
     }
 
     # --- Step 2: Define Helper Function for E-value Calculation ---
     def get_e_value(effect_measure, is_rare_outcome):
         """
-        Helper function to calculate E-value based on the effect measure.
-        This version contains the corrected logic.
+        Helper function to calculate E-value based on the effect measure
+        per VanderWeele & Ding (Ann Intern Med 2017).
         """
-        # First, determine the point estimate to be used for the E-value calculation.
-        # For common outcomes, we must first approximate the Risk Ratio (RR) from the HR.
+        effect_measure = float(effect_measure)
         if not is_rare_outcome:
-            # Formula to approximate RR from HR for common outcomes
-            # This conversion must happen before we check for protective effects.
-            if effect_measure == 1: # Avoid division by zero if HR is exactly 1
-                point_estimate = 1
+            if effect_measure == 1.0:
+                point_estimate = 1.0
             else:
-                point_estimate = (1 - 0.5 * np.sqrt(effect_measure)) / (1 - 0.5 * np.sqrt(1 / effect_measure))
+                point_estimate = (
+                    (1.0 - 0.5 ** np.sqrt(effect_measure))
+                    / (1.0 - 0.5 ** np.sqrt(1.0 / effect_measure))
+                )
         else:
-            # For rare outcomes, HR is a good approximation of RR.
             point_estimate = effect_measure
 
-        # Now, if the resulting point estimate is protective (< 1),
-        # we work with its reciprocal for the E-value formula.
-        if point_estimate < 1:
-            point_estimate = 1 / point_estimate
-            
-        # If point_estimate is 1, the E-value is 1.
-        if point_estimate == 1:
+        if point_estimate < 1.0:
+            point_estimate = 1.0 / point_estimate
+
+        if point_estimate == 1.0:
             return 1.0
 
-        # E-value formula: E = RR + sqrt(RR * (RR - 1))
-        e_value = point_estimate + np.sqrt(point_estimate * (point_estimate - 1))
-        return e_value
+        e_value = point_estimate + np.sqrt(point_estimate * (point_estimate - 1.0))
+        return float(e_value)
 
     # --- Step 3: Calculate E-value for the Point Estimate (HR) ---
     e_value_hr = get_e_value(hr, is_rare)
     results["e_values"]["point_estimate"] = f"{e_value_hr:.4f}"
+
+    # --- Step 4: Calculate E-value for CI Limit Closer to Null (if CI supplied) ---
+    if ci_lower is not None or ci_upper is not None:
+        if ci_lower is not None and ci_upper is not None:
+            if ci_lower <= 1.0 <= ci_upper:
+                ci_evalue = 1.0
+            elif ci_lower > 1.0:
+                ci_evalue = get_e_value(ci_lower, is_rare)
+            else:
+                ci_evalue = get_e_value(ci_upper, is_rare)
+        elif ci_lower is not None:
+            if hr < 1.0:
+                raise ValueError("'ci_upper' is required to evaluate bound closer to null when hr < 1.0.")
+            ci_evalue = 1.0 if ci_lower <= 1.0 else get_e_value(ci_lower, is_rare)
+        else:
+            if hr > 1.0:
+                raise ValueError("'ci_lower' is required to evaluate bound closer to null when hr > 1.0.")
+            ci_evalue = 1.0 if ci_upper >= 1.0 else get_e_value(ci_upper, is_rare)
+        results["e_values"]["ci_limit_closer_to_null"] = f"{ci_evalue:.4f}"
 
     return results
