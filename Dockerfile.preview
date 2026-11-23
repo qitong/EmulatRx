@@ -1,0 +1,15 @@
+FROM python:3.11-slim
+ARG CODE_COMMIT
+RUN case "$CODE_COMMIT" in *[!0-9a-f]*|'') exit 1;; esac && test "${#CODE_COMMIT}" -eq 40
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 EMULATRX_CODE_DIRTY=false
+ENV EMULATRX_CODE_COMMIT=$CODE_COMMIT EMULATRX_RUNS_DIR=/data
+LABEL org.opencontainers.image.source="https://github.com/qitong/EmulatRx"
+RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin preview
+WORKDIR /app
+COPY requirements-preview.txt ./
+RUN pip install --no-cache-dir -r requirements-preview.txt
+COPY emulatrx_demo ./emulatrx_demo
+COPY emulatrx_preview ./emulatrx_preview
+USER 10001:10001
+EXPOSE 8000
+CMD ["uvicorn", "emulatrx_preview.app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--no-access-log"]

@@ -1,0 +1,6 @@
+*
+!emulatrx_demo/
+!emulatrx_demo/**
+!emulatrx_preview/
+!emulatrx_preview/**
+!requirements-preview.txt

@@ -75,6 +75,15 @@ def _validate(obj):
 
 
 def _code_provenance():
+    # Container images embed the exact source revision at build time. A missing
+    # or malformed value is an error, never an invitation to invent a revision.
+    image_commit = os.environ.get("EMULATRX_CODE_COMMIT")
+    if image_commit is not None:
+        if not re.fullmatch(r"[0-9a-f]{40}", image_commit):
+            raise ContractError("CODE_VERSION_UNAVAILABLE", "invalid image commit")
+        if os.environ.get("EMULATRX_CODE_DIRTY") != "false":
+            raise ContractError("CODE_VERSION_UNAVAILABLE", "image source state is not clean")
+        return image_commit, False
     root = Path(__file__).resolve().parents[1]
     try:
         result = subprocess.run(

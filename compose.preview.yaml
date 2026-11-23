@@ -1,0 +1,41 @@
+name: emulatrx-preview
+services:
+  preview:
+    build:
+      context: .
+      dockerfile: Dockerfile.preview
+      args:
+        CODE_COMMIT: ${EMULATRX_CODE_COMMIT:?Set tested full commit SHA}
+    image: emulatrx-preview:${EMULATRX_CODE_COMMIT:?Set tested full commit SHA}
+    init: true
+    restart: unless-stopped
+    read_only: true
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 1.0
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    ports:
+      - "127.0.0.1:8602:8000"
+    environment:
+      EMULATRX_WEB_PASSWORD_FILE: /run/secrets/web_password
+      EMULATRX_MCP_TOKEN_FILE: /run/secrets/mcp_token
+      EMULATRX_ALLOWED_HOSTS: ${EMULATRX_ALLOWED_HOSTS:?Set private Tailscale host and local loopback hosts}
+    secrets:
+      - web_password
+      - mcp_token
+    volumes:
+      - /opt/emulatrx-preview/data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+secrets:
+  web_password:
+    file: /opt/emulatrx-preview/secrets/web_password
+  mcp_token:
+    file: /opt/emulatrx-preview/secrets/mcp_token
