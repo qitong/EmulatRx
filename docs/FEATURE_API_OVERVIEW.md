@@ -147,7 +147,7 @@
 
 ### 能力卡 10：`emulatrx_tte.estimate`（Fail-Closed 加权竞争风险生存分析工作台｜#9 本 PR 实现）
 - **当前 Agent 可调状态**：**已在本分支实现并通过离线 CI（待异构复核与启曈审阅合入 `main`）**
-- **用途**：对通过上游 `diagnose` 门禁校验的加权队列同时估计目标事件（`1`）与竞争死亡（`2`）的加权 Aalen–Johansen 累计发生率曲线（`CIF_1(t)`、`CIF_2(t)` 及有偏 `1-KM` 对照参考）、指定时点绝对风险差 `RD(t)` 与累计发生率比 `RR_CIF(t)`（含确定性同种子个体级 Bootstrap CI 及可选 `--censoring-ipcw` 联合删失加权敏感性模式）、Fine–Gray 亚分布比例风险比（`sHR`，反向 KM IPCW 风险集 + 个体聚类稳健方差）、目标/竞争原因特异加权 Cox（`csHR_1`、`csHR_2`）及 `RR_CIF(t)` E-value 敏感性参考，强制同表并列展示并输出防误读警示。
+- **用途**：对通过上游 `diagnose` 门禁校验的加权队列同时估计目标事件（`1`）与竞争死亡（`2`）的加权 Aalen–Johansen 累计发生率曲线（`CIF_1(t)`、`CIF_2(t)` 及有偏 `1-KM` 对照参考）、指定时点绝对风险差 `RD(t)` 与累计发生率比 `RR_CIF(t)`（含确定性同种子个体级分层 Bootstrap CI：固定复用 `weighted_cohort.csv` 第一阶段基线倾向权重 `baseline_propensity_weights="fixed"`，在开启 `--censoring-ipcw` 时逐次重估删失权重）、Fine–Gray 亚分布比例风险比（`sHR`，反向 KM / 联合稳定化 IPCW 风险集 + 个体聚类稳健方差）、目标/竞争原因特异加权 Cox（`csHR_1`、`csHR_2`）及 `RR_CIF(t)` E-value 敏感性参考，强制同表并列展示并输出防误读警示。
 - **调用入口**：`python -m emulatrx_tte estimate --protocol <json_path> --diagnostics-dir <diag_dir> [--weighted-cohort <csv_path>] --seed <int> --bootstrap-iterations <1..5000> [--horizons h1,h2,...] [--censoring-ipcw none|arm_stratified|covariate_cox] [--ci-level 0.95] --out <new_dir>`（Python SDK：`emulatrx_tte.estimate_competing_risks`、`weighted_aalen_johansen_cif`、`fit_fine_gray_shr`、`fit_weighted_cause_specific_cox`）。
 - **最小输入**：声明 `competing_event_handling="explicit_cif_and_subdistribution"` 的合法协议 JSON、通过门禁的 `diagnostics_dir`、显式整数随机种子、Bootstrap 次数与新输出目录。
 - **主要输出**：stdout 单行 JSON（`status: "tte_competing_risks_estimated"`）；新目录原子产出 `estimates.json`（锁定 `source_mode: "synthetic_only"`、`prohibited_claims`、`co_presented_comparison_table`、`methodological_warnings`）、`curves/*.csv`、`audit_report.md`、`run_manifest.json`。

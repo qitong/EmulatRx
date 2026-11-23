@@ -793,7 +793,10 @@ def fit_fine_gray_shr(
             ipcw_ratio = g_at_ev1[:, m0:m1] / g_at_ti[:, None]
 
         ipcw_ratio = np.clip(ipcw_ratio, 0.0, 1.0)
-        w_comp = comp_prior * (w_arr[:, None] * ipcw_ratio)
+        # Multiply by w_nat (= w_i * M_i(t_m) under covariate_cox, or w_i otherwise) so subjects
+        # remaining in follow-up and subjects retained after prior competing events share identical
+        # stabilized censoring weights: w_i * M_i(t_m) * G_i(t_m-)/G_i(T_i-) = w_i * G_{A_i}(t_m-)/G_i(T_i-).
+        w_comp = comp_prior * (w_nat * ipcw_ratio)
         return d_ch, still_at_risk + w_comp
 
     return _fit_weighted_counting_process_cox(
@@ -1161,7 +1164,9 @@ def _render_audit_report_md(estimates: dict) -> str:
         f"- **Censoring IPCW Mode**: `{estimates['censoring_model']['censoring_ipcw_mode']}`",
         f"- **Bootstrap Configuration**: `seed={estimates['bootstrap_config']['seed']}`, "
         f"`iterations={estimates['bootstrap_config']['bootstrap_iterations']}`, "
-        f"`ci_level={estimates['bootstrap_config']['ci_level']}`",
+        f"`ci_level={estimates['bootstrap_config']['ci_level']}`, "
+        f"`baseline_propensity_weights={estimates['bootstrap_config']['baseline_propensity_weights']}`, "
+        f"`censoring_ipcw_reestimated_in_bootstrap={estimates['bootstrap_config']['censoring_ipcw_reestimated_in_bootstrap']}`",
         "- **Prohibited Claims (`prohibited_claims`)**:",
     ]
     for claim in estimates["prohibited_claims"]:
@@ -1202,16 +1207,17 @@ def _render_audit_report_md(estimates: dict) -> str:
             f"1. **亚分布风险与高竞争死亡防误读警示 (sHR vs csHR)**: {mw['subdistribution_vs_cause_specific_warning']}",
             f"2. **风险比固有选择偏倚警示 (Hernán 2010)**: {mw['hazard_ratio_selection_bias_warning']}",
             f"3. **删失假设与联合 IPCW 敏感性说明**: {estimates['censoring_model']['independence_assumption']}",
-            f"4. **E-value 敏感性参考边界**: 仅基于指定时点累计发生率比 `RR_CIF(t)` 计算累计发生总效应敏感性参考值；显式拒绝直接对 `sHR` 套用单事件公式，且拒绝在竞争风险累计发生率 `> 0.15` 时对 `HR`/`csHR` 套用单事件转换。{mw['observable_rule_disclaimer']}",
+            f"4. **Bootstrap 置信区间条件范围 (`baseline_propensity_weights=fixed`)**: {estimates['bootstrap_config']['variance_scope_note']}",
+            f"5. **E-value 敏感性参考边界**: 仅基于指定时点累计发生率比 `RR_CIF(t)` 计算累计发生总效应敏感性参考值；显式拒绝直接对 `sHR` 套用单事件公式，且拒绝在竞争风险累计发生率 `> 0.15` 时对 `HR`/`csHR` 套用单事件转换。{mw['observable_rule_disclaimer']}",
         ]
     )
     if mw["competing_mortality_divergence_alert"]["triggered"]:
         lines.append(
-            f"5. **竞争死亡分歧自动告警 (`competing_mortality_divergence_alert`)**: "
+            f"6. **竞争死亡分歧自动告警 (`competing_mortality_divergence_alert`)**: "
             f"{mw['competing_mortality_divergence_alert']['detail']}"
         )
     if estimates["transitivity_warning"]:
-        lines.append(f"6. **多臂成对加权非传递性警示**: {estimates['transitivity_warning']}")
+        lines.append(f"7. **多臂成对加权非传递性警示**: {estimates['transitivity_warning']}")
 
     lines.append("")
     return "\n".join(lines)
@@ -1945,6 +1951,23 @@ def estimate_competing_risks(
             "bootstrap_iterations": bootstrap_iterations,
             "ci_level": ci_level_f,
             "sampling_unit": "individual_subject_stratified_by_arm",
+            "baseline_propensity_weights": "fixed",
+            "censoring_ipcw_reestimated_in_bootstrap": bool(censoring_ipcw != "none"),
+            "variance_scope_note": (
+                "Bootstrap confidence intervals resample individual subjects stratified by treatment arm "
+                "while holding Stage-1 baseline propensity/overlap weights from weighted_cohort.csv fixed "
+                "(baseline_propensity_weights='fixed'; propensity models are not re-estimated per replicate, "
+                "so CIs are conditional on estimated Stage-1 baseline weights and exclude first-stage "
+                "propensity estimation uncertainty). "
+                + (
+                    "Under censoring_ipcw='none', no censoring IPCW model is fitted in bootstrap replicates."
+                    if censoring_ipcw == "none"
+                    else (
+                        f"Under censoring_ipcw='{censoring_ipcw}', censoring survival IPCW weights are "
+                        "re-estimated within each bootstrap replicate."
+                    )
+                )
+            ),
         },
         "evalue_policy": {
             "supported_competing_risks_measure": "RR_CIF",

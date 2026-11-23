@@ -153,6 +153,9 @@ class TTECompetingRisksBenchmarkTests(unittest.TestCase):
         estimates = json.loads((out_dir / "estimates.json").read_text(encoding="utf-8"))
         self.assertEqual(estimates["source_mode"], SOURCE_MODE_SYNTHETIC_ONLY)
         self.assertEqual(estimates["prohibited_claims"], list(PROHIBITED_CLAIMS))
+        self.assertEqual(estimates["bootstrap_config"]["baseline_propensity_weights"], "fixed")
+        self.assertFalse(estimates["bootstrap_config"]["censoring_ipcw_reestimated_in_bootstrap"])
+        self.assertIn("conditional on estimated Stage-1 baseline weights", estimates["bootstrap_config"]["variance_scope_note"])
 
         # 1. Verify probability conservation CIF_1 + CIF_2 + S == 1.0 across every exported curve row
         for arm_id in ("strategy_control", "strategy_active"):
@@ -419,6 +422,9 @@ class TTECompetingRisksBenchmarkTests(unittest.TestCase):
             self.assertEqual(r_lm.returncode, 0, r_lm.stderr)
             est_lm = json.loads((lm_out / "estimates.json").read_text(encoding="utf-8"))
             self.assertEqual(est_lm["censoring_model"]["censoring_ipcw_mode"], ipcw_mode)
+            self.assertEqual(est_lm["bootstrap_config"]["baseline_propensity_weights"], "fixed")
+            self.assertTrue(est_lm["bootstrap_config"]["censoring_ipcw_reestimated_in_bootstrap"])
+            self.assertIn("baseline_propensity_weights=fixed", (lm_out / "audit_report.md").read_text(encoding="utf-8"))
             self.assertEqual(est_lm["horizons_days"], [120.0, 240.0])
             c_lm = pd.read_csv(lm_out / "curves" / "cif_strategy_control.csv")
             self.assertAlmostEqual(float(c_lm["time_day"].iloc[0]), 30.0, places=6)
@@ -753,7 +759,197 @@ class TTECompetingRisksBenchmarkTests(unittest.TestCase):
         self.assertIn("emulatrx_tte.estimate", overview_text)
         self.assertIn("emulatrx_tte.run-synthetic", overview_text)
         self.assertIn("skills/emulatrx-tte/SKILL.md", overview_text)
+        self.assertIn("baseline_propensity_weights", contract_text)
         self.assertNotIn("能力卡 10（排队预告｜尚未合并）", overview_text)
+
+    def test_covariate_cox_fine_gray_joint_ipcw_score_oracle_and_sandwich_consistency(self):
+        """Regression test for Round 1 review: covariate_cox Fine-Gray unified IPCW risk set & Lin-Wei SE."""
+        from emulatrx_tte.competing_risks import (
+            _compute_covariate_censoring_survival_matrix,
+            _compute_stabilized_joint_ipcw_matrix,
+            _fit_weighted_counting_process_cox,
+        )
+
+        # Exact Round-1 review counterexample (rng=728, n=400, covariate-dependent censoring + prior competing events)
+        rng = np.random.default_rng(728)
+        n = 400
+        arm = np.array([0] * 200 + [1] * 200, dtype=np.int64)
+        X = rng.standard_normal((n, 1))
+        t1 = rng.exponential(scale=8.0, size=n)
+        t2 = rng.exponential(scale=10.0, size=n)
+        c_scale = 6.0 * np.exp(-1.2 * X[:, 0])
+        tc = np.minimum(rng.exponential(scale=c_scale, size=n), 30.0)
+        durations = np.minimum(np.minimum(t1, t2), tc)
+        events = np.zeros(n, dtype=np.int64)
+        events[(t1 <= t2) & (t1 <= tc)] = 1
+        events[(t2 < t1) & (t2 <= tc)] = 2
+        weights = np.ones(n, dtype=np.float64)
+        pos_floor = 0.001
+
+        self.assertGreater(int(np.sum(events == 1)), 80)
+        self.assertGreater(int(np.sum(events == 2)), 80)
+        self.assertGreater(int(np.sum(events == 0)), 100)
+
+        ev1_times = np.unique(durations[events == 1])
+        comp_mask = events == 2
+
+        # Build independent joint-weighted Fine-Gray risk-set matrix W_oracle(i, m) and failure matrix D_oracle(i, m):
+        # - Still in follow-up (T_i >= t_m): w_i * M_i(t_m) = w_i * G_{A_i}(t_m-) / G_i(t_m- | A_i, X_i)
+        # - Prior competing event (T_i < t_m, E_i == 2):
+        #     w_i * M_i(t_m) * clip(G_i(t_m- | A_i, X_i) / G_i(T_i- | A_i, X_i), 0, 1)
+        #   = w_i * G_{A_i}(t_m-) / G_i(T_i- | A_i, X_i)
+        m_nat = _compute_stabilized_joint_ipcw_matrix(
+            durations,
+            events,
+            arm,
+            2,
+            X,
+            weights,
+            ev1_times,
+            censoring_ipcw="covariate_cox",
+            admin_end_day=30.0,
+            positivity_floor=pos_floor,
+        )
+        g_ev1 = _compute_covariate_censoring_survival_matrix(
+            durations,
+            events,
+            arm,
+            2,
+            X,
+            weights,
+            ev1_times,
+            admin_end_day=30.0,
+            positivity_floor=pos_floor,
+        )
+        g_ti = np.ones(n, dtype=np.float64)
+        comp_idx = np.flatnonzero(comp_mask)
+        g_comp = _compute_covariate_censoring_survival_matrix(
+            durations,
+            events,
+            arm,
+            2,
+            X,
+            weights,
+            durations[comp_idx],
+            admin_end_day=30.0,
+            positivity_floor=pos_floor,
+        )
+        for pos, subj in enumerate(comp_idx):
+            g_ti[subj] = max(float(g_comp[subj, pos]), pos_floor)
+
+        g_arm_ev1 = np.ones((2, ev1_times.size), dtype=np.float64)
+        for k in (0, 1):
+            mk = arm == k
+            g_arm_ev1[k, :] = np.maximum(
+                compute_reverse_km_left_limit(durations[mk], events[mk], weights[mk], ev1_times),
+                pos_floor,
+            )
+
+        D_oracle = ((durations[:, None] == ev1_times[None, :]) & (events[:, None] == 1)) * (weights[:, None] * m_nat)
+        W_still = (durations[:, None] >= ev1_times[None, :]) * (weights[:, None] * m_nat)
+        W_comp_direct = (
+            (durations[:, None] < ev1_times[None, :])
+            & comp_mask[:, None]
+        ) * (weights[:, None] * (g_arm_ev1[arm, :] / g_ti[:, None]))
+        W_oracle = W_still + W_comp_direct
+
+        # Verify algebraic identity M_i(t_m) * clip(G_i(t_m-)/G_i(T_i-), 0, 1) == G_{A_i}(t_m-)/G_i(T_i-)
+        W_comp_factored = (
+            (durations[:, None] < ev1_times[None, :])
+            & comp_mask[:, None]
+        ) * (weights[:, None] * m_nat * np.clip(g_ev1 / g_ti[:, None], 0.0, 1.0))
+        np.testing.assert_allclose(W_comp_factored, W_comp_direct, rtol=1e-13, atol=1e-13)
+
+        z_float = arm.astype(np.float64)
+
+        def oracle_score_hess_se(beta: float) -> tuple[float, float, float]:
+            r = np.exp(z_float * beta)
+            D_m = np.sum(D_oracle, axis=0)
+            A = W_oracle * r[:, None]
+            S0 = np.sum(A, axis=0)
+            S1 = np.sum(A * z_float[:, None], axis=0)
+            zbar = S1 / S0
+            score_val = float(np.sum(D_oracle * z_float[:, None]) - np.sum(D_m * zbar))
+            hess_val = float(np.sum(D_m * zbar * (1.0 - zbar)))
+            h_im = A * (D_m / S0)[None, :]
+            u_i = np.sum((D_oracle - h_im) * (z_float[:, None] - zbar[None, :]), axis=1)
+            meat = (n / (n - 1.0)) * float(np.sum(u_i * u_i))
+            se_val = math.sqrt(meat) / hess_val
+            return score_val, hess_val, se_val
+
+        # Bisection root of independent oracle score equation
+        lo, hi = -2.0, 2.0
+        for _ in range(80):
+            mid = 0.5 * (lo + hi)
+            if oracle_score_hess_se(mid)[0] > 0.0:
+                lo = mid
+            else:
+                hi = mid
+        beta_oracle = 0.5 * (lo + hi)
+        _, _, se_oracle = oracle_score_hess_se(beta_oracle)
+
+        fit_cov = fit_fine_gray_shr(
+            durations,
+            events,
+            arm,
+            2,
+            weights,
+            censoring_ipcw="covariate_cox",
+            X_cov=X,
+            admin_end_day=30.0,
+            positivity_floor=pos_floor,
+        )
+        self.assertTrue(fit_cov["converged"])
+        beta_est = fit_cov["beta"][0]
+        se_est = fit_cov["se_robust"][0]
+
+        # Score residual at fit_fine_gray_shr beta MUST vanish to < 1e-10 and match oracle beta & Lin-Wei SE
+        score_at_est, _, _ = oracle_score_hess_se(beta_est)
+        self.assertLess(abs(score_at_est), 1e-10)
+        self.assertAlmostEqual(beta_est, beta_oracle, places=9)
+        self.assertAlmostEqual(se_est, se_oracle, places=9)
+
+        # Verify multi-chunk boundary invariance (chunk_size=7 across >15 chunks vs full matrix)
+        fit_small_chunk = _fit_weighted_counting_process_cox(
+            z_float[:, None],
+            int(ev1_times.size),
+            lambda m0, m1: (D_oracle[:, m0:m1], W_oracle[:, m0:m1]),
+            chunk_size=7,
+        )
+        self.assertAlmostEqual(fit_small_chunk["beta"][0], beta_est, places=11)
+        self.assertAlmostEqual(fit_small_chunk["se_robust"][0], se_est, places=11)
+
+        # Also verify arm_stratified mode score equation consistency on the same cohort with non-uniform weights
+        w_nonunif = 0.5 + rng.uniform(0.0, 1.5, size=n)
+        fit_strat = fit_fine_gray_shr(
+            durations,
+            events,
+            arm,
+            2,
+            w_nonunif,
+            censoring_ipcw="arm_stratified",
+            admin_end_day=30.0,
+            positivity_floor=pos_floor,
+        )
+        g_strat_ev1 = np.ones((2, ev1_times.size), dtype=np.float64)
+        g_strat_ti = np.ones(n, dtype=np.float64)
+        for k in (0, 1):
+            mk = arm == k
+            g_strat_ev1[k, :] = compute_reverse_km_left_limit(durations[mk], events[mk], w_nonunif[mk], ev1_times)
+            ck = mk & comp_mask
+            g_strat_ti[ck] = np.maximum(
+                compute_reverse_km_left_limit(durations[mk], events[mk], w_nonunif[mk], durations[ck]),
+                1e-15,
+            )
+        D_s = ((durations[:, None] == ev1_times[None, :]) & (events[:, None] == 1)) * w_nonunif[:, None]
+        W_s = (durations[:, None] >= ev1_times[None, :]) * w_nonunif[:, None] + (
+            (durations[:, None] < ev1_times[None, :]) & comp_mask[:, None]
+        ) * (w_nonunif[:, None] * np.clip(g_strat_ev1[arm, :] / g_strat_ti[:, None], 0.0, 1.0))
+        r_s = np.exp(z_float * fit_strat["beta"][0])
+        D_sm = np.sum(D_s, axis=0)
+        zbar_s = np.sum(W_s * r_s[:, None] * z_float[:, None], axis=0) / np.sum(W_s * r_s[:, None], axis=0)
+        score_strat = float(np.sum(D_s * z_float[:, None]) - np.sum(D_sm * zbar_s))
+        self.assertLess(abs(score_strat), 1e-10)
 
 
 if __name__ == "__main__":
