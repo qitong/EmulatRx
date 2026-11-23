@@ -17,5 +17,19 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
-      - run: docker build --platform linux/arm64 --build-arg CODE_COMMIT="$GITHUB_SHA" -f Dockerfile.preview -t emulatrx-preview:test .
-      - run: test "$(docker image inspect emulatrx-preview:test --format '{{.Architecture}}')" = arm64
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Build reviewed source revision
+        run: docker build --platform linux/arm64 --build-arg CODE_COMMIT="$(git rev-parse HEAD)" -f Dockerfile.preview -t "emulatrx-preview:$(git rev-parse HEAD)" .
+      - name: Check architecture and export exact image
+        run: |
+          test "$(docker image inspect "emulatrx-preview:$(git rev-parse HEAD)" --format '{{.Architecture}}')" = arm64
+          docker save "emulatrx-preview:$(git rev-parse HEAD)" | gzip -1 > emulatrx-preview-arm64.tar.gz
+          sha256sum emulatrx-preview-arm64.tar.gz > emulatrx-preview-arm64.tar.gz.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: emulatrx-preview-arm64
+          path: |
+            emulatrx-preview-arm64.tar.gz
+            emulatrx-preview-arm64.tar.gz.sha256
+          retention-days: 2
