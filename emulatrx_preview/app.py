@@ -185,6 +185,8 @@ def search_target_rcts(
 def start_simulated_rct_tte(
     nct_id: str = "",
     idea_text: str = "",
+    intervention: str = "",
+    comparator: str = "",
     cases: int = 1200,
     confounding_strength: str = "medium",
     effect_direction: str = "protective_moderate",
@@ -194,16 +196,18 @@ def start_simulated_rct_tte(
     bootstrap_iterations: int = 80,
     confirm_arm_mismatch: bool = False,
 ) -> dict:
-    pico = parse_research_idea_pico(idea_text) if idea_text.strip() else None
+    pico = parse_research_idea_pico(idea_text, explicit_comparator=comparator.strip()) if idea_text.strip() else None
     target_rct = None
     if nct_id.strip():
         target_rct = fetch_rct_by_nct(nct_id.strip())
-    elif pico:
+    elif pico or intervention.strip() or comparator.strip():
+        q_str = (pico or {}).get("search_query_en") or f"{intervention} {comparator}".strip()
         found = search_candidate_rcts(
-            pico["search_query_en"],
-            condition=pico["condition_query_en"],
-            intervention=pico["intervention_query_en"],
-            comparator=pico.get("comparator_query_en", ""),
+            q_str,
+            condition=(pico or {}).get("condition_query_en", ""),
+            intervention=intervention.strip() or (pico or {}).get("intervention_query_en", ""),
+            comparator=comparator.strip() or (pico or {}).get("comparator_query_en", ""),
+            project_mode=SOURCE_MODE_SIMULATED_COHORT,
             context_summary=pico,
             max_results=1,
         )
@@ -212,6 +216,9 @@ def start_simulated_rct_tte(
     return runner.start_simulated_cohort(
         target_rct=target_rct,
         pico=pico,
+        idea_text=idea_text,
+        intervention=intervention,
+        comparator=comparator,
         sim_config={
             "cases": cases,
             "confounding_strength": confounding_strength,
@@ -649,12 +656,22 @@ async def api_draft_mapping_or_protocol(request):
             )
         if pmode == SOURCE_MODE_SIMULATED_COHORT:
             pico = payload.get("pico") if isinstance(payload.get("pico"), dict) else None
-            if target_rct and (isinstance(pico, dict) or intr_ovr or comp_ovr):
-                pico_d = pico or {}
-                sim_intr = intr_ovr or str(pico_d.get("active_arm_label") or pico_d.get("intervention_query_en") or pico_d.get("intervention") or "").strip()
-                sim_comp = comp_ovr or str(pico_d.get("comparator_arm_label") or pico_d.get("comparator_query_en") or "").strip()
-                if not sim_comp and pico_d.get("comparator_explicit") is True:
-                    sim_comp = str(pico_d.get("comparator") or "").strip()
+            sim_cfg = dict(payload.get("sim_config")) if isinstance(payload.get("sim_config"), dict) else {}
+            if intr_ovr:
+                sim_cfg.setdefault("intervention", intr_ovr)
+            if comp_ovr:
+                sim_cfg.setdefault("comparator", comp_ovr)
+            proto_in = payload.get("protocol") if isinstance(payload.get("protocol"), dict) else None
+            eff_pico, sim_intr, sim_comp = runner.resolve_simulated_effective_pico(
+                pico=pico,
+                idea_text=str(payload.get("idea_text", "")),
+                intervention=intr_ovr,
+                comparator=comp_ovr,
+                sim_config=sim_cfg,
+                protocol=proto_in,
+                target_rct=target_rct,
+            )
+            if target_rct:
                 target_rct = verify_and_enrich_target_rct(
                     target_rct,
                     intervention=sim_intr,
@@ -662,7 +679,11 @@ async def api_draft_mapping_or_protocol(request):
                     project_mode=SOURCE_MODE_SIMULATED_COHORT,
                     confirm_arm_mismatch=confirm_mismatch,
                 )
-            proto, dgp = build_simulated_protocol_and_dgp(target_rct=target_rct, pico=pico)
+            proto, dgp = build_simulated_protocol_and_dgp(
+                target_rct=target_rct,
+                pico=eff_pico,
+                sim_config=sim_cfg,
+            )
             return JSONResponse(
                 {"project_mode": pmode, "protocol": proto, "dgp_preview": dgp, "target_rct": target_rct},
                 headers={"Cache-Control": "no-store"},
@@ -701,11 +722,8 @@ async def _launch_dual_run_payload(payload: dict, forced_mode: str | None = None
         )
     elif pmode == SOURCE_MODE_SIMULATED_COHORT:
         pico = payload.get("pico") if isinstance(payload.get("pico"), dict) else None
-        if pico is None and str(payload.get("idea_text", "")).strip():
-            pico = parse_research_idea_pico(
-                str(payload["idea_text"]),
-                explicit_comparator=comp_ovr,
-            )
+        idea_txt = str(payload.get("idea_text", ""))
+        proto_in = payload.get("protocol") if isinstance(payload.get("protocol"), dict) else None
         sim_config = dict(payload.get("sim_config")) if isinstance(payload.get("sim_config"), dict) else {}
         if intr_ovr:
             sim_config["intervention"] = intr_ovr
@@ -714,6 +732,10 @@ async def _launch_dual_run_payload(payload: dict, forced_mode: str | None = None
         status = runner.start_simulated_cohort(
             target_rct=target_rct,
             pico=pico,
+            idea_text=idea_txt,
+            intervention=intr_ovr,
+            comparator=comp_ovr,
+            protocol=proto_in,
             sim_config=sim_config,
             confirm_arm_mismatch=confirm_mismatch,
         )

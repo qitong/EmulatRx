@@ -590,15 +590,118 @@ class TTERunner:
             if changed:
                 _atomic_write_bytes(meta_file, _bytes(meta))
 
+    def resolve_simulated_effective_pico(
+        self,
+        *,
+        pico: dict | None = None,
+        idea_text: str = "",
+        intervention: str = "",
+        comparator: str = "",
+        sim_config: dict | None = None,
+        protocol: dict | None = None,
+        target_rct: dict | None = None,
+    ) -> tuple[dict | None, str, str]:
+        """Build a normalized effective PICO and (intervention, comparator) pair across all simulated request fields."""
+        from emulatrx_tte import normalize_intervention_spec, parse_research_idea_pico
+
+        cfg = dict(sim_config or {})
+        trct = target_rct if isinstance(target_rct, dict) else {}
+        trct_exp0 = str((trct.get("experimental_arms") or [""])[0]).strip()
+        trct_comp0 = str((trct.get("comparator_arms") or [""])[0]).strip()
+
+        # Extract explicit overrides from top-level fields and sim_config
+        cfg_act_lbl = str(cfg.get("active_label") or cfg.get("treatment_label") or "").strip()
+        cfg_comp_lbl = str(cfg.get("comparator_label") or "").strip()
+
+        # When `pico` was already supplied (e.g. browser Step 3 form auto-populated from `target_rct`),
+        # ignore `active_label` / `comparator_label` ONLY if they merely echo `target_rct`'s own arm labels.
+        has_pico_dict = isinstance(pico, dict)
+        if has_pico_dict and cfg_act_lbl and cfg_act_lbl == trct_exp0:
+            cfg_act_lbl = ""
+        if has_pico_dict and cfg_comp_lbl and cfg_comp_lbl == trct_comp0:
+            cfg_comp_lbl = ""
+
+        explicit_intr = (
+            str(intervention or "").strip()
+            or str(cfg.get("intervention") or "").strip()
+            or cfg_act_lbl
+        )
+        explicit_comp = (
+            str(comparator or "").strip()
+            or str(cfg.get("comparator") or "").strip()
+            or cfg_comp_lbl
+        )
+
+        # Fallback extraction from protocol.treatment_strategies if a protocol object was passed
+        proto_obj = protocol if isinstance(protocol, dict) else (cfg.get("protocol") if isinstance(cfg.get("protocol"), dict) else None)
+        proto_act = ""
+        proto_comp = ""
+        if isinstance(proto_obj, dict):
+            for strat in proto_obj.get("treatment_strategies") or []:
+                if not isinstance(strat, dict):
+                    continue
+                lbl = str(strat.get("label") or "").strip()
+                role = str(strat.get("role") or "").strip().lower()
+                if not lbl or not normalize_intervention_spec(lbl)["has_specific_agent"]:
+                    continue
+                if role == "active" and not proto_act:
+                    proto_act = lbl
+                elif role == "control" and not proto_comp:
+                    proto_comp = lbl
+
+        if has_pico_dict:
+            eff_pico: dict = dict(pico)  # type: ignore[arg-type]
+        elif str(idea_text or "").strip():
+            eff_pico = dict(parse_research_idea_pico(str(idea_text), explicit_comparator=explicit_comp))
+        else:
+            eff_pico = {}
+
+        sim_intr = (
+            explicit_intr
+            or str(eff_pico.get("active_arm_label") or eff_pico.get("intervention_query_en") or eff_pico.get("intervention") or "").strip()
+            or proto_act
+        )
+        if explicit_comp:
+            sim_comp = explicit_comp
+            eff_pico["comparator_explicit"] = True
+            eff_pico["comparator"] = explicit_comp
+            eff_pico["comparator_arm_label"] = explicit_comp
+            eff_pico["comparator_query_en"] = explicit_comp
+        else:
+            sim_comp = str(eff_pico.get("comparator_arm_label") or eff_pico.get("comparator_query_en") or "").strip()
+            if not sim_comp and eff_pico.get("comparator_explicit") is True:
+                sim_comp = str(eff_pico.get("comparator") or "").strip()
+            if not sim_comp and proto_comp and eff_pico.get("comparator_explicit") is not False:
+                sim_comp = proto_comp
+                eff_pico["comparator_explicit"] = True
+
+        if explicit_intr:
+            eff_pico["intervention"] = explicit_intr
+            eff_pico["active_arm_label"] = explicit_intr
+            eff_pico["intervention_query_en"] = explicit_intr
+        elif sim_intr and not eff_pico.get("intervention"):
+            eff_pico["intervention"] = sim_intr
+
+        return (eff_pico if eff_pico else None), sim_intr, sim_comp
+
     def start_simulated_cohort(
         self,
         *,
         target_rct: dict | None = None,
         pico: dict | None = None,
+        idea_text: str = "",
+        intervention: str = "",
+        comparator: str = "",
+        protocol: dict | None = None,
         sim_config: dict | None = None,
         confirm_arm_mismatch: bool = False,
     ) -> dict:
         cfg = dict(sim_config or {})
+        if str(intervention or "").strip():
+            cfg.setdefault("intervention", str(intervention).strip())
+        if str(comparator or "").strip():
+            cfg.setdefault("comparator", str(comparator).strip())
+
         cases = int(cfg.get("cases", 1200))
         seed = int(cfg.get("seed", 42))
         bootstrap_iterations = int(cfg.get("bootstrap_iterations", 80))
@@ -613,11 +716,17 @@ class TTERunner:
         if weight_method not in ("overlap", "stabilized_iptw", "iptw"):
             raise ContractError("INVALID_WEIGHT_METHOD", f"不支持的加权方式：{weight_method}")
 
-        if target_rct and isinstance(pico, dict):
-            sim_intr = str(cfg.get("intervention") or pico.get("active_arm_label") or pico.get("intervention_query_en") or pico.get("intervention") or "").strip()
-            sim_comp = str(cfg.get("comparator") or pico.get("comparator_arm_label") or pico.get("comparator_query_en") or "").strip()
-            if not sim_comp and pico.get("comparator_explicit") is True:
-                sim_comp = str(pico.get("comparator") or "").strip()
+        eff_pico, sim_intr, sim_comp = self.resolve_simulated_effective_pico(
+            pico=pico,
+            idea_text=idea_text,
+            intervention=intervention,
+            comparator=comparator,
+            sim_config=cfg,
+            protocol=protocol,
+            target_rct=target_rct,
+        )
+        # Unconditional server-side alignment gate whenever `target_rct` is provided (even when `pico` was omitted!)
+        if target_rct:
             target_rct = verify_and_enrich_target_rct(
                 target_rct,
                 intervention=sim_intr,
@@ -628,7 +737,7 @@ class TTERunner:
 
         normalized_proto, dgp_params = build_simulated_protocol_and_dgp(
             target_rct=target_rct,
-            pico=pico,
+            pico=eff_pico,
             sim_config=cfg,
         )
         if not self._slot.acquire(blocking=False):
@@ -642,8 +751,8 @@ class TTERunner:
             _atomic_write_bytes(path / "dgp_params.json", _bytes(dgp_params))
             if target_rct:
                 _atomic_write_bytes(path / "target_rct.json", _bytes(target_rct))
-            if pico:
-                _atomic_write_bytes(path / "pico.json", _bytes(pico))
+            if eff_pico:
+                _atomic_write_bytes(path / "pico.json", _bytes(eff_pico))
             status = {
                 "run_id": run_id,
                 "state": "queued",

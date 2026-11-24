@@ -179,12 +179,15 @@ GENERIC_ARM_PLACEHOLDERS = frozenset(
         "对照组",
         "试验暴露策略（active arm）",
         "阳性对照或标准治疗（comparator arm）",
+        "对标试验干预臂（active）",
+        "对标对照治疗臂（comparator）",
     }
 )
 
 GENERIC_DRUG_STOPWORDS = frozenset(
     {
         "drug",
+        "drugs",
         "biological",
         "active",
         "comparator",
@@ -192,26 +195,98 @@ GENERIC_DRUG_STOPWORDS = frozenset(
         "control",
         "reference",
         "arm",
+        "arms",
         "group",
+        "groups",
         "plus",
         "with",
         "without",
+        "added",
+        "addon",
+        "alone",
+        "only",
+        "monotherapy",
+        "background",
+        "standard",
+        "care",
+        "usual",
+        "fixed",
+        "combo",
+        "combination",
+        "single",
+        "double",
+        "blind",
+        "open",
+        "label",
         "once",
         "twice",
         "daily",
+        "weekly",
+        "monthly",
+        "hourly",
+        "every",
+        "days",
+        "week",
+        "weeks",
+        "month",
+        "months",
+        "year",
+        "years",
+        "hours",
+        "cycle",
+        "cycles",
         "oral",
+        "intravenous",
+        "subcutaneous",
         "dose",
         "adjusted",
+        "maximally",
+        "tolerated",
+        "continuing",
+        "continued",
+        "ongoing",
+        "maintenance",
+        "extended",
+        "release",
+        "sustained",
+        "immediate",
+        "coated",
+        "film",
         "matching",
         "saline",
+        "sodium",
+        "potassium",
+        "calcium",
+        "hydrochloride",
+        "phosphate",
+        "succinate",
+        "tartrate",
+        "mesylate",
+        "besylate",
+        "fumarate",
+        "maleate",
+        "acetate",
+        "citrate",
+        "sulfate",
+        "nitrate",
+        "monohydrate",
+        "dihydrate",
+        "anhydrous",
         "therapy",
         "treatment",
         "regimen",
+        "antidiabetic",
+        "medication",
+        "medications",
+        "agent",
+        "agents",
         "initiated",
         "first",
         "line",
         "tablet",
         "tablets",
+        "capsule",
+        "capsules",
         "injection",
         "infusion",
         "participants",
@@ -223,6 +298,7 @@ GENERIC_DRUG_STOPWORDS = frozenset(
         "inhibitor",
         "inhibitors",
         "agonist",
+        "agonists",
         "versus",
         "target",
     }
@@ -259,8 +335,8 @@ OFFLINE_CURATED_RCTS: tuple[dict, ...] = (
         "enrollment_count": 1450,
         "allocation": "RANDOMIZED",
         "conditions": ["Type 2 Diabetes Mellitus", "Cardiorenal Metabolic Risk"],
-        "experimental_arms": ["Dapagliflozin 10 mg once daily (+ background Metformin)"],
-        "comparator_arms": ["Sitagliptin 100 mg once daily (+ background Metformin)"],
+        "experimental_arms": ["Dapagliflozin 10 mg once daily"],
+        "comparator_arms": ["Sitagliptin 100 mg once daily"],
         "interventions": ["Drug: Dapagliflozin", "Drug: Sitagliptin"],
         "eligibility_summary": {
             "min_age": "18 Years",
@@ -353,7 +429,7 @@ OFFLINE_CURATED_RCTS: tuple[dict, ...] = (
         "allocation": "RANDOMIZED",
         "conditions": ["Chronic Kidney Disease", "Diabetic Nephropathy", "Heart Failure"],
         "experimental_arms": ["SGLT2 Inhibitor (Empagliflozin 10 mg)"],
-        "comparator_arms": ["Matching Placebo + Background RAS Blockade"],
+        "comparator_arms": ["Matching Placebo + Standard Care"],
         "interventions": ["Drug: Empagliflozin", "Drug: Placebo"],
         "eligibility_summary": {
             "min_age": "18 Years",
@@ -474,7 +550,7 @@ OFFLINE_CURATED_RCTS: tuple[dict, ...] = (
         "allocation": "RANDOMIZED",
         "conditions": ["Diabetic Kidney Disease", "Type 2 Diabetes", "Chronic Kidney Disease"],
         "experimental_arms": ["Finerenone 10 mg or 20 mg once daily"],
-        "comparator_arms": ["Placebo + Maximally Tolerated ACEi/ARB"],
+        "comparator_arms": ["Matching Placebo + Standard Care"],
         "interventions": ["Drug: Finerenone", "Drug: Placebo"],
         "eligibility_summary": {
             "min_age": "18 Years",
@@ -813,56 +889,40 @@ def audit_study_arm_alignment(
             "is_recommended": False,
         }
 
-    # Case C: Dual-arm contrast specified — subtract shared background drugs/classes so shared therapy (e.g. Metformin) never masks a missing comparator!
+    # Case C: Dual-arm contrast specified — enforce full active regimen drug-set equality for `exact_dual_arm`!
     expected_summary = f"{t_spec['display_label']} vs {c_spec['display_label']}"
-    t_drugs = set(t_spec["drug_ids"])
-    c_drugs = set(c_spec["drug_ids"])
-    shared_drugs = t_drugs & c_drugs
-    t_diff_drugs = t_drugs - shared_drugs
-    c_diff_drugs = c_drugs - shared_drugs
+    t_core_drugs = set(t_spec["drug_ids"]) - {"placebo_soc"}
+    c_core_drugs = set(c_spec["drug_ids"]) - {"placebo_soc"}
+    t_is_placebo = "placebo_soc" in t_spec["drug_ids"]
+    c_is_placebo = "placebo_soc" in c_spec["drug_ids"]
+    shared_drugs = t_core_drugs & c_core_drugs
+    t_diff_drugs = t_core_drugs - shared_drugs
+    c_diff_drugs = c_core_drugs - shared_drugs
 
-    # 1. Check `exact_dual_arm` across distinct arms (i != j)
+    # 1. `exact_dual_arm` holds ONLY when full active drug sets match identically on both arms
+    #    (no missing shared background therapy AND no extra unrequested active drugs on either arm!)
     exact_dual = False
-    if t_drugs and c_drugs and (t_diff_drugs or c_diff_drugs):
+    if not t_spec["class_only_ids"] and not c_spec["class_only_ids"]:
         for i, arm_a in enumerate(arm_specs):
-            arm_a_drugs = arm_a["drug_ids"]
-            if t_diff_drugs:
-                if not t_diff_drugs.issubset(arm_a_drugs):
-                    continue
-                if arm_a_drugs & c_diff_drugs:
-                    continue
-            else:
-                # Pure step-down / withdrawal design where comparator has extra agent and treatment is background-only
-                if not shared_drugs.issubset(arm_a_drugs) or (arm_a_drugs & c_diff_drugs):
-                    continue
-
+            arm_a_drugs = set(arm_a["drug_ids"]) - {"placebo_soc"}
+            arm_a_is_placebo = "placebo_soc" in arm_a["drug_ids"]
             for j, arm_b in enumerate(arm_specs):
                 if i == j:
                     continue
-                arm_b_drugs = arm_b["drug_ids"]
-                if c_diff_drugs:
-                    # Head-to-head active comparator (e.g. Dapa+Met vs Sita+Met, or Dapa vs Sita):
-                    # Arm B MUST contain ALL distinguishing comparator drugs (`sitagliptin`) and NONE of `t_diff_drugs`!
-                    if not c_diff_drugs.issubset(arm_b_drugs):
-                        continue
-                    if arm_b_drugs & t_diff_drugs:
-                        continue
-                    exact_dual = True
-                    break
-                else:
-                    # True add-on design (e.g. Pembro+Chemo vs Chemo, or Dapa+Met vs Met):
-                    # Arm A must carry both add-on + background (`t_diff_drugs | shared_drugs`), while Arm B carries `shared_drugs` WITHOUT `t_diff_drugs` or unrequested active comparators!
-                    if not (t_diff_drugs | shared_drugs).issubset(arm_a_drugs):
-                        continue
-                    if not shared_drugs.issubset(arm_b_drugs):
-                        continue
-                    if arm_b_drugs & t_diff_drugs:
-                        continue
-                    extra_unrequested = arm_b_drugs - shared_drugs - {"placebo_soc"}
-                    if extra_unrequested:
-                        continue
-                    exact_dual = True
-                    break
+                arm_b_drugs = set(arm_b["drug_ids"]) - {"placebo_soc"}
+                arm_b_is_placebo = "placebo_soc" in arm_b["drug_ids"]
+                if t_core_drugs and c_core_drugs and t_core_drugs != c_core_drugs:
+                    if arm_a_drugs == t_core_drugs and arm_b_drugs == c_core_drugs:
+                        exact_dual = True
+                        break
+                elif t_core_drugs and not c_core_drugs and c_is_placebo:
+                    if arm_a_drugs == t_core_drugs and len(arm_b_drugs) == 0 and arm_b_is_placebo:
+                        exact_dual = True
+                        break
+                elif not t_core_drugs and t_is_placebo and c_core_drugs:
+                    if len(arm_a_drugs) == 0 and arm_a_is_placebo and arm_b_drugs == c_core_drugs:
+                        exact_dual = True
+                        break
             if exact_dual:
                 break
 
@@ -879,19 +939,77 @@ def audit_study_arm_alignment(
             "is_recommended": True,
         }
 
-    # 2. Check `class_dual_arm`: subtract shared background classes so shared biguanide/chemo NEVER masks a missing comparator class!
-    shared_classes = t_spec["drug_classes"] & c_spec["drug_classes"]
-    t_diff_classes = t_spec["drug_classes"] - shared_classes
-    c_diff_classes = c_spec["drug_classes"] - shared_classes
+    # 1b. Symmetric background-differing core drug match: differential drugs match (`t_diff_drugs` vs `c_diff_drugs`)
+    #     with NO one-sided extra active drug, but shared background/co-medication differs (e.g. Dapa+Met vs Sita+Met against Dapa vs Sita).
+    bg_diff_core_match = False
+    if not t_spec["class_only_ids"] and not c_spec["class_only_ids"] and t_diff_drugs and c_diff_drugs:
+        for i, arm_a in enumerate(arm_specs):
+            arm_a_drugs = set(arm_a["drug_ids"]) - {"placebo_soc"}
+            if not t_diff_drugs.issubset(arm_a_drugs) or (arm_a_drugs & c_diff_drugs):
+                continue
+            for j, arm_b in enumerate(arm_specs):
+                if i == j:
+                    continue
+                arm_b_drugs = set(arm_b["drug_ids"]) - {"placebo_soc"}
+                if not c_diff_drugs.issubset(arm_b_drugs) or (arm_b_drugs & t_diff_drugs):
+                    continue
+                if (arm_a_drugs - t_diff_drugs) == (arm_b_drugs - c_diff_drugs):
+                    bg_diff_core_match = True
+                    break
+            if bg_diff_core_match:
+                break
+
+    if bg_diff_core_match:
+        return {
+            "arm_alignment_status": "class_dual_arm",
+            "arm_alignment_rank": ALIGNMENT_RANKS["class_dual_arm"],
+            "arm_alignment_score_cap": ALIGNMENT_SCORE_CAPS["class_dual_arm"],
+            "arm_alignment_label": "联合背景用药差异 · 需确认",
+            "arm_alignment_detail": (
+                f"核心差异药物一致，但联合/背景基础治疗与当前研究不同：当前研究对比「{expected_summary}」，"
+                f"该试验分组为「{trial_arms_summary}」，选为参考方案前需显式确认。"
+            ),
+            "expected_arms_summary": expected_summary,
+            "trial_arms_summary": trial_arms_summary,
+            "requires_mismatch_confirmation": True,
+            "is_recommended": False,
+        }
+
+    # 2. Check `class_dual_arm`: subtract shared background classes and reject asymmetric extra active classes/drugs
+    t_core_classes = set(t_spec["drug_classes"]) - {"placebo_soc"}
+    c_core_classes = set(c_spec["drug_classes"]) - {"placebo_soc"}
+    shared_classes = t_core_classes & c_core_classes
+    t_diff_classes = t_core_classes - shared_classes
+    c_diff_classes = c_core_classes - shared_classes
     class_dual = False
     if t_diff_classes and c_diff_classes:
         for i, arm_i in enumerate(arm_specs):
-            if not t_diff_classes.issubset(arm_i["drug_classes"]) or (arm_i["drug_classes"] & c_diff_classes):
+            arm_i_classes = set(arm_i["drug_classes"]) - {"placebo_soc"}
+            arm_i_drugs = set(arm_i["drug_ids"]) - {"placebo_soc"}
+            if not t_diff_classes.issubset(arm_i_classes) or (arm_i_classes & c_diff_classes):
                 continue
             for j, arm_j in enumerate(arm_specs):
                 if i == j:
                     continue
-                if c_diff_classes.issubset(arm_j["drug_classes"]) and not (arm_j["drug_classes"] & t_diff_classes):
+                arm_j_classes = set(arm_j["drug_classes"]) - {"placebo_soc"}
+                arm_j_drugs = set(arm_j["drug_ids"]) - {"placebo_soc"}
+                if not c_diff_classes.issubset(arm_j_classes) or (arm_j_classes & t_diff_classes):
+                    continue
+                if (arm_i_classes - t_diff_classes) == (arm_j_classes - c_diff_classes) and len(arm_i_drugs) == len(arm_j_drugs):
+                    class_dual = True
+                    break
+            if class_dual:
+                break
+    elif t_core_classes and not c_core_classes and c_is_placebo:
+        for i, arm_i in enumerate(arm_specs):
+            arm_i_classes = set(arm_i["drug_classes"]) - {"placebo_soc"}
+            if arm_i_classes != t_core_classes:
+                continue
+            for j, arm_j in enumerate(arm_specs):
+                if i == j:
+                    continue
+                arm_j_drugs = set(arm_j["drug_ids"]) - {"placebo_soc"}
+                if len(arm_j_drugs) == 0 and ("placebo_soc" in arm_j["drug_ids"]):
                     class_dual = True
                     break
             if class_dual:
@@ -914,10 +1032,12 @@ def audit_study_arm_alignment(
         }
 
     # 3. Check `single_arm_or_comparator_mismatch` vs `unmatched_interventions`
-    distinct_target_drugs = t_diff_drugs | c_diff_drugs or (t_drugs | c_drugs)
-    distinct_target_classes = t_diff_classes | c_diff_classes or (t_spec["drug_classes"] | c_spec["drug_classes"])
+    distinct_target_drugs = t_diff_drugs | c_diff_drugs or (t_core_drugs | c_core_drugs)
+    distinct_target_classes = t_diff_classes | c_diff_classes or (t_core_classes | c_core_classes)
+    pooled_active_drugs = pooled_drugs - {"placebo_soc"}
+    pooled_active_classes = pooled_classes - {"placebo_soc"}
     any_drug_or_class_overlap = bool(
-        (distinct_target_drugs & pooled_drugs) or (distinct_target_classes & pooled_classes)
+        (distinct_target_drugs & pooled_active_drugs) or (distinct_target_classes & pooled_active_classes)
     )
     if any_drug_or_class_overlap:
         return {
@@ -984,7 +1104,7 @@ def verify_and_enrich_target_rct(
             raise ContractError(
                 "ARM_MISMATCH_CONFIRMATION_REQUIRED",
                 (
-                    f"目标 RCT（{target_rct['nct_id']}）分组与当前研究双臂不一致（status={status}）："
+                    f"ARM_MISMATCH_CONFIRMATION_REQUIRED: 目标 RCT（{target_rct['nct_id']}）分组与当前研究双臂不一致（status={status}）："
                     f"当前研究对比 [{audit['expected_arms_summary']}]，而 {target_rct['nct_id']} 实际分组为 "
                     f"[{audit['trial_arms_summary']}]。Target RCT arms do not match study treatment vs comparator; "
                     "pass confirm_arm_mismatch=true only if intentionally borrowing eligibility/follow-up structure."

@@ -1178,8 +1178,8 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                         "project_mode": "user_cohort",
                         "session_id": sid_bin,
                         "target_rct": by_nct["NCT01095653"],
-                        "intervention": "达格列净",
-                        "comparator": "西格列汀",
+                        "intervention": "达格列净 + 二甲双胍",
+                        "comparator": "西格列汀 + 二甲双胍",
                     },
                 )
                 self.assertEqual(draft_bin_exact_ok.status_code, 200, draft_bin_exact_ok.text)
@@ -1219,6 +1219,300 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                     json={"project_mode": "simulated_cohort", "target_rct": dapa_hf, "pico": pico_single},
                 )
                 self.assertEqual(draft_idea_ok.status_code, 200, draft_idea_ok.text)
+
+    def test_round5_blockers_1a_1b_and_direct_simulated_run_alignment_gate(self):
+        """E2E regression for Codex Round-5 Blockers 1A, 1B (full regimen drug-set equality) and Blocker 2 (unconditional simulated run alignment gate)."""
+        round5_ctgov_payload = {
+            "studies": [
+                # NCT06642272: Empagliflozin vs Dapagliflozin
+                {
+                    "protocolSection": {
+                        "identificationModule": {"nctId": "NCT06642272", "briefTitle": "Empagliflozin vs Dapagliflozin"},
+                        "statusModule": {"overallStatus": "RECRUITING"},
+                        "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE4"], "enrollmentInfo": {"count": 800}, "designInfo": {"allocation": "RANDOMIZED"}},
+                        "conditionsModule": {"conditions": ["Type 2 Diabetes"]},
+                        "armsInterventionsModule": {
+                            "armGroups": [
+                                {"label": "Empagliflozin 10 mg", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Empagliflozin"]},
+                                {"label": "Dapagliflozin 10 mg", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Dapagliflozin"]},
+                            ],
+                            "interventions": [{"name": "Empagliflozin", "type": "DRUG"}, {"name": "Dapagliflozin", "type": "DRUG"}],
+                        },
+                        "outcomesModule": {"primaryOutcomes": [{"measure": "Cardiorenal Composite", "timeFrame": "12 months"}]},
+                    }
+                },
+                # NCT09990011: Dapagliflozin vs Sitagliptin (monotherapy — NO Metformin!)
+                {
+                    "protocolSection": {
+                        "identificationModule": {"nctId": "NCT09990011", "briefTitle": "Dapagliflozin vs Sitagliptin Monotherapy"},
+                        "statusModule": {"overallStatus": "COMPLETED"},
+                        "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE3"], "enrollmentInfo": {"count": 900}, "designInfo": {"allocation": "RANDOMIZED"}},
+                        "conditionsModule": {"conditions": ["Type 2 Diabetes"]},
+                        "armsInterventionsModule": {
+                            "armGroups": [
+                                {"label": "Dapagliflozin 10 mg", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Dapagliflozin"]},
+                                {"label": "Sitagliptin 100 mg", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Sitagliptin"]},
+                            ],
+                            "interventions": [{"name": "Dapagliflozin", "type": "DRUG"}, {"name": "Sitagliptin", "type": "DRUG"}],
+                        },
+                        "outcomesModule": {"primaryOutcomes": [{"measure": "Composite", "timeFrame": "12 months"}]},
+                    }
+                },
+                # NCT09990012: Dapagliflozin vs Sitagliptin + Glimepiride (extra active drug in comparator!)
+                {
+                    "protocolSection": {
+                        "identificationModule": {"nctId": "NCT09990012", "briefTitle": "Dapagliflozin vs Sitagliptin Plus Glimepiride"},
+                        "statusModule": {"overallStatus": "COMPLETED"},
+                        "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE3"], "enrollmentInfo": {"count": 700}, "designInfo": {"allocation": "RANDOMIZED"}},
+                        "conditionsModule": {"conditions": ["Type 2 Diabetes"]},
+                        "armsInterventionsModule": {
+                            "armGroups": [
+                                {"label": "Dapagliflozin 10 mg", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Dapagliflozin"]},
+                                {"label": "Sitagliptin 100 mg + Glimepiride 4 mg", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Sitagliptin", "Drug: Glimepiride"]},
+                            ],
+                            "interventions": [{"name": "Dapagliflozin", "type": "DRUG"}, {"name": "Sitagliptin", "type": "DRUG"}, {"name": "Glimepiride", "type": "DRUG"}],
+                        },
+                        "outcomesModule": {"primaryOutcomes": [{"measure": "Composite", "timeFrame": "12 months"}]},
+                    }
+                },
+                # NCT01095653: Exact Dapagliflozin + Metformin vs Sitagliptin + Metformin
+                {
+                    "protocolSection": {
+                        "identificationModule": {"nctId": "NCT01095653", "briefTitle": "Dapagliflozin + Metformin vs Sitagliptin + Metformin"},
+                        "statusModule": {"overallStatus": "COMPLETED"},
+                        "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE3"], "enrollmentInfo": {"count": 1450}, "designInfo": {"allocation": "RANDOMIZED"}},
+                        "conditionsModule": {"conditions": ["Type 2 Diabetes"]},
+                        "armsInterventionsModule": {
+                            "armGroups": [
+                                {"label": "Dapagliflozin 10 mg + Metformin", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Dapagliflozin", "Drug: Metformin"]},
+                                {"label": "Sitagliptin 100 mg + Metformin", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Sitagliptin", "Drug: Metformin"]},
+                            ],
+                            "interventions": [{"name": "Dapagliflozin", "type": "DRUG"}, {"name": "Sitagliptin", "type": "DRUG"}, {"name": "Metformin", "type": "DRUG"}],
+                        },
+                        "outcomesModule": {"primaryOutcomes": [{"measure": "Composite", "timeFrame": "12 months"}]},
+                    }
+                },
+                # NCT09990001: Exact add-on Dapagliflozin + Metformin vs Metformin + Placebo
+                {
+                    "protocolSection": {
+                        "identificationModule": {"nctId": "NCT09990001", "briefTitle": "Dapagliflozin + Metformin vs Metformin Alone"},
+                        "statusModule": {"overallStatus": "COMPLETED"},
+                        "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE3"], "enrollmentInfo": {"count": 600}, "designInfo": {"allocation": "RANDOMIZED"}},
+                        "conditionsModule": {"conditions": ["Type 2 Diabetes"]},
+                        "armsInterventionsModule": {
+                            "armGroups": [
+                                {"label": "Dapagliflozin + Metformin", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Dapagliflozin", "Drug: Metformin"]},
+                                {"label": "Metformin + Placebo", "type": "PLACEBO_COMPARATOR", "interventionNames": ["Drug: Metformin", "Drug: Placebo"]},
+                            ],
+                            "interventions": [{"name": "Dapagliflozin", "type": "DRUG"}, {"name": "Metformin", "type": "DRUG"}],
+                        },
+                        "outcomesModule": {"primaryOutcomes": [{"measure": "Composite", "timeFrame": "12 months"}]},
+                    }
+                },
+            ]
+        }
+
+        def fake_ctgov(req, timeout):
+            content_url = req.full_url
+            if "/studies/NCT06642272" in content_url:
+                return _FakeHTTPResp(json.dumps(round5_ctgov_payload["studies"][0]).encode("utf-8"))
+            return _FakeHTTPResp(json.dumps(round5_ctgov_payload).encode("utf-8"))
+
+        with mock.patch.dict(os.environ, {"EMULATRX_OFFLINE_RCT_CATALOG": "0"}, clear=False):
+            with mock.patch.object(rct_matcher, "urlopen_ctgov", side_effect=fake_ctgov):
+                # --- Blocker 1A: CSV `Dapagliflozin_Plus_Metformin` vs `Sitagliptin_Plus_Metformin` against `NCT09990011` (`Dapagliflozin` vs `Sitagliptin`, no Metformin) ---
+                combo_rows = ["deid_id,initiated_drug,followup_months,endpoint,age_years"]
+                for i in range(20):
+                    drug = "Dapagliflozin_Plus_Metformin" if i % 2 == 0 else "Sitagliptin_Plus_Metformin"
+                    ep = "hf_hospitalization" if i < 7 else ("cv_death" if i < 11 else "censored")
+                    combo_rows.append(f"PT-{i + 1:04d},{drug},{8.0 + i * 0.9:.1f},{ep},{54 + (i % 14)}")
+                up_combo = self.client.post(
+                    "/api/sessions/upload",
+                    headers=self.web_auth,
+                    files={"file": ("combo_met.csv", ("\n".join(combo_rows) + "\n").encode("utf-8"), "text/csv")},
+                )
+                self.assertEqual(up_combo.status_code, 200)
+                sid_combo = up_combo.json()["session_id"]
+
+                srch_combo = self.client.post(
+                    "/api/rcts/search",
+                    headers=self.web_auth,
+                    json={"session_id": sid_combo, "project_mode": "user_cohort", "query": "Dapagliflozin Sitagliptin"},
+                )
+                self.assertEqual(srch_combo.status_code, 200)
+                combo_by_nct = {c["nct_id"]: c for c in srch_combo.json()["candidates"]}
+                # Exact combo `NCT01095653` is `exact_dual_arm`; `NCT09990011` (missing Metformin) is NOT exact_dual_arm, capped <=0.72, is_recommended=False!
+                self.assertEqual(combo_by_nct["NCT01095653"]["arm_alignment_status"], "exact_dual_arm")
+                no_met_rct = combo_by_nct["NCT09990011"]
+                self.assertNotEqual(no_met_rct["arm_alignment_status"], "exact_dual_arm")
+                self.assertLessEqual(no_met_rct["match_score"], 0.72)
+                self.assertFalse(no_met_rct["is_recommended"])
+
+                for ep_path in ("/api/rcts/draft", "/api/dual-runs"):
+                    r_422 = self.client.post(
+                        ep_path,
+                        headers=self.web_auth,
+                        json={"project_mode": "user_cohort", "session_id": sid_combo, "target_rct": no_met_rct},
+                    )
+                    self.assertEqual(r_422.status_code, 422, f"{ep_path}: {r_422.text}")
+                    self.assertEqual(r_422.json()["error_code"], "ARM_MISMATCH_CONFIRMATION_REQUIRED")
+
+                # --- Blocker 1B: CSV `Dapagliflozin` vs `Sitagliptin` against `NCT09990012` (`Dapagliflozin` vs `Sitagliptin + Glimepiride`) ---
+                up_mono = self.client.post(
+                    "/api/sessions/upload",
+                    headers=self.web_auth,
+                    json={"sample_id": "cardiorenal_sglt2i"},
+                )
+                self.assertEqual(up_mono.status_code, 200)
+                sid_mono = up_mono.json()["session_id"]
+
+                srch_mono = self.client.post(
+                    "/api/rcts/search",
+                    headers=self.web_auth,
+                    json={"session_id": sid_mono, "project_mode": "user_cohort", "query": "Dapagliflozin Sitagliptin"},
+                )
+                self.assertEqual(srch_mono.status_code, 200)
+                mono_by_nct = {c["nct_id"]: c for c in srch_mono.json()["candidates"]}
+                extra_glim_rct = mono_by_nct["NCT09990012"]
+                self.assertNotEqual(extra_glim_rct["arm_alignment_status"], "exact_dual_arm")
+                self.assertLessEqual(extra_glim_rct["match_score"], 0.45)
+                self.assertFalse(extra_glim_rct["is_recommended"])
+
+                for ep_path in ("/api/rcts/draft", "/api/dual-runs"):
+                    r_1b = self.client.post(
+                        ep_path,
+                        headers=self.web_auth,
+                        json={"project_mode": "user_cohort", "session_id": sid_mono, "target_rct": extra_glim_rct},
+                    )
+                    self.assertEqual(r_1b.status_code, 422, f"{ep_path}: {r_1b.text}")
+                    self.assertEqual(r_1b.json()["error_code"], "ARM_MISMATCH_CONFIRMATION_REQUIRED")
+
+                # Verify exact add-on (`Dapagliflozin + Metformin` vs `Metformin`) still gets `exact_dual_arm` (`200`)
+                addon_draft_ok = self.client.post(
+                    "/api/rcts/draft",
+                    headers=self.web_auth,
+                    json={
+                        "project_mode": "user_cohort",
+                        "session_id": sid_mono,
+                        "target_rct": mono_by_nct["NCT09990001"],
+                        "intervention": "Dapagliflozin + Metformin",
+                        "comparator": "Metformin",
+                    },
+                )
+                self.assertEqual(addon_draft_ok.status_code, 200, addon_draft_ok.text)
+                self.assertEqual(addon_draft_ok.json()["target_rct"]["arm_alignment_status"], "exact_dual_arm")
+
+                # --- Blocker 2: Direct simulated run with NO `pico` / NO `idea_text` / NO `confirm_arm_mismatch` MUST synchronously 422! ---
+                nct066_card = mono_by_nct["NCT06642272"]
+                direct_sim_payload = {
+                    "project_mode": "simulated_cohort",
+                    "target_rct": nct066_card,
+                    "intervention": "Dapagliflozin",
+                    "comparator": "Sitagliptin",
+                    "sim_config": {"cases": 400, "bootstrap_iterations": 20},
+                }
+                for sim_ep in ("/api/dual-runs", "/api/v1/projects/simulated/runs"):
+                    sim_422 = self.client.post(sim_ep, headers=self.web_auth, json=direct_sim_payload)
+                    self.assertEqual(sim_422.status_code, 422, f"{sim_ep}: {sim_422.text}")
+                    self.assertEqual(sim_422.json()["error_code"], "ARM_MISMATCH_CONFIRMATION_REQUIRED")
+
+                # Also verify sim_config label overrides (`treatment_label` / `comparator_label`) with NO top-level fields or pico return 422
+                sim_cfg_only_422 = self.client.post(
+                    "/api/dual-runs",
+                    headers=self.web_auth,
+                    json={
+                        "project_mode": "simulated_cohort",
+                        "target_rct": nct066_card,
+                        "sim_config": {
+                            "treatment_label": "Dapagliflozin",
+                            "comparator_label": "Sitagliptin",
+                            "cases": 400,
+                            "bootstrap_iterations": 20,
+                        },
+                    },
+                )
+                self.assertEqual(sim_cfg_only_422.status_code, 422, sim_cfg_only_422.text)
+                self.assertEqual(sim_cfg_only_422.json()["error_code"], "ARM_MISMATCH_CONFIRMATION_REQUIRED")
+
+                # Also verify protocol.treatment_strategies and 1-arm target_rct with zero pico/idea_text/overrides return 422
+                proto_only_422 = self.client.post(
+                    "/api/dual-runs",
+                    headers=self.web_auth,
+                    json={
+                        "project_mode": "simulated_cohort",
+                        "target_rct": nct066_card,
+                        "protocol": {
+                            "treatment_strategies": [
+                                {"id": "arm_comparator", "label": "Sitagliptin", "role": "control"},
+                                {"id": "arm_active", "label": "Dapagliflozin", "role": "active"},
+                            ]
+                        },
+                        "sim_config": {"cases": 400, "bootstrap_iterations": 20},
+                    },
+                )
+                self.assertEqual(proto_only_422.status_code, 422, proto_only_422.text)
+                self.assertEqual(proto_only_422.json()["error_code"], "ARM_MISMATCH_CONFIRMATION_REQUIRED")
+
+                single_arm_target = {
+                    "nct_id": "NCT09990002",
+                    "brief_title": "Single-Arm Dapagliflozin + Sitagliptin",
+                    "experimental_arms": ["Dapagliflozin + Sitagliptin"],
+                    "comparator_arms": [],
+                    "arm_groups_detail": [
+                        {"label": "Dapagliflozin + Sitagliptin", "type": "EXPERIMENTAL", "description": "", "intervention_names": ["Drug: Dapagliflozin", "Drug: Sitagliptin"]}
+                    ],
+                    "interventions": ["Drug: Dapagliflozin", "Drug: Sitagliptin"],
+                }
+                single_arm_no_pico_422 = self.client.post(
+                    "/api/dual-runs",
+                    headers=self.web_auth,
+                    json={
+                        "project_mode": "simulated_cohort",
+                        "target_rct": single_arm_target,
+                        "sim_config": {"cases": 400, "bootstrap_iterations": 20},
+                    },
+                )
+                self.assertEqual(single_arm_no_pico_422.status_code, 422, single_arm_no_pico_422.text)
+                self.assertEqual(single_arm_no_pico_422.json()["error_code"], "ARM_MISMATCH_CONFIRMATION_REQUIRED")
+
+                # Also verify MCP `start_simulated_rct_tte` rejects mismatched NCT06642272 without confirm_arm_mismatch
+                mcp_resp = self.client.post(
+                    "/mcp",
+                    headers=self.mcp_auth,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 99,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "start_simulated_rct_tte",
+                            "arguments": {
+                                "nct_id": "NCT06642272",
+                                "intervention": "Dapagliflozin",
+                                "comparator": "Sitagliptin",
+                                "cases": 400,
+                                "bootstrap_iterations": 20,
+                            },
+                        },
+                    },
+                )
+                self.assertEqual(mcp_resp.status_code, 200)
+                self.assertTrue(mcp_resp.json()["result"]["isError"], mcp_resp.text)
+                self.assertIn("ARM_MISMATCH_CONFIRMATION_REQUIRED", mcp_resp.text)
+
+                # With `confirm_arm_mismatch=True`, direct `/api/dual-runs` succeeds (`202` -> `completed`) and records `arm_alignment_warning`!
+                sim_ok = self.client.post(
+                    "/api/dual-runs",
+                    headers=self.web_auth,
+                    json={**direct_sim_payload, "confirm_arm_mismatch": True},
+                )
+                self.assertEqual(sim_ok.status_code, 202, sim_ok.text)
+                sim_final = self.wait_dual_run(sim_ok.json()["run_id"])
+                self.assertEqual(sim_final["state"], "completed", sim_final)
+                sim_trct = sim_final["estimates"]["target_rct"]
+                self.assertEqual(sim_trct["arm_alignment_status"], "single_arm_or_comparator_mismatch")
+                self.assertIn("NCT06642272", sim_trct["arm_alignment_warning"])
+                self.assertIn("arm-mismatch-callout", sim_final["rendered_html"])
+                self.assertIn("arm_alignment_warning", sim_final["audit_report_markdown"])
 
 
 if __name__ == "__main__":

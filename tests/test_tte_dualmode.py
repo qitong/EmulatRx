@@ -762,6 +762,93 @@ class RCTMatcherTests(unittest.TestCase):
             )
         self.assertEqual(ctx_1b2.exception.code, "ARM_MISMATCH_CONFIRMATION_REQUIRED")
 
+    def test_round5_full_regimen_drug_set_equality_for_exact_dual_arm(self):
+        """Round-5 Blocker 1A & 1B: exact_dual_arm requires identical full active drug sets on both arms (no missing shared background, no extra active drugs)."""
+        # Blocker 1A: Cohort `Dapagliflozin + Metformin` vs `Sitagliptin + Metformin` against RCT `Dapagliflozin` vs `Sitagliptin` (missing Metformin)
+        rct_mono_h2h = {
+            "nct_id": "NCT09990011",
+            "brief_title": "Dapagliflozin Monotherapy vs Sitagliptin Monotherapy",
+            "experimental_arms": ["Dapagliflozin 10 mg"],
+            "comparator_arms": ["Sitagliptin 100 mg"],
+            "interventions": ["Drug: Dapagliflozin", "Drug: Sitagliptin"],
+        }
+        audit_1a = rct_matcher.audit_study_arm_alignment(
+            rct_mono_h2h,
+            intervention="Dapagliflozin + Metformin",
+            comparator="Sitagliptin + Metformin",
+            project_mode="user_cohort",
+        )
+        self.assertNotEqual(audit_1a["arm_alignment_status"], "exact_dual_arm")
+        self.assertEqual(audit_1a["arm_alignment_status"], "class_dual_arm")
+        self.assertLessEqual(audit_1a["arm_alignment_score_cap"], 0.72)
+        self.assertFalse(audit_1a["is_recommended"])
+        self.assertTrue(audit_1a["requires_mismatch_confirmation"])
+        with self.assertRaises(ContractError) as ctx_1a:
+            rct_matcher.verify_and_enrich_target_rct(
+                rct_mono_h2h,
+                intervention="Dapagliflozin + Metformin",
+                comparator="Sitagliptin + Metformin",
+                project_mode="user_cohort",
+                confirm_arm_mismatch=False,
+            )
+        self.assertEqual(ctx_1a.exception.code, "ARM_MISMATCH_CONFIRMATION_REQUIRED")
+
+        # Blocker 1B: Cohort `Dapagliflozin` vs `Sitagliptin` against RCT `Dapagliflozin` vs `Sitagliptin + Glimepiride` (extra drug in comparator)
+        rct_extra_comp = {
+            "nct_id": "NCT09990012",
+            "brief_title": "Dapagliflozin vs Sitagliptin Plus Glimepiride",
+            "experimental_arms": ["Dapagliflozin 10 mg"],
+            "comparator_arms": ["Sitagliptin 100 mg + Glimepiride 4 mg"],
+            "interventions": ["Drug: Dapagliflozin", "Drug: Sitagliptin", "Drug: Glimepiride"],
+        }
+        audit_1b = rct_matcher.audit_study_arm_alignment(
+            rct_extra_comp,
+            intervention="Dapagliflozin",
+            comparator="Sitagliptin",
+            project_mode="user_cohort",
+        )
+        self.assertNotEqual(audit_1b["arm_alignment_status"], "exact_dual_arm")
+        self.assertEqual(audit_1b["arm_alignment_status"], "single_arm_or_comparator_mismatch")
+        self.assertLessEqual(audit_1b["arm_alignment_score_cap"], 0.45)
+        self.assertFalse(audit_1b["is_recommended"])
+        self.assertTrue(audit_1b["requires_mismatch_confirmation"])
+        with self.assertRaises(ContractError) as ctx_1b:
+            rct_matcher.verify_and_enrich_target_rct(
+                rct_extra_comp,
+                intervention="Dapagliflozin",
+                comparator="Sitagliptin",
+                project_mode="user_cohort",
+                confirm_arm_mismatch=False,
+            )
+        self.assertEqual(ctx_1b.exception.code, "ARM_MISMATCH_CONFIRMATION_REQUIRED")
+
+        # Positive checks: exact monotherapy, exact background combo, exact add-on, and exact Drug vs Placebo
+        self.assertEqual(
+            rct_matcher.audit_study_arm_alignment(
+                rct_mono_h2h,
+                intervention="Dapagliflozin",
+                comparator="Sitagliptin",
+                project_mode="user_cohort",
+            )["arm_alignment_status"],
+            "exact_dual_arm",
+        )
+        rct_placebo = {
+            "nct_id": "NCT03036124",
+            "brief_title": "Dapagliflozin vs Placebo",
+            "experimental_arms": ["Dapagliflozin 10 mg"],
+            "comparator_arms": ["Matching Placebo"],
+            "interventions": ["Drug: Dapagliflozin", "Drug: Placebo"],
+        }
+        self.assertEqual(
+            rct_matcher.audit_study_arm_alignment(
+                rct_placebo,
+                intervention="Dapagliflozin",
+                comparator="Placebo",
+                project_mode="simulated_cohort",
+            )["arm_alignment_status"],
+            "exact_dual_arm",
+        )
+
 
 class CohortIngestAndDualModePipelineTests(unittest.TestCase):
     def setUp(self):

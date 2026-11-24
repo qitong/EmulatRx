@@ -305,16 +305,24 @@ def build_simulated_protocol_and_dgp(
     trct = target_rct or {}
     pico_d = pico or {}
 
+    has_mismatch_warn = bool(trct.get("arm_alignment_warning"))
     comp_label = str(
         cfg.get("comparator_label")
-        or ((trct.get("comparator_arms") or [None])[0])
+        or cfg.get("comparator")
+        or (((trct.get("comparator_arms") or [None])[0]) if not has_mismatch_warn else None)
+        or pico_d.get("comparator_arm_label")
         or pico_d.get("comparator")
+        or ((trct.get("comparator_arms") or [None])[0])
         or "对标对照治疗臂（Comparator）"
     ).strip()[:100]
     act_label = str(
         cfg.get("active_label")
-        or ((trct.get("experimental_arms") or [None])[0])
+        or cfg.get("treatment_label")
+        or cfg.get("intervention")
+        or (((trct.get("experimental_arms") or [None])[0]) if not has_mismatch_warn else None)
+        or pico_d.get("active_arm_label")
         or pico_d.get("intervention")
+        or ((trct.get("experimental_arms") or [None])[0])
         or "对标试验干预臂（Active）"
     ).strip()[:100]
 
