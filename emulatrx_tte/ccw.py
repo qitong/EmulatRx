@@ -2507,6 +2507,438 @@ def _render_ccw_audit_report_md(
     return "\n".join(lines)
 
 
+def _svg_step_path(points: list[tuple[float, float]], x0: float, y0: float, w: float, h: float, max_x: float, max_y: float) -> str:
+    if not points:
+        return ""
+    sx0 = x0 + w * (points[0][0] / max_x)
+    sy0 = y0 - h * min(1.0, max(0.0, points[0][1] / max_y))
+    cmds = [f"M{sx0:.1f},{sy0:.1f}"]
+    for tx, ty in points[1:]:
+        px = x0 + w * (tx / max_x)
+        py = y0 - h * min(1.0, max(0.0, ty / max_y))
+        cmds.append(f"H{px:.1f} V{py:.1f}")
+    return " ".join(cmds)
+
+
+def _render_ccw_preview_report_html(
+    *,
+    protocol: dict,
+    attrition: dict,
+    diagnostics: dict,
+    estimates: dict,
+    ccw_curve_rows: list[dict[str, Any]],
+    naive_curve_rows: list[dict[str, Any]],
+    dgp_truth: dict[str, Any] | None = None,
+) -> str:
+    """Render a self-contained offline Chinese HTML report comparing Naive vs Bilateral CCW."""
+    esc = lambda v: html.escape(str(v), quote=True)
+    gp = protocol["grace_period_spec"]
+    grace_days = float(gp["grace_period_days"])
+    max_followup = float(gp["max_followup_days"])
+    pg = diagnostics["post_grace_entry_summary"]
+    gates = diagnostics["diagnostic_gates"]
+    w_sum = diagnostics["stabilized_weight_summary"]
+
+    ccw_s0 = [(float(r["time_day"]), float(r["strategy_0_cif_event1"])) for r in ccw_curve_rows]
+    ccw_s1 = [(float(r["time_day"]), float(r["strategy_1_cif_event1"])) for r in ccw_curve_rows]
+    nv_s0 = [(float(r["time_day"]), float(r["naive_group0_cif_event1"])) for r in naive_curve_rows]
+    nv_s1 = [(float(r["time_day"]), float(r["naive_group1_cif_event1"])) for r in naive_curve_rows]
+
+    peak_cif = max(
+        0.10,
+        *(y for _, y in ccw_s0),
+        *(y for _, y in ccw_s1),
+        *(y for _, y in nv_s0),
+        *(y for _, y in nv_s1),
+    )
+    y_max = min(1.0, math.ceil(peak_cif * 11.5) / 10.0)
+
+    def _build_cif_svg(
+        title: str,
+        subtitle: str,
+        pts0: list[tuple[float, float]],
+        pts1: list[tuple[float, float]],
+        label0: str,
+        label1: str,
+        highlight_immortal: bool,
+    ) -> str:
+        x_left, y_bot, plot_w, plot_h = 56.0, 228.0, 440.0, 184.0
+        gx = x_left + plot_w * (grace_days / max_followup)
+        p0 = _svg_step_path(pts0, x_left, y_bot, plot_w, plot_h, max_followup, y_max)
+        p1 = _svg_step_path(pts1, x_left, y_bot, plot_w, plot_h, max_followup, y_max)
+        y_ticks = []
+        for frac in (0.0, 0.25, 0.5, 0.75, 1.0):
+            yv = y_max * frac
+            py = y_bot - plot_h * frac
+            y_ticks.append(
+                f"<line x1='{x_left}' y1='{py:.1f}' x2='{x_left + plot_w}' y2='{py:.1f}' stroke='#e2e8f0' stroke-dasharray='3,3'/>"
+                f"<text x='{x_left - 8}' y='{py + 4:.1f}' text-anchor='end' font-size='11' fill='#475569'>{yv:.2f}</text>"
+            )
+        x_ticks = []
+        for h_val in sorted({0.0, grace_days, *(float(h) for h in gp["evaluation_horizons_days"]), max_followup}):
+            px = x_left + plot_w * (h_val / max_followup)
+            x_ticks.append(
+                f"<line x1='{px:.1f}' y1='{y_bot}' x2='{px:.1f}' y2='{y_bot + 5}' stroke='#64748b'/>"
+                f"<text x='{px:.1f}' y='{y_bot + 18}' text-anchor='middle' font-size='11' fill='#475569'>{h_val:g}d</text>"
+            )
+        shade_color = "rgba(239,68,68,0.10)" if highlight_immortal else "rgba(14,165,233,0.08)"
+        shade_label = "不朽时间错分窗 [0,g]" if highlight_immortal else "宽限期策略允许窗 [0,g]"
+        stroke1 = "#dc2626" if highlight_immortal else "#0f766e"
+        return (
+            f"<div class='chart-card'><h3>{esc(title)}</h3><p class='chart-sub'>{esc(subtitle)}</p>"
+            f"<svg viewBox='0 0 520 268' role='img' aria-label='{esc(title)}'>"
+            f"<rect x='{x_left}' y='{y_bot - plot_h:.1f}' width='{gx - x_left:.1f}' height='{plot_h:.1f}' fill='{shade_color}'/>"
+            + "".join(y_ticks)
+            + "".join(x_ticks)
+            + f"<line x1='{gx:.1f}' y1='{y_bot - plot_h:.1f}' x2='{gx:.1f}' y2='{y_bot:.1f}' stroke='#94a3b8' stroke-width='1.5' stroke-dasharray='5,4'/>"
+            f"<text x='{(x_left + gx) / 2:.1f}' y='{y_bot - plot_h + 15:.1f}' text-anchor='middle' font-size='10.5' fill='#334155'>{esc(shade_label)} (g={grace_days:g}d)</text>"
+            f"<path d='M{x_left},{y_bot - plot_h:.1f} V{y_bot:.1f} H{x_left + plot_w:.1f}' fill='none' stroke='#334155' stroke-width='1.4'/>"
+            f"<path class='cif-step' d='{p0}' fill='none' stroke='#1d4ed8' stroke-width='2.6'/>"
+            f"<path class='cif-step' d='{p1}' fill='none' stroke='{stroke1}' stroke-width='2.6'/>"
+            "</svg>"
+            "<div class='legend'>"
+            f"<span><i style='background:#1d4ed8'></i>{esc(label0)}</span>"
+            f"<span><i style='background:{stroke1}'></i>{esc(label1)}</span>"
+            "</div></div>"
+        )
+
+    svg_naive = _build_cif_svg(
+        "朴素事后分组假阳性曲线（Naive Ever-Initiated）",
+        "错误做法：在 t0=0 按随访期是否曾给药静态分组（含基线 IPTW），延迟给药者在给药前必然存活，人为压低红线制造虚假保护效应",
+        nv_s0,
+        nv_s1,
+        "事后未启动组 CIF_1(t)",
+        "事后曾启动组 CIF_1(t) [含不朽时间偏倚]",
+        True,
+    )
+    svg_ccw = _build_cif_svg(
+        "双侧宽限期分臂 IPCW-CCW 校正曲线（Bilateral CCW）",
+        "正确做法：对称克隆保留 <=g 早期未给药前事件，在违背策略时刻人工删失并分臂独立拟合稳定化 IPCW 恢复无偏边际 CIF_1(t)",
+        ccw_s0,
+        ccw_s1,
+        "策略 0 克隆（全程不启动）CIF_1(t)",
+        "策略 1 克隆（宽限期内启动）CIF_1(t)",
+        False,
+    )
+
+    # SMD Love Plot SVG
+    smd_rows = pg["covariate_balance_rows"]
+    max_smd_plot = max(
+        0.25,
+        float(gates["max_post_grace_smd"]) * 1.6,
+        *(float(r["abs_smd_unweighted"] or 0.0) for r in smd_rows),
+        *(float(r["abs_smd_weighted"] or 0.0) for r in smd_rows),
+    )
+    smd_h = max(140, 52 + 34 * len(smd_rows))
+    smd_x0, smd_w = 165.0, 320.0
+    gate_x = smd_x0 + smd_w * (float(gates["max_post_grace_smd"]) / max_smd_plot)
+    smd_items = []
+    for idx, r in enumerate(smd_rows):
+        cy = 38.0 + idx * 32.0
+        su = float(r["abs_smd_unweighted"] or 0.0)
+        sw = float(r["abs_smd_weighted"] or 0.0)
+        xu = smd_x0 + smd_w * min(1.0, su / max_smd_plot)
+        xw = smd_x0 + smd_w * min(1.0, sw / max_smd_plot)
+        smd_items.append(
+            f"<line x1='{smd_x0}' y1='{cy:.1f}' x2='{smd_x0 + smd_w}' y2='{cy:.1f}' stroke='#f1f5f9'/>"
+            f"<text x='{smd_x0 - 10}' y='{cy + 4:.1f}' text-anchor='end' font-size='12' fill='#1e293b'>{esc(r['covariate'])}</text>"
+            f"<line x1='{xu:.1f}' y1='{cy:.1f}' x2='{xw:.1f}' y2='{cy:.1f}' stroke='#94a3b8' stroke-width='1.5'/>"
+            f"<circle cx='{xu:.1f}' cy='{cy:.1f}' r='5' fill='#f59e0b'/>"
+            f"<circle cx='{xw:.1f}' cy='{cy:.1f}' r='5' fill='#0f766e'/>"
+        )
+    smd_svg = (
+        f"<svg viewBox='0 0 520 {smd_h}' role='img' aria-label='t=g+ 协变量均衡 SMD 图'>"
+        f"<line x1='{smd_x0}' y1='16' x2='{smd_x0}' y2='{smd_h - 24}' stroke='#334155'/>"
+        f"<line x1='{gate_x:.1f}' y1='16' x2='{gate_x:.1f}' y2='{smd_h - 24}' stroke='#dc2626' stroke-dasharray='4,3' stroke-width='1.5'/>"
+        f"<text x='{gate_x + 4:.1f}' y='26' font-size='10.5' fill='#dc2626'>门禁 {gates['max_post_grace_smd']}</text>"
+        + "".join(smd_items)
+        + f"<text x='{smd_x0}' y='{smd_h - 6}' font-size='11' fill='#475569'>0.00</text>"
+        f"<text x='{smd_x0 + smd_w}' y='{smd_h - 6}' text-anchor='end' font-size='11' fill='#475569'>{max_smd_plot:.2f}</text>"
+        "</svg>"
+    )
+
+    # Comparison table rows
+    truth_horizons = (dgp_truth or {}).get("horizons", {})
+    comp_trs = []
+    naive_by_h = estimates["naive_immortal_time_comparison"]["horizons"]
+    for h_est in estimates["horizon_estimates"]:
+        hk = f"{float(h_est['horizon_day']):g}"
+        nv = naive_by_h[hk]
+        tr_cell = ""
+        if truth_horizons and hk in truth_horizons:
+            tr_cell = f"<td><code>{truth_horizons[hk]['true_rd_event1']:+.4f}</code></td>"
+        ev = h_est["evalue_rr_cif_event1"]
+        ev_txt = f"{ev['point_estimate']:.2f} (CI: {ev['ci_limit_closer_to_null']:.2f})" if ev and ev.get("ci_limit_closer_to_null") is not None else "—"
+        rr_txt = (
+            f"{h_est['ccw_rr_cif_event1']:.3f} [{h_est['ccw_rr_cif_event1_ci_lower']:.3f}, {h_est['ccw_rr_cif_event1_ci_upper']:.3f}]"
+            if h_est["ccw_rr_cif_event1"] is not None and h_est["ccw_rr_cif_event1_ci_lower"] is not None
+            else "—"
+        )
+        comp_trs.append(
+            "<tr>"
+            f"<td><strong>{esc(hk)} 天</strong></td>"
+            + tr_cell
+            + f"<td class='bias-val'>{nv['naive_rd']:+.4f}</td>"
+            f"<td class='ccw-val'><strong>{h_est['ccw_rd_event1']:+.4f}</strong> [{h_est['ccw_rd_event1_ci_lower']:+.4f}, {h_est['ccw_rd_event1_ci_upper']:+.4f}]</td>"
+            f"<td>{nv['immortal_time_bias_rd_inflation']:+.4f}</td>"
+            f"<td>{rr_txt}</td>"
+            f"<td>{h_est['strategy_1_initiate_within_grace']['CIF_2']:.4f} vs {h_est['strategy_0_never_initiate']['CIF_2']:.4f}</td>"
+            f"<td>{esc(ev_txt)}</td>"
+            "</tr>"
+        )
+    truth_th = "<th>合成 DGP 真值 RD</th>" if truth_horizons else ""
+
+    s1_att = attrition["strategy_1_initiate_within_grace"]
+    s0_att = attrition["strategy_0_never_initiate"]
+    shared_ev = attrition["shared_early_events_within_grace_uninitiated"]
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>双侧宽限期 CCW 与不朽时间偏倚校正对比报告 · {esc(protocol['protocol_id'])}</title>
+<style>
+  :root {{ color-scheme: light; --bg: #f8fafc; --card: #ffffff; --ink: #0f172a; --muted: #475569; --border: #cbd5e1; --teal: #0f766e; --red: #b91c1c; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; background: var(--bg); color: var(--ink); line-height: 1.55; }}
+  .wrap {{ max-width: 1160px; margin: 0 auto; padding: 24px 20px 48px; }}
+  .guard-banner {{ background: #fffbeb; border: 1.5px solid #f59e0b; border-radius: 10px; padding: 14px 18px; margin-bottom: 20px; }}
+  .guard-banner strong {{ color: #92400e; }}
+  .guard-banner ul {{ margin: 6px 0 0 18px; padding: 0; font-size: 13px; color: #78350f; }}
+  h1 {{ margin: 0 0 6px; font-size: 24px; }}
+  .meta {{ color: var(--muted); font-size: 14px; margin-bottom: 20px; }}
+  .kpi-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin-bottom: 22px; }}
+  .kpi {{ background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }}
+  .kpi .num {{ font-size: 22px; font-weight: 700; color: var(--teal); }}
+  .kpi .lbl {{ font-size: 12.5px; color: var(--muted); }}
+  .two-col {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); gap: 16px; margin-bottom: 22px; }}
+  .chart-card, .section-card {{ background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin-bottom: 18px; }}
+  .chart-card h3, .section-card h2 {{ margin: 0 0 6px; font-size: 17px; }}
+  .chart-sub {{ margin: 0 0 10px; font-size: 12.5px; color: var(--muted); }}
+  svg {{ width: 100%; height: auto; display: block; }}
+  .legend {{ display: flex; flex-wrap: wrap; gap: 16px; font-size: 12.5px; margin-top: 8px; color: #334155; }}
+  .legend i {{ display: inline-block; width: 12px; height: 3px; vertical-align: middle; margin-right: 6px; }}
+  table {{ width: 100%; border-collapse: collapse; font-size: 13.5px; }}
+  th, td {{ border-bottom: 1px solid #e2e8f0; padding: 9px 10px; text-align: left; }}
+  th {{ background: #f1f5f9; font-weight: 600; }}
+  .bias-val {{ color: var(--red); font-weight: 600; }}
+  .ccw-val {{ color: var(--teal); }}
+  .funnel-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }}
+  .funnel-box {{ background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 14px; font-size: 13.5px; }}
+  .view-tabs {{ display: flex; gap: 8px; margin-bottom: 12px; }}
+  .view-tabs button {{ border: 1px solid var(--border); background: #fff; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; }}
+  .view-tabs button.active {{ background: var(--teal); color: #fff; border-color: var(--teal); }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="guard-banner" role="region" aria-label="合成数据与非临床声明锁">
+    <strong>合成数据与方法学边界声明锁（source_mode = "{esc(SOURCE_MODE_SYNTHETIC_ONLY)}"）</strong>
+    <ul>
+      {"".join(f"<li>{esc(c)}</li>" for c in PROHIBITED_CLAIMS)}
+    </ul>
+  </div>
+
+  <h1>{esc(protocol['study_title'])}</h1>
+  <p class="meta">
+    协议 ID：<code>{esc(protocol['protocol_id'])}</code> · 版本：<code>{esc(protocol['protocol_version'])}</code> ·
+    宽限期 g = <strong>{gp['grace_period_days']}</strong> 天（步长 Δ = {gp['period_length_days']} 天，最大随访 {gp['max_followup_days']} 天） ·
+    方差估计：<code>{esc(estimates['variance_method'])}</code>（Bootstrap {estimates['bootstrap_config']['bootstrap_iterations']} 次）
+  </p>
+
+  <div class="kpi-grid">
+    <div class="kpi"><div class="num">{attrition['total_subjects']} → {attrition['total_clones_created']}</div><div class="lbl">原始合成受试者 → 对称双侧克隆</div></div>
+    <div class="kpi"><div class="num">{shared_ev['total_events']} 例</div><div class="lbl">宽限期 ≤g 未启动前双臂共享早期事件</div></div>
+    <div class="kpi"><div class="num">{pg['max_unweighted_abs_smd']:.3f} → {pg['max_weighted_abs_smd']:.3f}</div><div class="lbl">t=g+ 最大 |SMD|（未加权 → 分臂 IPCW 加权）</div></div>
+    <div class="kpi"><div class="num">{pg['strategy_1_ess_ratio']:.2f} / {pg['strategy_0_ess_ratio']:.2f}</div><div class="lbl">t=g+ 有效样本量比 ESS/N（策略1 / 策略0）</div></div>
+  </div>
+
+  <div class="view-tabs">
+    <button type="button" class="active" onclick="setMode('both', this)">并排对比视图</button>
+    <button type="button" onclick="setMode('naive', this)">仅看朴素事后假阳性曲线</button>
+    <button type="button" onclick="setMode('ccw', this)">仅看双侧 CCW 校正曲线</button>
+  </div>
+  <div class="two-col" id="curve-grid">
+    <div id="panel-naive">{svg_naive}</div>
+    <div id="panel-ccw">{svg_ccw}</div>
+  </div>
+
+  <div class="section-card">
+    <h2>评估时点效应与不朽时间偏倚定量对照表</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>评估时点 t*</th>
+          {truth_th}
+          <th>朴素事后 RD(t*)</th>
+          <th>双侧 CCW RD(t*) [95% CI]</th>
+          <th>不朽时间偏倚膨胀 (naive - ccw)</th>
+          <th>双侧 CCW RR_CIF(t*) [95% CI]</th>
+          <th>竞争事件 CIF_2（策略1 vs 策略0）</th>
+          <th>RR_CIF 总效应 E-value</th>
+        </tr>
+      </thead>
+      <tbody>
+        {"".join(comp_trs)}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="two-col">
+    <div class="section-card">
+      <h2>双克隆与人工删失漏斗（Clone–Censor Attrition Funnel）</h2>
+      <div class="funnel-grid">
+        <div class="funnel-box">
+          <strong>策略 1 克隆（initiate_within_grace，宽限期 ≤ {gp['grace_period_days']}d 启动）</strong>
+          <ul>
+            <li>t = 0 初始克隆数：<code>{s1_att['initial_clones']}</code></li>
+            <li>≤ g 自然结局（人工删失恒为 0）：目标事件 <code>{s1_att['pre_or_at_grace_primary_events']}</code>，竞争事件 <code>{s1_att['pre_or_at_grace_competing_events']}</code>，行政删失 <code>{s1_att['pre_or_at_grace_admin_censored']}</code></li>
+            <li>存活跨越 t = g 人数：<code>{s1_att['surviving_past_grace_boundary']}</code></li>
+            <li>t = g 届满逾期未启动人工删失：<code>{s1_att['artificially_censored_at_grace_end']}</code></li>
+            <li>进入 t = g+ 未删失风险集：<code>{s1_att['uncensored_entering_post_grace']}</code>（ESS = {pg['strategy_1_ess']:.1f}）</li>
+          </ul>
+        </div>
+        <div class="funnel-box">
+          <strong>策略 0 克隆（never_initiate，全程不启动）</strong>
+          <ul>
+            <li>t = 0 初始克隆数：<code>{s0_att['initial_clones']}</code></li>
+            <li>宽限期 ≤ g 内因给药在当期期初人工删失：<code>{s0_att['artificially_censored_within_grace']}</code></li>
+            <li>进入 t = g+ 未删失风险集：<code>{s0_att['uncensored_entering_post_grace']}</code>（ESS = {pg['strategy_0_ess']:.1f}）</li>
+            <li>宽限期后 &gt; g 因延迟给药人工删失：<code>{s0_att['artificially_censored_post_grace']}</code></li>
+            <li>全程未人工删失结局：目标事件 <code>{s0_att['uncensored_primary_events']}</code>，竞争事件 <code>{s0_att['uncensored_competing_events']}</code></li>
+          </ul>
+        </div>
+      </div>
+      <p class="chart-sub" style="margin-top:10px">全局最大稳定化 IPCW 权重：<code>{w_sum['overall_max_weight']:.4f}</code>（门禁上限 <code>{gates['max_stabilized_weight']}</code>）</p>
+    </div>
+
+    <div class="section-card">
+      <h2>t = g+ 基线协变量均衡诊断（未加权橙点 vs 分臂 IPCW 绿点）</h2>
+      {smd_svg}
+      <div class="legend">
+        <span><i style="background:#f59e0b;height:8px;width:8px;border-radius:50%"></i>未加权 |SMD|</span>
+        <span><i style="background:#0f766e;height:8px;width:8px;border-radius:50%"></i>分臂稳定化 IPCW 加权后 |SMD|</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-card">
+    <h2>显式因果识别前提与方法学说明</h2>
+    <ul>
+      {"".join(f"<li>{esc(a)}</li>" for a in CCW_IDENTIFICATION_ASSUMPTIONS)}
+    </ul>
+    <p class="chart-sub">{esc(protocol['methodological_disclaimer'])}</p>
+  </div>
+</div>
+<script>
+function setMode(mode, btn) {{
+  document.querySelectorAll('.view-tabs button').forEach(function(b) {{ b.classList.remove('active'); }});
+  btn.classList.add('active');
+  document.getElementById('panel-naive').style.display = (mode === 'ccw') ? 'none' : 'block';
+  document.getElementById('panel-ccw').style.display = (mode === 'naive') ? 'none' : 'block';
+}}
+</script>
+</body>
+</html>
+"""
+
+
+def run_ccw_synthetic_pipeline(
+    protocol_path: Path | str | dict,
+    *,
+    seed: int,
+    n_cases: int,
+    out_dir: Path,
+    bootstrap_iterations: int = 200,
+    dgp_params: Path | str | dict | None = None,
+    ci_level: float = 0.95,
+) -> tuple[dict[str, Any], int]:
+    """Run end-to-end synthetic CCW benchmark (validate-ccw -> synth-ccw -> run_grace_period_ccw) with HTML report."""
+    check_destination(out_dir)
+    gen = generate_synthetic_ccw_cohort(
+        protocol_path,
+        seed=seed,
+        n_cases=n_cases,
+        dgp_params=dgp_params,
+        out_dir=None,
+    )
+    norm_proto = gen["protocol"]
+    dgp_truth = gen["dgp_truth"]
+    cohort_df: pd.DataFrame = gen["cohort_df"]
+    pp_df: pd.DataFrame | None = gen["person_period_df"]
+
+    # Format cohort.csv bytes deterministically matching synth-ccw
+    base_covs = norm_proto["covariates"]["baseline_covariates"]
+    base_names = [c["name"] for c in base_covs]
+    cohort_fields = [
+        "subject_id",
+        "simulation_or_data_label",
+        "initiation_day",
+        "duration_day",
+        "event_code",
+        *base_names,
+    ]
+    csv_lines = [",".join(cohort_fields)]
+    for idx in range(len(cohort_df)):
+        init_v = cohort_df["initiation_day"].iloc[idx]
+        init_s = "" if pd.isna(init_v) else f"{float(init_v):.6f}"
+        dur_s = f"{float(cohort_df['duration_day'].iloc[idx]):.6f}"
+        ev_s = str(int(cohort_df["event_code"].iloc[idx]))
+        cov_strs = []
+        for j, c in enumerate(base_covs):
+            cv = cohort_df[c["name"]].iloc[idx]
+            cov_strs.append(str(int(cv)) if c["type"] == "binary" else f"{float(cv):.6f}")
+        # Quote simulation_or_data_label safely via csv module
+        row_vals = [
+            str(cohort_df["subject_id"].iloc[idx]),
+            str(cohort_df["simulation_or_data_label"].iloc[idx]),
+            init_s,
+            dur_s,
+            ev_s,
+            *cov_strs,
+        ]
+        csv_lines.append(",".join(f'"{v}"' if ("," in v or '"' in v) else v for v in row_vals))
+    cohort_bytes = ("\n".join(csv_lines) + "\n").encode("utf-8")
+
+    purpose_bytes = (
+        "SYNTHETIC-ONLY BENCHMARK COHORT & CCW AUDIT BUNDLE (tte-ccw-v1)\n"
+        f"Protocol ID: {norm_proto['protocol_id']}\n"
+        f"Label: {norm_proto['simulation_or_data_label']}\n"
+        f"Seed: {seed} | Cases: {n_cases}\n\n"
+        + "\n".join(PROHIBITED_CLAIMS)
+        + "\n"
+    ).encode("utf-8")
+
+    extra_files: list[tuple[str, bytes]] = [
+        ("PURPOSE.txt", purpose_bytes),
+        ("cohort.csv", cohort_bytes),
+        ("dgp_truth.json", json_bytes(dgp_truth)),
+    ]
+    if pp_df is not None:
+        pp_buf = pp_df.to_csv(index=False, lineterminator="\n").encode("utf-8")
+        extra_files.append(("person_period_covariates.csv", pp_buf))
+
+    def _html_with_truth(**kwargs: Any) -> str:
+        return _render_ccw_preview_report_html(**kwargs, dgp_truth=dgp_truth)
+
+    res, exit_code = run_grace_period_ccw(
+        protocol_path,
+        cohort_df,
+        seed=seed,
+        bootstrap_iterations=bootstrap_iterations,
+        ci_level=ci_level,
+        person_period_covariates=pp_df,
+        out_dir=out_dir,
+        extra_stage_files=extra_files,
+        render_html_fn=_html_with_truth,
+    )
+    if exit_code == 0:
+        res["status"] = "ccw_synthetic_pipeline_completed"
+    else:
+        res["status"] = "ccw_synthetic_pipeline_blocked"
+    return res, exit_code
+
+
 def run_grace_period_ccw(
     protocol: Path | str | dict,
     cohort: pd.DataFrame | Path | str,
@@ -2517,7 +2949,7 @@ def run_grace_period_ccw(
     person_period_covariates: pd.DataFrame | Path | str | None = None,
     out_dir: Path | None = None,
     extra_stage_files: list[tuple[str, bytes]] | None = None,
-    render_html_fn: Any = None,
+    render_html_fn: Any = _render_ccw_preview_report_html,
 ) -> tuple[dict[str, Any], int]:
     """Execute bilateral grace-period CCW, fail-closed IPCW diagnostic gating, and subject-cluster bootstrap.
 
@@ -3000,5 +3432,3 @@ def run_grace_period_ccw(
         },
         0,
     )
-
-

@@ -1,7 +1,7 @@
 # `qitong/EmulatRx` 功能与核心 API 概览（Feature & API Overview）
 
-- **GitHub `main` 基线**：[`11e58c2d7ed2028f4a314c33743ff831c30bb831`](https://github.com/qitong/EmulatRx/commit/11e58c2d7ed2028f4a314c33743ff831c30bb831)（[Issue #8](https://github.com/qitong/EmulatRx/issues/8) / [PR #10](https://github.com/qitong/EmulatRx/pull/10) 与 [Issue #9](https://github.com/qitong/EmulatRx/issues/9) / [PR #14](https://github.com/qitong/EmulatRx/pull/14) **均已合并关闭**；最新 `main` CI [run `45156950106`](https://github.com/qitong/EmulatRx/actions/runs/45156950106) 双作业总计 **45 项**离线测试全绿；实时核对时间：`2026-11-24 01:21 CST / 2026-11-23 17:21 UTC`）
-- **定位说明**：以当前已合并 `main`（含 `emulatrx_demo` 标准库套件、`#8` 阶段一确定性 TTE 基础包与 `#9` 阶段二竞争风险生存分析工作台、端到端合成流水线及外部 Agent `skills/emulatrx-tte/SKILL.md` 契约）为唯一已实现事实源；尚未合入 `main` 的独立预览分支（如 [PR #13](https://github.com/qitong/EmulatRx/pull/13)）单独标明**“尚未合并入 `main`”**。所有合成与模拟输出严格锁定 `source_mode: "synthetic_only"` 与 `prohibited_claims`，仅供方法学教学与算法验证，**不构成真实患者数据、临床疗效证据或因果实证证明**。
+- **GitHub `main` 基线**：[`67bb45f`](https://github.com/qitong/EmulatRx/commit/67bb45f)（[Issue #8](https://github.com/qitong/EmulatRx/issues/8) / [PR #10](https://github.com/qitong/EmulatRx/pull/10)、[Issue #9](https://github.com/qitong/EmulatRx/issues/9) / [PR #14](https://github.com/qitong/EmulatRx/pull/14)、[Issue #11](https://github.com/qitong/EmulatRx/issues/11) / [PR #12](https://github.com/qitong/EmulatRx/pull/12) 与私网合成预览 [PR #13](https://github.com/qitong/EmulatRx/pull/13) **均已合并入 `main`**；在途开放分支包括双入口与目标 RCT 匹配工作台 [PR #16](https://github.com/qitong/EmulatRx/pull/16) 及本分支 [Issue #17](https://github.com/qitong/EmulatRx/issues/17) P1 双侧宽限期治疗克隆–删失–加权 `qitong/emulatrx-p1-grace-period-ccw`）
+- **定位说明**：以已合并 `main` 及本分支新增的 P1 双侧宽限期 CCW 模块（`emulatrx_tte.ccw`）为事实源；在途开放 [PR #16](https://github.com/qitong/EmulatRx/pull/16) 与本分支状态均在第五节单独如实标明**“在途待审，尚未合并入 `main`”**。所有合成与模拟输出严格锁定 `source_mode: "synthetic_only"` 与 `prohibited_claims`，仅供方法学教学与算法验证，**不构成真实患者数据、临床疗效证据或因果实证证明**。
 
 ---
 
@@ -99,7 +99,7 @@
 - **调用入口**：`import emulation_utils as eu`（`eu.calculate_evalues(balanced_df, primary_outcome_col, hr, ci_lower=None, ci_upper=None)`）。
 - **最小输入**：包含二元结局列的 `pandas.DataFrame`、结局列名、正数风险比 `hr` 及可选置信区间上下限。
 - **主要输出**：包含 `outcome_incidence`、`is_rare_outcome`、`calculation_method` 与 `e_values`（`point_estimate` 及可选 `ci_limit_closer_to_null`）的字典。
-- **失败状态与已知限制**：对于存在竞争风险的结局，请使用能力卡 9/10（`emulatrx_tte.evalue.compute_evalue` 或 `emulatrx_tte estimate`）；**同时 `adjust_immortal_time_bias` 仍存在漏写治疗克隆宽限期违约删失与混池拟合删失模型的已知局限，在后续动态策略阶段修复前严禁调用**。
+- **失败状态与已知限制**：对于存在竞争风险的结局，请使用能力卡 9/10（`emulatrx_tte.evalue.compute_evalue` 或 `emulatrx_tte estimate`）；**同时遗留缺陷函数 `adjust_immortal_time_bias`（原漏写治疗克隆宽限期届满人工删失且混池拟合单 Cox 删失模型）已在 P1（#17）中收口为显式抛出 `RuntimeError` 防误调护栏，动态宽限期策略推断请统一调用能力卡 13（`emulatrx_tte.ccw`）**。
 - **权限或前提**：`calculate_evalues` 仅需 `numpy`、`pandas`；其余函数需 `scikit-learn`、`causallib`、`lifelines`。
 - **证据**：`emulation_utils.py`、`tests/test_tte_foundation.py`。
 
@@ -175,7 +175,18 @@
 - **入口路径**：[`skills/emulatrx-tte/SKILL.md`](../skills/emulatrx-tte/SKILL.md) 与契约参考 [`docs/tte-cli-and-agent-contract-v1.md`](tte-cli-and-agent-contract-v1.md)。
 - **证据**：`skills/emulatrx-tte/SKILL.md`、`docs/tte-cli-and-agent-contract-v1.md`、`tests/test_tte_competing_risks.py`。
 
-### 最小完全合成调用示例（当前 `main` 离线可复现）
+### 能力卡 13：`emulatrx_tte.ccw`（P1 双侧宽限期治疗克隆–删失–加权与不朽时间偏倚合成验证台｜本分支 #17 实现）
+- **当前 Agent 可调状态**：**已在本分支 `qitong/emulatrx-p1-grace-period-ccw` 实现（待审阅合入 `main`）**
+- **用途**：针对“入组后允许 $g$ 天宽限期内启动治疗 vs 全程不启动”的动态治疗策略对比，通过对称双侧克隆（`clone_and_censor`）、分臂独立拟合无正则极大似然 Pooled Logistic 稳定化 IPCW（严禁混池）、$t=g^+$ 协变量均衡与 ESS/极值 Fail-Closed 门禁、克隆前患者主键个体聚类重拟合 Bootstrap（`subject_cluster_bootstrap_with_ipcw_refit`）及朴素事后分组（Naive Ever-Initiated）有偏曲线并排对照，消除延迟给药不朽时间偏倚并保留 $\le g$ 高危早期事件。
+- **调用入口**：`python -m emulatrx_tte validate-ccw | synth-ccw | run-ccw-synthetic`（Python SDK：`emulatrx_tte.validate_ccw_protocol_dict`、`generate_synthetic_ccw_cohort`、`clone_and_censor`、`run_grace_period_ccw`、`run_ccw_synthetic_pipeline`）。
+- **最小输入**：符合 [`schemas/tte-ccw-v1.schema.json`](../schemas/tte-ccw-v1.schema.json) 的协议 JSON（参见 [`examples/tte_grace_period_ccw_v1.json`](../examples/tte_grace_period_ccw_v1.json)）、显式随机种子 `--seed`、合成样本量 `--cases` 与不存在的新目录 `--out`。
+- **主要输出**：
+  - 门禁通过（退出码 `0`）：原子发布 `normalized_protocol.json`、`protocol_check_report.md`、`cohort.csv`、`dgp_truth.json`、`ccw_attrition.json`、`ccw_diagnostics.json`、`balance_post_grace.csv`、`ccw_estimates.json`、`curves/*.csv`、`audit_report.md`、自包含中文 SVG 交互对比报告 `ccw_preview_report.html` 与 `run_manifest.json`。
+  - 门禁阻断（退出码 `3`）：原子发布诊断证据（`ccw_diagnostics.json`、`ccw_attrition.json`、`run_manifest.json`），**100% 拒绝产出 `ccw_estimates.json`**。
+- **失败状态**：协议/步长不整除/非 `SYN-*` 主键/期后协变量时间穿越返回退出码 `2`；纵向正性/ESS/`|SMD|`/最大权重违背门禁返回退出码 `3`。
+- **证据**：`emulatrx_tte/ccw.py`、`docs/tte-ccw-v1.md`、`tests/test_tte_ccw.py`。
+
+### 最小完全合成调用示例（当前 `main` 与本分支离线可复现）
 
 ```bash
 # 1. 标准库固定模板合成演示（零外部依赖）
@@ -213,16 +224,15 @@ python -m emulatrx_tte estimate \
 
 ---
 
-## 5. 主要 Branch 与关键逻辑分支（GitHub 实时快照：`2026-11-24 01:21 CST`）
+## 5. 主要 Branch 与关键逻辑分支（GitHub 实时快照：`2026-11-24`）
 
 | Git 分支 | 当前提交 / 位置 | 关联 PR / Issue 与状态 |
 | --- | --- | --- |
-| `main` | [`11e58c2`](https://github.com/qitong/EmulatRx/commit/11e58c2d7ed2028f4a314c33743ff831c30bb831)（远端默认分支） | 已合并 [PR #4](https://github.com/qitong/EmulatRx/pull/4)（#1 模板契约）、[PR #5](https://github.com/qitong/EmulatRx/pull/5)（#3 合成演示）、[PR #6](https://github.com/qitong/EmulatRx/pull/6)（#2 来源收据）、[PR #10](https://github.com/qitong/EmulatRx/pull/10)（[#8](https://github.com/qitong/EmulatRx/issues/8) 阶段一确定性 TTE 基础包）及 [PR #14](https://github.com/qitong/EmulatRx/pull/14)（[#9](https://github.com/qitong/EmulatRx/issues/9) 阶段二竞争风险生存分析工作台与外部 Agent `SKILL.md`）；最新 `main` CI [run `45156950106`](https://github.com/qitong/EmulatRx/actions/runs/45156950106) 双作业总计 **45/45** 全绿（`validate` **26** 项 [`18+8`] + `tte-foundation` **19** 项 [`12+7`]），未部署 |
-| `qitong/emulatrx-feature-api-overview` | 基于 `origin/main`（[`11e58c2`](https://github.com/qitong/EmulatRx/commit/11e58c2d7ed2028f4a314c33743ff831c30bb831)）变基收口的只读概览文档分支 | 关联开放 [Issue #11](https://github.com/qitong/EmulatRx/issues/11) 与可审阅 [PR #12](https://github.com/qitong/EmulatRx/pull/12)，在 PR #10 与 PR #14 相继合入后校准本文档至实时已合并 `main` 基线与双作业 45 项 CI 口径并关闭 Issue #11 |
-| `qitong/emulatrx-ymadmin-preview` | 快照时刻 `8b8bc63`（在途持续演进的远端预览分支） | 关联开放 [PR #13](https://github.com/qitong/EmulatRx/pull/13)（在途演进的独立私有合成预览工作台分支）；**尚未合并入 `main`**，不计入当前 `main` 已实现能力 |
-| `qitong/emulatrx-issue9-competing-risks` | `152af06`（远端历史分支，已合入 `11e58c2`） | 关联 [Issue #9](https://github.com/qitong/EmulatRx/issues/9) 与 [PR #14](https://github.com/qitong/EmulatRx/pull/14)，**均已合并关闭** |
-| `qitong/emulatrx-issue8-tte-foundation` | `5ecfd02`（远端历史分支，已合入 `ed9791d`） | 关联 [Issue #8](https://github.com/qitong/EmulatRx/issues/8) 与 [PR #10](https://github.com/qitong/EmulatRx/pull/10)，**均已合并关闭** |
-| `qitong/emulatrx-contract`、`qitong/emulatrx-issue3-synthetic`、`qitong/emulatrx-issue2-live-metadata` | `5289f00`、`2663802`、`47d4dbc`（远端历史分支） | 对应 [PR #4](https://github.com/qitong/EmulatRx/pull/4) / [PR #5](https://github.com/qitong/EmulatRx/pull/5) / [PR #6](https://github.com/qitong/EmulatRx/pull/6) **均已合并关闭**，无未决变更 |
+| `main` | [`67bb45f`](https://github.com/qitong/EmulatRx/commit/67bb45f)（远端默认分支） | 已合并 [PR #4](https://github.com/qitong/EmulatRx/pull/4)、[PR #5](https://github.com/qitong/EmulatRx/pull/5)、[PR #6](https://github.com/qitong/EmulatRx/pull/6)、[PR #10](https://github.com/qitong/EmulatRx/pull/10)（[#8](https://github.com/qitong/EmulatRx/issues/8) 阶段一 TTE 基础包）、[PR #14](https://github.com/qitong/EmulatRx/pull/14)（[#9](https://github.com/qitong/EmulatRx/issues/9) 阶段二竞争风险工作台）、[PR #12](https://github.com/qitong/EmulatRx/pull/12)（[#11](https://github.com/qitong/EmulatRx/issues/11) 功能概览）及 [PR #13](https://github.com/qitong/EmulatRx/pull/13)（私网合成预览服务） |
+| `qitong/emulatrx-dualmode-rct-workbench` | 在途开放分支 | 关联开放 [PR #16](https://github.com/qitong/EmulatRx/pull/16)（面向研究者的想法/数据双入口、ClinicalTrials 目标 RCT 匹配与真/模双轨 TTE 工作台）；**在途待审，尚未合并入 `main`** |
+| `qitong/emulatrx-p1-grace-period-ccw` | 基于 `origin/main`（[`67bb45f`](https://github.com/qitong/EmulatRx/commit/67bb45f)）隔离实现分支 | 关联开放 [Issue #17](https://github.com/qitong/EmulatRx/issues/17)（P1 双侧宽限期治疗克隆–删失–加权 CCW 方法模块与不朽时间偏倚合成验证，并收口遗留 `adjust_immortal_time_bias` 防误调护栏）；**在途 Draft PR 待审，尚未合并入 `main`** |
+| `qitong/emulatrx-issue9-competing-risks`、`qitong/emulatrx-issue8-tte-foundation`、`qitong/emulatrx-ymadmin-preview`、`qitong/emulatrx-feature-api-overview` | 远端已合并历史分支 | 对应 [PR #14](https://github.com/qitong/EmulatRx/pull/14) / [PR #10](https://github.com/qitong/EmulatRx/pull/10) / [PR #13](https://github.com/qitong/EmulatRx/pull/13) / [PR #12](https://github.com/qitong/EmulatRx/pull/12) **均已合并关闭** |
+| `qitong/emulatrx-contract`、`qitong/emulatrx-issue3-synthetic`、`qitong/emulatrx-issue2-live-metadata` | 远端已合并历史分支 | 对应 [PR #4](https://github.com/qitong/EmulatRx/pull/4) / [PR #5](https://github.com/qitong/EmulatRx/pull/5) / [PR #6](https://github.com/qitong/EmulatRx/pull/6) **均已合并关闭**，无未决变更 |
 
 - **关键业务与治理逻辑分支**：
   - **校验/门禁与估计全部通过（退出码 `0`）**：输入符合七要素契约、上游/当次统计诊断门禁 `gate_status == "passed"` 且目标目录不存在 → 同级临时目录写齐产物与 SHA-256 `run_manifest.json` 后原子重命名发布。

@@ -1,6 +1,6 @@
 ---
 name: emulatrx-tte
-description: Run deterministic Target Trial Emulation (TTE) protocol validation, synthetic competing-risks cohort benchmarking, overlap/IPTW diagnostic gating, and weighted competing-risks survival analysis (Aalen-Johansen CIF, Fine-Gray sHR, cause-specific Cox csHR, horizon RD/RR_CIF, E-values) via `python -m emulatrx_tte`. Trigger when validating TTE seven-element protocols, diagnosing propensity/overlap balance gates, estimating survival under competing mortality, or generating SHA-256 audited synthetic TTE bundles.
+description: Run deterministic Target Trial Emulation (TTE) protocol validation, synthetic competing-risks cohort benchmarking, overlap/IPTW diagnostic gating, weighted competing-risks survival analysis (Aalen-Johansen CIF, Fine-Gray sHR, cause-specific Cox csHR, horizon RD/RR_CIF, E-values), and bilateral grace-period Clone-Censor-Weight (CCW) immortal-time bias correction (`validate-ccw`, `synth-ccw`, `run-ccw-synthetic`) via `python -m emulatrx_tte`. Trigger when validating TTE seven-element or grace-period CCW protocols, diagnosing propensity/overlap/IPCW balance gates, correcting immortal-time bias under delayed treatment initiation, estimating survival under competing mortality, or generating SHA-256 audited synthetic TTE bundles.
 ---
 
 # `emulatrx-tte` External Agent Execution Contract
@@ -69,6 +69,36 @@ python -m emulatrx_tte estimate \
 ```
 
 **Completion criterion**: Process exits `0`, `run_manifest.json` exists in `--out`, and every file in `output_sha256` matches its on-disk SHA-256 digest.
+
+### Option C: Bilateral Grace-Period Clone–Censor–Weight (`validate-ccw` / `synth-ccw` / `run-ccw-synthetic`)
+
+Use when treatment initiation occurs within a post-baseline grace window $[0, g]$ (`schemas/tte-ccw-v1.schema.json`) to eliminate immortal-time bias without discarding early $\le g$ events:
+
+```bash
+# Validate tte-ccw-v1 protocol JSON (divisible time grid Δ, anti-time-travel covariate rules)
+python -m emulatrx_tte validate-ccw \
+  --protocol examples/tte_grace_period_ccw_v1.json \
+  --out /tmp/ccw-step1-protocol
+
+# Generate seeded synthetic delayed-initiation cohort + counterfactual truth
+python -m emulatrx_tte synth-ccw \
+  --protocol examples/tte_grace_period_ccw_v1.json \
+  --seed 42 \
+  --cases 2500 \
+  --out /tmp/ccw-step2-synth
+
+# End-to-end bilateral CCW + subject-cluster bootstrap + Chinese SVG preview report
+python -m emulatrx_tte run-ccw-synthetic \
+  --protocol examples/tte_grace_period_ccw_v1.json \
+  --seed 42 \
+  --cases 2500 \
+  --bootstrap-iterations 200 \
+  --out /tmp/ccw-run-synthetic
+```
+
+- Never call legacy `emulation_utils.adjust_immortal_time_bias` (disabled with `RuntimeError` due to missing grace-period censoring and pooled Cox censoring defects).
+- On exit code `3` (`UNCENSORED_BELOW_MIN`, `MAX_WEIGHT_EXCEEDED`, `ESS_RATIO_BELOW_MIN`, `POST_GRACE_SMD_EXCEEDS_MAX`), `run-ccw-synthetic` writes `ccw_diagnostics.json`, `ccw_attrition.json`, and `run_manifest.json` while **100% omitting** `ccw_estimates.json`.
+- Always report `ccw_rd_event1` (`subject_cluster_bootstrap_with_ipcw_refit` 95% CI) alongside `naive_immortal_time_comparison` (`naive_rd` and `immortal_time_bias_rd_inflation = naive_rd - ccw_rd`) and the four mandatory causal identification assumptions.
 
 ## 3. Exit Codes & Fail-Closed Gate Rules
 
