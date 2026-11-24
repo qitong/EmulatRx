@@ -113,6 +113,13 @@ SAFE_CONTROLLED_CLINICAL_WORDS: frozenset[str] = frozenset(
     }
 )
 
+ANON_CATEGORY_PLACEHOLDER_RE = re.compile(r"^CATEGORY_LEVEL_\d+$")
+SUBJECT_ID_INLINE_RE = re.compile(r"\b(?:Hosp|ONC|PAT|MRN|SUBJ|SYN)[-_][0-9]{2,}[-_0-9]*\b", re.IGNORECASE)
+STRUCTURAL_ENUM_PARENT_KEYS: frozenset[str] = frozenset({"privacy_contract", "dtype_kind", "inferred_role"})
+CANONICAL_CONTROLLED_TERMS: frozenset[str] = frozenset(
+    {term for _, en_term, _, zh_label in BILINGUAL_CLINICAL_TERMS for term in (en_term, zh_label)}
+)
+
 
 def is_whitelisted_clinical_category(label: str, count: int) -> bool:
     """Return True ONLY if `label` has >= MIN_K_ANONYMITY_CATEGORY_COUNT observations AND consists 100% of controlled clinical vocabulary."""
@@ -459,39 +466,140 @@ def sanitize_study_context_for_llm(context_summary: dict | None) -> dict:
     }
 
 
-def assert_llm_payload_privacy_safe(payload_bytes: bytes, forbidden_values: list[str] | tuple[str, ...] = ()) -> None:
-    """Fail-closed outbound LLM payload inspector blocking raw cohort tokens, IDs, person names, and digit identifiers."""
-    text = payload_bytes.decode("utf-8", errors="replace")
-    text_lower = text.lower()
+def _extract_cohort_context_leaves(
+    node: object,
+    *,
+    parent_key: str | None = None,
+    in_column_entry: bool = False,
+) -> tuple[list[str], list[str]]:
+    """Extract (value_leaves, column_name_leaves) from structured `cohort_outbound_context`, ignoring JSON keys and static code enums."""
+    value_leaves: list[str] = []
+    column_name_leaves: list[str] = []
+    if isinstance(node, dict):
+        for k, v in node.items():
+            key_str = str(k)
+            if key_str == "columns" and isinstance(v, list):
+                for col_item in v:
+                    vl, cl = _extract_cohort_context_leaves(col_item, parent_key="columns", in_column_entry=True)
+                    value_leaves.extend(vl)
+                    column_name_leaves.extend(cl)
+            else:
+                vl, cl = _extract_cohort_context_leaves(v, parent_key=key_str, in_column_entry=in_column_entry)
+                value_leaves.extend(vl)
+                column_name_leaves.extend(cl)
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            vl, cl = _extract_cohort_context_leaves(item, parent_key=parent_key, in_column_entry=in_column_entry)
+            value_leaves.extend(vl)
+            column_name_leaves.extend(cl)
+    elif isinstance(node, str):
+        if parent_key in STRUCTURAL_ENUM_PARENT_KEYS:
+            return value_leaves, column_name_leaves
+        if in_column_entry and parent_key == "name":
+            column_name_leaves.append(node)
+        else:
+            value_leaves.append(node)
+    return value_leaves, column_name_leaves
+
+
+def assert_llm_payload_privacy_safe(
+    cohort_outbound_context: dict | list | str | bytes,
+    forbidden_values: list[str] | tuple[str, ...] = (),
+) -> None:
+    """Fail-closed inspector scoped exclusively to `cohort_outbound_context` non-column-name leaf values and PII patterns.
+
+    System prompt templates (Layer A), fixed JSON schema keys (Layer A), column names, and public external
+    ClinicalTrials.gov trial records (Layer B) are never matched against `forbidden_values`, eliminating
+    false positives when a cohort column contains common English category values like 'patient', 'claims', or 'study'.
+    """
+    target_node: object = cohort_outbound_context
+    if isinstance(cohort_outbound_context, (bytes, bytearray)):
+        raw_text = bytes(cohort_outbound_context).decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(raw_text)
+        except Exception:
+            parsed = raw_text
+        if isinstance(parsed, dict) and isinstance(parsed.get("messages"), list) and len(parsed["messages"]) > 1:
+            user_content = str(parsed["messages"][1].get("content", ""))
+            try:
+                user_json = json.loads(user_content)
+                target_node = (
+                    user_json["cohort_outbound_context"]
+                    if isinstance(user_json, dict) and "cohort_outbound_context" in user_json
+                    else user_json
+                )
+            except Exception:
+                target_node = user_content
+        else:
+            target_node = parsed
+
+    if (
+        isinstance(target_node, dict)
+        and "cohort_outbound_context" in target_node
+        and set(target_node.keys()) <= {"cohort_outbound_context", "public_reference_context"}
+    ):
+        target_node = target_node["cohort_outbound_context"]
+
+    if isinstance(target_node, str):
+        value_leaves, column_name_leaves = [target_node], []
+    else:
+        value_leaves, column_name_leaves = _extract_cohort_context_leaves(target_node)
+
+    # 1. Check PII / subject ID / standalone >=6-digit numeric identifiers across both value leaves and column names
+    for leaf in [*value_leaves, *column_name_leaves]:
+        id_hit = SUBJECT_ID_INLINE_RE.search(leaf)
+        if id_hit:
+            raise ContractError(
+                "PRIVACY_VIOLATION_BLOCKED",
+                f"Blocked outbound LLM context containing subject identifier pattern '{id_hit.group(0)}'.",
+            )
+        digit_hit = STANDALONE_LONG_DIGITS_RE.search(leaf)
+        if digit_hit:
+            raise ContractError(
+                "PRIVACY_VIOLATION_BLOCKED",
+                f"Blocked outbound LLM context containing numeric identifier '{digit_hit.group(0)}'.",
+            )
+
+    # 2. Check session `forbidden_values` strictly on non-column-name value leaves of `cohort_outbound_context`
+    cleaned_forbidden: list[tuple[str, str, re.Pattern[str] | None]] = []
     for token in forbidden_values:
         tok_str = str(token).strip()
         if not tok_str or len(tok_str) < 3:
             continue
-        # Never block whitelisted clinical vocabulary words themselves if caller accidentally included one
-        if tok_str.lower() in SAFE_CONTROLLED_CLINICAL_WORDS:
+        tok_lower = tok_str.lower()
+        if tok_lower in SAFE_CONTROLLED_CLINICAL_WORDS or tok_str in CANONICAL_CONTROLLED_TERMS:
             continue
-        if tok_str in text or (len(tok_str) >= 5 and tok_str.lower() in text_lower):
-            raise ContractError(
-                "PRIVACY_VIOLATION_BLOCKED",
-                "Blocked outbound LLM request containing an unverified cohort value or note identifier.",
+        word_pat = (
+            re.compile(rf"(?<![A-Za-z0-9]){re.escape(tok_lower)}(?![A-Za-z0-9])")
+            if tok_str.isascii() and tok_str.isalpha()
+            else None
+        )
+        cleaned_forbidden.append((tok_str, tok_lower, word_pat))
+
+    if not cleaned_forbidden:
+        return
+
+    for leaf in value_leaves:
+        s = leaf.strip()
+        if (
+            not s
+            or ANON_CATEGORY_PLACEHOLDER_RE.fullmatch(s)
+            or s.lower() in SAFE_CONTROLLED_CLINICAL_WORDS
+            or s in CANONICAL_CONTROLLED_TERMS
+        ):
+            continue
+        s_lower = s.lower()
+        for tok_str, tok_lower, word_pat in cleaned_forbidden:
+            matched = (
+                s_lower == tok_lower
+                or (word_pat is not None and bool(word_pat.search(s_lower)))
+                or (word_pat is None and (tok_str in s or (len(tok_str) >= 4 and tok_lower in s_lower)))
             )
-    for match in re.findall(r"\b(?:Hosp|ONC|PAT|MRN|SUBJ|SYN)[-_][0-9]{2,}[-_0-9]*\b", text, flags=re.IGNORECASE):
-        raise ContractError(
-            "PRIVACY_VIOLATION_BLOCKED",
-            f"Blocked outbound LLM request containing subject identifier pattern '{match}'.",
-        )
-    # Block standalone >=6 digit numeric identifiers inside the user prompt content (NCT######## has 'T' before digits so it is unaffected)
-    try:
-        outer = json.loads(text)
-        user_msg = outer["messages"][1]["content"] if isinstance(outer.get("messages"), list) and len(outer["messages"]) > 1 else text
-    except Exception:
-        user_msg = text
-    digit_hit = STANDALONE_LONG_DIGITS_RE.search(str(user_msg))
-    if digit_hit:
-        raise ContractError(
-            "PRIVACY_VIOLATION_BLOCKED",
-            f"Blocked outbound LLM request containing numeric identifier '{digit_hit.group(0)}'.",
-        )
+            if matched:
+                raise ContractError(
+                    "PRIVACY_VIOLATION_BLOCKED",
+                    "Blocked outbound LLM cohort context containing an unverified cohort value or note identifier.",
+                )
 
 
 def _is_reasoning_model(model_name: str) -> bool:
@@ -499,29 +607,67 @@ def _is_reasoning_model(model_name: str) -> bool:
     return any(tok in ml for tok in ("reasoner", "deepseek-r1", "-r1", "qwq", "o1-", "o3-"))
 
 
-def _call_chat_json(system_prompt: str, user_payload: dict, *, forbidden_values: tuple[str, ...] = ()) -> dict | None:
-    """Invoke OpenAI / DeepSeek / DashScope compatible `/chat/completions` without OpenAI-proprietary schema locks."""
+def build_verified_llm_messages(
+    system_prompt: str,
+    *,
+    cohort_outbound_context: dict,
+    public_reference_context: dict | None = None,
+    forbidden_values: tuple[str, ...] = (),
+) -> list[dict[str, str]]:
+    """Assemble OpenAI-compatible `messages` from three strictly isolated payload layers:
+
+    - Layer A (`system_prompt` & fixed JSON envelope keys): static code templates, zero user data.
+    - Layer B (`public_reference_context`): public external ClinicalTrials.gov records, zero user data.
+    - Layer C (`cohort_outbound_context`): sanitized cohort/study context verified by `assert_llm_payload_privacy_safe`.
+    """
+    if not isinstance(cohort_outbound_context, dict):
+        raise ContractError("INVALID_LLM_CONTEXT", "cohort_outbound_context must be a JSON object")
+
+    assert_llm_payload_privacy_safe(cohort_outbound_context, forbidden_values=forbidden_values)
+
+    json_instruction = (
+        f"{system_prompt}\n"
+        "IMPORTANT: Output ONLY a single valid JSON object. Do not wrap in extra commentary."
+    )
+    user_envelope: dict[str, dict] = {"cohort_outbound_context": cohort_outbound_context}
+    if public_reference_context is not None:
+        if not isinstance(public_reference_context, dict):
+            raise ContractError("INVALID_LLM_CONTEXT", "public_reference_context must be a JSON object")
+        user_envelope["public_reference_context"] = public_reference_context
+
+    return [
+        {"role": "system", "content": json_instruction},
+        {"role": "user", "content": json.dumps(user_envelope, ensure_ascii=False)},
+    ]
+
+
+def _call_chat_json(
+    system_prompt: str,
+    *,
+    cohort_outbound_context: dict,
+    public_reference_context: dict | None = None,
+    forbidden_values: tuple[str, ...] = (),
+) -> dict | None:
+    """Invoke OpenAI / DeepSeek / DashScope compatible `/chat/completions` with 3-layer payload separation."""
     cfg = _resolve_llm_config()
     if not cfg["enabled"]:
         return None
 
     model_name = cfg["configured_model"]
-    json_instruction = (
-        f"{system_prompt}\n"
-        "IMPORTANT: Output ONLY a single valid JSON object. Do not wrap in extra commentary."
+    messages = build_verified_llm_messages(
+        system_prompt,
+        cohort_outbound_context=cohort_outbound_context,
+        public_reference_context=public_reference_context,
+        forbidden_values=forbidden_values,
     )
     body_obj: dict = {
         "model": model_name,
-        "messages": [
-            {"role": "system", "content": json_instruction},
-            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-        ],
+        "messages": messages,
     }
     if not _is_reasoning_model(model_name):
         body_obj["temperature"] = 0.1
 
     raw_body = json.dumps(body_obj, ensure_ascii=False).encode("utf-8")
-    assert_llm_payload_privacy_safe(raw_body, forbidden_values=forbidden_values)
 
     url = f"{cfg['base_url']}/chat/completions"
     req = Request(
@@ -620,8 +766,9 @@ def parse_research_idea_pico(idea_text: str) -> dict:
         "assist_mode": "deterministic_rules",
     }
 
-    # Scrub any accidental standalone >=6 digit IDs even in free-text research idea before LLM call
+    # Scrub any accidental standalone >=6 digit or subject IDs even in free-text research idea before LLM call
     scrubbed_idea = STANDALONE_LONG_DIGITS_RE.sub("[REDACTED_NUM]", clean_idea[:1500])
+    scrubbed_idea = SUBJECT_ID_INLINE_RE.sub("[REDACTED_ID]", scrubbed_idea)
     llm_out = _call_chat_json(
         (
             "You are a clinical epidemiologist specializing in Target Trial Emulation (TTE). "
@@ -629,7 +776,7 @@ def parse_research_idea_pico(idea_text: str) -> dict:
             "Return JSON with keys: population, intervention, comparator, primary_outcome, competing_event, "
             "condition_query_en, intervention_query_en, search_query_en."
         ),
-        {"idea_text": scrubbed_idea},
+        cohort_outbound_context={"idea_text": scrubbed_idea},
     )
     if isinstance(llm_out, dict) and llm_out.get("search_query_en"):
         merged = dict(fallback_pico)
@@ -703,11 +850,11 @@ def interpret_cohort_profile(profile: dict, user_note: str = "", *, forbidden_va
         (
             "You are a clinical biostatistician assisting Target Trial Emulation (TTE). "
             "Given ONLY whitelisted schema-level summary statistics and anonymous CATEGORY_LEVEL_* placeholders "
-            "(never patient rows), infer the clinical disease/drug domain in Chinese and produce English search "
-            "keywords for ClinicalTrials.gov API v2. "
+            "inside cohort_outbound_context (never patient rows), infer the clinical disease/drug domain in Chinese "
+            "and produce English search keywords for ClinicalTrials.gov API v2. "
             "Return JSON with keys: domain_summary_zh, condition_query_en, intervention_query_en, search_query_en."
         ),
-        safe_summary,
+        cohort_outbound_context=safe_summary,
         forbidden_values=combined_forbidden,
     )
     if isinstance(llm_out, dict) and llm_out.get("search_query_en"):
@@ -726,7 +873,7 @@ def rerank_and_explain_rcts(
     *,
     forbidden_values: tuple[str, ...] = (),
 ) -> tuple[list[dict], str]:
-    """Optionally refine candidate RCT ranking and Chinese match rationale via LLM using strictly whitelisted study_context."""
+    """Optionally refine candidate RCT ranking and Chinese match rationale via LLM using 3-layer separated context."""
     if not candidates:
         return [], get_llm_status()["mode"]
 
@@ -746,11 +893,13 @@ def rerank_and_explain_rcts(
     ]
     llm_out = _call_chat_json(
         (
-            "You are a Target Trial Emulation trialist. Rank the candidate ClinicalTrials.gov RCTs against the "
-            "whitelisted clinical concepts and provide a concise Chinese match rationale for each trial. "
+            "You are a Target Trial Emulation trialist. Rank the candidate ClinicalTrials.gov RCTs in "
+            "public_reference_context against the whitelisted clinical concepts in cohort_outbound_context "
+            "and provide a concise Chinese match rationale for each trial. "
             "Return JSON: {\"rankings\": [{\"nct_id\": \"NCT...\", \"score\": 0-99, \"reason_zh\": \"...\"}]}"
         ),
-        {"study_context": safe_context, "candidates": compact_candidates},
+        cohort_outbound_context={"study_context": safe_context},
+        public_reference_context={"candidates": compact_candidates},
         forbidden_values=forbidden_values,
     )
     if isinstance(llm_out, dict) and isinstance(llm_out.get("rankings"), list):

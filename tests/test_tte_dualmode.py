@@ -168,9 +168,11 @@ class PrivacyGuardAndLLMAssistTests(unittest.TestCase):
             self.assertNotIn("ONC-880", sent_text)
             self.assertNotIn("队列备注含意外患者号", sent_text)
 
-            # Parse inner user message JSON and verify only schema + aggregate stats + whitelisted concepts exist
+            # Parse inner user message JSON envelope and verify only schema + aggregate stats + whitelisted concepts exist
             outer = json.loads(sent_text)
-            inner_payload = json.loads(outer["messages"][1]["content"])
+            inner_envelope = json.loads(outer["messages"][1]["content"])
+            self.assertIn("cohort_outbound_context", inner_envelope)
+            inner_payload = inner_envelope["cohort_outbound_context"]
             self.assertEqual(inner_payload["privacy_contract"], "schema_and_aggregates_only_zero_individual_rows")
             self.assertIn("whitelisted_domain_concepts", inner_payload)
             self.assertNotIn("user_note", inner_payload)
@@ -272,12 +274,43 @@ class PrivacyGuardAndLLMAssistTests(unittest.TestCase):
             for forbidden in ("Alice Smith", "Bob Jones", "123456789", "PT-0001", "Patient identifier"):
                 self.assertNotIn(forbidden, body)
 
-        first_inner = json.loads(json.loads(captured[0])["messages"][1]["content"])
+        first_envelope = json.loads(json.loads(captured[0])["messages"][1]["content"])
+        first_inner = first_envelope["cohort_outbound_context"]
         cols_by_name = {c["name"]: c for c in first_inner["columns"]}
         self.assertEqual(cols_by_name["site_group"]["distinct_categories"], ["CATEGORY_LEVEL_1", "CATEGORY_LEVEL_2"])
         # Whitelisted drugs with count=10 >= 5 stay literal; rare_status 'death' with count=3 < 5 becomes CATEGORY_LEVEL_2
         self.assertEqual(cols_by_name["initiated_drug"]["distinct_categories"], ["Dapagliflozin", "Sitagliptin"])
         self.assertEqual(cols_by_name["rare_status"]["distinct_categories"], ["censored", "CATEGORY_LEVEL_2"])
+
+        # Verify column-name vs cell-value separation & Layer A/B isolation:
+        # Column named 'source' does NOT false-positive when another column had forbidden cell value 'source',
+        # while an unredacted forbidden value inside `distinct_categories` DOES fail-closed!
+        msgs_ok = llm_assist.build_verified_llm_messages(
+            "System prompt mentioning patient rows and clinical study trials.",
+            cohort_outbound_context={
+                "privacy_contract": "schema_and_aggregates_only_zero_individual_rows",
+                "columns": [
+                    {"name": "source", "dtype_kind": "categorical", "inferred_role": "categorical_covariate", "distinct_categories": ["CATEGORY_LEVEL_1"]},
+                    {"name": "data_origin", "dtype_kind": "categorical", "inferred_role": "categorical_covariate", "distinct_categories": ["CATEGORY_LEVEL_1", "CATEGORY_LEVEL_2"]},
+                ],
+                "whitelisted_domain_concepts": ["Heart Failure", "Dapagliflozin"],
+            },
+            public_reference_context={
+                "candidates": [{"nct_id": "NCT03036124", "brief_title": "Adult patients in claims study from hospital source"}]
+            },
+            forbidden_values=("patient", "claims", "study", "hospital", "source", "level"),
+        )
+        self.assertEqual(len(msgs_ok), 2)
+
+        with self.assertRaises(ContractError) as ctx_cell_leak:
+            llm_assist.build_verified_llm_messages(
+                "System prompt",
+                cohort_outbound_context={
+                    "columns": [{"name": "data_origin", "distinct_categories": ["claims"]}],
+                },
+                forbidden_values=("patient", "claims"),
+            )
+        self.assertEqual(ctx_cell_leak.exception.code, "PRIVACY_VIOLATION_BLOCKED")
 
     def test_deterministic_fallback_without_llm_key_and_on_llm_network_error(self):
         env_clean = {

@@ -581,6 +581,186 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
         self.assertEqual(resp_stream.json()["code"], "COHORT_FILE_TOO_LARGE")
         self.assertIn("25 MB", resp_stream.json()["error"])
 
+    def test_common_english_cohort_categories_patient_claims_study_full_4step_e2e(self):
+        """Regression test (Codex Round 2): 20-row cohort with data_origin='patient'/'claims'/'study' & column 'source' completes all 4 steps with 0 false-positive 400s."""
+        rows = ["deid_id,data_origin,source,initiated_drug,followup_months,endpoint,age_years"]
+        origins = ["patient"] * 8 + ["claims"] * 7 + ["study"] * 5
+        sources = ["hospital"] * 10 + ["source"] * 10
+        for i in range(20):
+            drug = "Dapagliflozin" if i % 2 == 0 else "Sitagliptin"
+            if i in (0, 2, 4, 1, 3, 5, 7):
+                ep = "hf_hospitalization"
+            elif i in (6, 8, 9, 11):
+                ep = "cv_death"
+            else:
+                ep = "censored"
+            fu = 6.0 + (i % 10) * 1.8
+            age = 52 + (i % 18)
+            rows.append(f"PT-{i + 1:04d},{origins[i]},{sources[i]},{drug},{fu:.1f},{ep},{age}")
+        csv_bytes = ("\n".join(rows) + "\n").encode("utf-8")
+
+        claims_trial_payload = {
+            "studies": [
+                {
+                    "protocolSection": {
+                        "identificationModule": {
+                            "nctId": "NCT03036124",
+                            "briefTitle": "Adult patients in claims study of Dapagliflozin in Heart Failure",
+                            "officialTitle": "Hospital study of Dapagliflozin vs Sitagliptin in adult patients",
+                        },
+                        "statusModule": {"overallStatus": "COMPLETED"},
+                        "designModule": {
+                            "studyType": "INTERVENTIONAL",
+                            "phases": ["PHASE3"],
+                            "enrollmentInfo": {"count": 4744},
+                            "designInfo": {"allocation": "RANDOMIZED"},
+                        },
+                        "conditionsModule": {"conditions": ["Heart Failure"]},
+                        "armsInterventionsModule": {
+                            "armGroups": [
+                                {"label": "Dapagliflozin 10 mg", "type": "EXPERIMENTAL"},
+                                {"label": "Sitagliptin / Standard Control", "type": "ACTIVE_COMPARATOR"},
+                            ],
+                            "interventions": [
+                                {"name": "Dapagliflozin", "type": "DRUG"},
+                                {"name": "Sitagliptin", "type": "DRUG"},
+                            ],
+                        },
+                        "eligibilityModule": {
+                            "minimumAge": "18 Years",
+                            "maximumAge": "N/A",
+                            "sex": "ALL",
+                            "eligibilityCriteria": "Inclusion Criteria:\n* Adult patients in claims study >= 18 years",
+                        },
+                        "outcomesModule": {
+                            "primaryOutcomes": [
+                                {
+                                    "measure": "Worsening Heart Failure or Cardiovascular Death in Study Patients",
+                                    "timeFrame": "Up to 18 months",
+                                }
+                            ]
+                        },
+                    },
+                    "hasResults": True,
+                }
+            ]
+        }
+
+        captured_user_envelopes: list[dict] = []
+
+        def fake_llm(req, timeout):
+            outer = json.loads(req.data.decode("utf-8"))
+            user_env = json.loads(outer["messages"][1]["content"])
+            captured_user_envelopes.append(user_env)
+            if "public_reference_context" in user_env:
+                ans = {"rankings": [{"nct_id": "NCT03036124", "score": 96, "reason_zh": "心衰终点与暴露策略一致"}]}
+            else:
+                ans = {
+                    "domain_summary_zh": "心衰观察性队列",
+                    "condition_query_en": "Heart Failure",
+                    "intervention_query_en": "Dapagliflozin",
+                    "search_query_en": "Dapagliflozin Heart Failure",
+                }
+            return _FakeHTTPResp(json.dumps({"choices": [{"message": {"content": json.dumps(ans)}}]}).encode("utf-8"))
+
+        def fake_ctgov(req, timeout):
+            return _FakeHTTPResp(json.dumps(claims_trial_payload).encode("utf-8"))
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "EMULATRX_LLM_API_KEY_FILE": str(self.base / "absent_secret"),
+                "EMULATRX_LLM_API_KEY": "sk-deepseek-online-sim",
+                "EMULATRX_LLM_BASE_URL": "https://api.deepseek.com",
+                "EMULATRX_LLM_MODEL": "deepseek-chat",
+            },
+            clear=False,
+        ):
+            with mock.patch.object(llm_assist, "urlopen_llm", side_effect=fake_llm), mock.patch.object(
+                rct_matcher, "urlopen_ctgov", side_effect=fake_ctgov
+            ):
+                # Step 1: Upload 20-row cohort with data_origin='patient'/'claims'/'study' -> HTTP 200
+                up = self.client.post(
+                    "/api/sessions/upload",
+                    headers=self.web_auth,
+                    files={"file": ("claims_cohort.csv", csv_bytes, "text/csv")},
+                    data={"user_note": "real-world patient claims study 达格列净治疗心衰"},
+                )
+                self.assertEqual(up.status_code, 200, up.text)
+                sid = up.json()["session_id"]
+                self.assertEqual(up.json()["profile"]["row_count"], 20)
+
+                # Step 2: Update session note -> HTTP 200
+                note_resp = self.client.post(
+                    f"/api/sessions/{sid}/note",
+                    headers=self.web_auth,
+                    json={"user_note": "hospital baseline patient claims cohort 心力衰竭与达格列净"},
+                )
+                self.assertEqual(note_resp.status_code, 200, note_resp.text)
+
+                # Step 3: Search & LLM-rerank candidate RCT containing 'Adult patients in claims study' -> HTTP 200
+                srch = self.client.post(
+                    "/api/rcts/search",
+                    headers=self.web_auth,
+                    json={
+                        "session_id": sid,
+                        "project_mode": "user_cohort",
+                        "query": up.json()["interpretation"]["search_query_en"],
+                        "condition": up.json()["interpretation"]["condition_query_en"],
+                        "intervention": up.json()["interpretation"]["intervention_query_en"],
+                        "context_summary": up.json()["interpretation"],
+                    },
+                )
+                self.assertEqual(srch.status_code, 200, srch.text)
+                self.assertEqual(srch.json()["ranking_mode"], "llm_assisted")
+                rct_card = srch.json()["candidates"][0]
+                self.assertIn("Adult patients in claims study", rct_card["brief_title"])
+
+                # Step 4: Draft column mapping (HTTP 200) & run user_cohort TTE pipeline to completion
+                draft = self.client.post(
+                    "/api/rcts/draft",
+                    headers=self.web_auth,
+                    json={"project_mode": "user_cohort", "session_id": sid, "target_rct": rct_card},
+                )
+                self.assertEqual(draft.status_code, 200, draft.text)
+                mapping = draft.json()["mapping"]
+                mapping["covariate_columns"] = ["age_years"]
+                mapping["eligibility_criteria"] = []
+                mapping["max_abs_smd"] = 0.50
+                mapping["bootstrap_iterations"] = 20
+
+                launched = self.client.post(
+                    "/api/dual-runs",
+                    headers=self.web_auth,
+                    json={"project_mode": "user_cohort", "session_id": sid, "mapping": mapping, "target_rct": rct_card},
+                )
+                self.assertEqual(launched.status_code, 202, launched.text)
+                final = self.wait_dual_run(launched.json()["run_id"])
+                self.assertEqual(final["state"], "completed", final)
+                self.assertEqual(final["gate_status"], "passed", final)
+
+        # Verify all 3 LLM calls had strictly sanitized `cohort_outbound_context` (converted to CATEGORY_LEVEL_*)
+        self.assertEqual(len(captured_user_envelopes), 3)
+        prof_ctx = captured_user_envelopes[0]["cohort_outbound_context"]
+        cols_sent = {c["name"]: c for c in prof_ctx["columns"]}
+        self.assertEqual(
+            cols_sent["data_origin"]["distinct_categories"],
+            ["CATEGORY_LEVEL_1", "CATEGORY_LEVEL_2", "CATEGORY_LEVEL_3"],
+        )
+        self.assertEqual(
+            cols_sent["source"]["distinct_categories"],
+            ["CATEGORY_LEVEL_1", "CATEGORY_LEVEL_2"],
+        )
+        for env in captured_user_envelopes:
+            cohort_ctx_json = json.dumps(env["cohort_outbound_context"], ensure_ascii=False)
+            for raw_cat in ("patient", "claims", "study", "hospital"):
+                self.assertNotIn(f'"{raw_cat}"', cohort_ctx_json)
+        # Meanwhile Layer B (`public_reference_context`) safely carried the public ClinicalTrials.gov title
+        self.assertIn(
+            "Adult patients in claims study",
+            json.dumps(captured_user_envelopes[2]["public_reference_context"]),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
