@@ -723,110 +723,21 @@ def adjust_immortal_time_bias(
     stabilize: bool = True
 ):
     """
-    Extended clone–censor–weight method to remove immortal‐time bias.
-    
-    Parameters
-    ----------
-    df
-        Original cohort dataframe.
-    id_col
-        Subject identifier.
-    treat_time_col
-        Time of treatment initiation.
-    outcome_col
-        Binary event indicator (1=event, 0=censor).
-    followup_end_col
-        Time of administrative censoring or event.
-    covariates
-        List of baseline covariate column names for the censoring model.
-    stabilize
-        Whether to stabilize weights by the marginal probability of censoring.
-    
-    Returns
-    -------
-    cph
-        Fitted CoxPHFitter on the clone‐censored data with IPCW.
-    clones
-        The expanded dataframe (2 clones per subject) with columns:
-          - assigned (0=never‐treated, 1=always‐treated)
-          - T: observed follow‐up time
-          - E: event indicator after artificial censoring
-          - ipcw: inverse‐probability‐of‐censoring weight
+    DEPRECATED / BLOCKED legacy prototype for immortal-time bias adjustment.
+
+    Raises RuntimeError unconditionally to prevent biased inference. Migrate to
+    deterministic ``emulatrx_tte.ccw`` (``clone_and_censor``, ``run_grace_period_ccw``,
+    or CLI ``python -m emulatrx_tte run-ccw-synthetic``).
     """
-    covariates = covariates or []
-    # 1) Clone each subject into “always‐treated” and “never‐treated”
-    df0 = df.copy(); df0['assigned'] = 0
-    df1 = df.copy(); df1['assigned'] = 1
-    clones = pd.concat([df0, df1], ignore_index=True)
-    
-    # 2) Define observed time T and event E under each strategy
-    def compute_TE(row):
-        t0 = 0
-        t_end = row[followup_end_col]
-        t_trt = row[treat_time_col]
-        if row['assigned']==0:
-            # never‐treated clone: censor at first treatment
-            if pd.notna(t_trt) and t_trt < t_end:
-                return t_trt, 0   # artificial censoring
-        # always‐treated clone or no treatment before end:
-        return t_end, row[outcome_col]
-    
-    TE = clones.apply(compute_TE, axis=1, result_type='expand')
-    clones['T'], clones['E'] = TE[0], TE[1]
-    
-    # 3) Fit a censoring model to estimate P(not censored) at each T
-    censor_df = clones[[id_col, 'T', 'E'] + covariates].rename(columns={'T':'duration','E':'event'})
-    # Here event=1 means the clone was *censored* (not the original outcome)
-    # so we flip E: censored if original E==0 AND T<followup_end
-    censor_df['event'] = ((clones[outcome_col]==0) & (clones['T'] < clones[followup_end_col])).astype(int)
-
-    # 2. Drop columns with no variance (i.e., all values are the same)
-    censor_df = censor_df.loc[:, censor_df.nunique() > 1]
-    # subset covariates to those that are not in the drop list
-    filt_covariates = [col for col in covariates if col in censor_df.columns]
-
-    cph_censor = lifelines.fitters.coxph_fitter.CoxPHFitter(penalizer=0.01)
-    cph_censor.fit(censor_df[filt_covariates + ['duration', 'event']], duration_col='duration', event_col='event')
-
-    # 4) Compute survival probability at each clone’s T
-    unique_times = np.sort(clones['T'].unique())
-    surv_funcs = cph_censor.predict_survival_function(
-        clones[filt_covariates], 
-        times=unique_times
+    raise RuntimeError(
+        "emulation_utils.adjust_immortal_time_bias is permanently disabled due to two "
+        "methodological defects in the legacy prototype: (1) it omitted grace-period "
+        "expiration artificial censoring on the active/initiation clone (assigned == 1), "
+        "and (2) it pooled both clones into a single CoxPHFitter censoring model rather "
+        "than fitting arm-specific censoring models. Migrate to deterministic "
+        "emulatrx_tte.ccw (clone_and_censor, run_grace_period_ccw, or CLI "
+        "'python -m emulatrx_tte run-ccw-synthetic')."
     )
-
-    # Build indexers:
-    #  - row_idx[i] tells us which row in `surv_funcs` corresponds to clone i’s T
-    #  - col_idx[i] is just i, since columns align 1:1 with clones
-    row_idx = surv_funcs.index.get_indexer(clones['T'])
-    col_idx = np.arange(len(clones))
-
-    # Grab the diagonal survival values in one go
-    surv_matrix = surv_funcs.to_numpy()  # shape = (len(unique_times), n_clones)
-    p_not_censored = surv_matrix[row_idx, col_idx]
-
-    # Finally form the IPCW
-    clones['ipcw'] = 1.0 / np.clip(p_not_censored, 1e-3, 1.0)
-    
-    # 5) Stabilize weights if requested
-    if stabilize:
-        # marginal prob of not being censored by T
-        overall_surv = survival_table_from_events(
-            censor_df['duration'],
-            censor_df['event']
-        )['at_risk'] / survival_table_from_events(
-            censor_df['duration'],
-            censor_df['event']
-        )['at_risk'].iloc[0]
-        # map each clone’s T to the marginal survival
-        marginal_surv = np.interp(
-            clones['T'],
-            overall_surv.index.values.astype(float),
-            overall_surv.values.astype(float)
-        )
-        clones['ipcw'] *= marginal_surv
-    
-    return clones
 
 
 

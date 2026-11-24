@@ -53,7 +53,7 @@ def _public_interpretation(interp: dict) -> dict:
 
 
 def _contract_error_json(exc: ContractError) -> JSONResponse:
-    if exc.code == "ARM_MISMATCH_CONFIRMATION_REQUIRED":
+    if exc.code in ("ARM_MISMATCH_CONFIRMATION_REQUIRED", "PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED"):
         status_http = 422
     elif exc.code == "COHORT_FILE_TOO_LARGE":
         status_http = 413
@@ -195,6 +195,7 @@ def start_simulated_rct_tte(
     seed: int = 42,
     bootstrap_iterations: int = 80,
     confirm_arm_mismatch: bool = False,
+    confirm_protocol_mismatch: bool = False,
 ) -> dict:
     pico = parse_research_idea_pico(idea_text, explicit_comparator=comparator.strip()) if idea_text.strip() else None
     target_rct = None
@@ -229,6 +230,7 @@ def start_simulated_rct_tte(
             "bootstrap_iterations": bootstrap_iterations,
         },
         confirm_arm_mismatch=confirm_arm_mismatch,
+        confirm_protocol_mismatch=confirm_protocol_mismatch,
     )
 
 
@@ -276,6 +278,7 @@ def start_user_cohort_tte(
     seed: int = 42,
     bootstrap_iterations: int = 80,
     confirm_arm_mismatch: bool = False,
+    confirm_protocol_mismatch: bool = False,
 ) -> dict:
     sess = runner.get_session(session_id)
     target_rct = fetch_rct_by_nct(nct_id.strip()) if nct_id.strip() else None
@@ -290,6 +293,7 @@ def start_user_cohort_tte(
         intervention_override=intervention,
         comparator_override=comparator,
         confirm_arm_mismatch=confirm_arm_mismatch,
+        confirm_protocol_mismatch=confirm_protocol_mismatch,
     )
 
 
@@ -454,10 +458,13 @@ async def api_upload_or_load_session(request):
 
         ctype = request.headers.get("content-type", "").lower()
         if ctype.startswith("application/json"):
+            from emulatrx_tte.sample_cohorts import SAMPLE_ID_ALIASES
+
             payload = await _read_json_body(request)
-            sample_id = str(payload.get("sample_id", "")).strip()
+            raw_sample_id = str(payload.get("sample_id", "")).strip()
+            sample_id = SAMPLE_ID_ALIASES.get(raw_sample_id, raw_sample_id)
             if sample_id not in SAMPLE_COHORT_SPECS:
-                raise ContractError("INVALID_SAMPLE_ID", f"未知的内置样表编号：{sample_id}")
+                raise ContractError("INVALID_SAMPLE_ID", f"未知的内置样表编号：{raw_sample_id}")
             filename, raw = generate_sample_cohort_csv_bytes(sample_id)
             saved = runner.save_session_cohort(
                 raw,
@@ -541,6 +548,23 @@ async def api_update_session_note(request):
         return JSONResponse({"error": f"{exc.code}: {exc}", "code": exc.code}, status_code=400)
 
 
+async def api_get_session(request):
+    try:
+        sess = runner.get_session(request.path_params["session_id"])
+    except ContractError as exc:
+        status_http = 404 if exc.code == "SESSION_NOT_FOUND" else 400
+        return JSONResponse({"error": f"{exc.code}: {exc}", "code": exc.code}, status_code=status_http, headers={"Cache-Control": "no-store"})
+    return JSONResponse(
+        {
+            "session_id": sess["session_id"],
+            "profile": sess["profile"],
+            "interpretation": _public_interpretation(sess["interpretation"]),
+            "default_mapping": sess["default_mapping"],
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 async def api_delete_session(request):
     try:
         _check_same_origin(request)
@@ -586,11 +610,18 @@ async def api_search_rcts(request):
 
         forbidden_list = list(runner.get_session_forbidden_values(session_id)) if session_id else []
         ctx_summary = payload.get("context_summary") if isinstance(payload.get("context_summary"), dict) else None
-        if session_id and ctx_summary is None:
+        sess_for_search = None
+        if session_id:
             try:
-                ctx_summary = runner.get_session(session_id)["interpretation"]
+                sess_for_search = runner.get_session(session_id)
+                if ctx_summary is None:
+                    ctx_summary = sess_for_search["interpretation"]
+                else:
+                    merged_ctx = dict(sess_for_search["interpretation"])
+                    merged_ctx.update({k: v for k, v in ctx_summary.items() if v not in (None, "")})
+                    ctx_summary = merged_ctx
             except ContractError:
-                ctx_summary = None
+                sess_for_search = None
         if session_id or project_mode == SOURCE_MODE_USER_COHORT:
             raw_probe = " ".join(
                 [
@@ -609,6 +640,8 @@ async def api_search_rcts(request):
             condition=str(payload.get("condition", "")),
             intervention=intr_in,
             comparator=comp_in,
+            outcome=str(payload.get("outcome", "")),
+            target_followup_days=float(payload["target_followup_days"]) if isinstance(payload.get("target_followup_days"), (int, float)) else None,
             project_mode=project_mode,
             context_summary=ctx_summary,
             max_results=int(payload.get("max_results", 6)),
@@ -626,7 +659,8 @@ async def api_draft_mapping_or_protocol(request):
         target_rct = payload.get("target_rct") if isinstance(payload.get("target_rct"), dict) else None
         if not target_rct and str(payload.get("nct_id", "")).strip():
             target_rct = fetch_rct_by_nct(str(payload["nct_id"]).strip())
-        confirm_mismatch = bool(payload.get("confirm_arm_mismatch") is True)
+        confirm_arm = bool(payload.get("confirm_arm_mismatch") is True)
+        confirm_proto = bool(payload.get("confirm_protocol_mismatch") is True)
         intr_ovr = str(payload.get("intervention", "")).strip()
         comp_ovr = str(payload.get("comparator", "")).strip()
 
@@ -637,7 +671,7 @@ async def api_draft_mapping_or_protocol(request):
             sess = runner.get_session(session_id)
             mapping = recommend_column_mapping(sess["profile"], target_rct=target_rct)
             if target_rct:
-                eff_act, eff_comp = runner.resolve_user_cohort_arms(
+                pctx = runner.resolve_user_cohort_pico_context(
                     sess,
                     mapping,
                     intervention_override=intr_ovr,
@@ -645,10 +679,14 @@ async def api_draft_mapping_or_protocol(request):
                 )
                 target_rct = verify_and_enrich_target_rct(
                     target_rct,
-                    intervention=eff_act,
-                    comparator=eff_comp,
+                    intervention=pctx["intervention"],
+                    comparator=pctx["comparator"],
+                    target_condition=pctx["target_condition"],
+                    target_outcome=pctx["target_outcome"],
+                    target_followup_days=pctx["target_followup_days"],
                     project_mode=SOURCE_MODE_USER_COHORT,
-                    confirm_arm_mismatch=confirm_mismatch,
+                    confirm_arm_mismatch=confirm_arm,
+                    confirm_protocol_mismatch=confirm_proto,
                 )
             return JSONResponse(
                 {"project_mode": pmode, "mapping": mapping, "target_rct": target_rct},
@@ -676,8 +714,11 @@ async def api_draft_mapping_or_protocol(request):
                     target_rct,
                     intervention=sim_intr,
                     comparator=sim_comp,
+                    target_condition=str((eff_pico or {}).get("condition_query_en") or "").strip(),
+                    target_outcome=str((eff_pico or {}).get("primary_outcome") or "").strip(),
                     project_mode=SOURCE_MODE_SIMULATED_COHORT,
-                    confirm_arm_mismatch=confirm_mismatch,
+                    confirm_arm_mismatch=confirm_arm,
+                    confirm_protocol_mismatch=confirm_proto,
                 )
             proto, dgp = build_simulated_protocol_and_dgp(
                 target_rct=target_rct,
@@ -698,7 +739,8 @@ async def _launch_dual_run_payload(payload: dict, forced_mode: str | None = None
     target_rct = payload.get("target_rct") if isinstance(payload.get("target_rct"), dict) else None
     if not target_rct and str(payload.get("nct_id", "")).strip():
         target_rct = fetch_rct_by_nct(str(payload["nct_id"]).strip())
-    confirm_mismatch = bool(payload.get("confirm_arm_mismatch") is True)
+    confirm_arm = bool(payload.get("confirm_arm_mismatch") is True)
+    confirm_proto = bool(payload.get("confirm_protocol_mismatch") is True)
     intr_ovr = str(payload.get("intervention", "")).strip()
     comp_ovr = str(payload.get("comparator", "")).strip()
 
@@ -718,7 +760,8 @@ async def _launch_dual_run_payload(payload: dict, forced_mode: str | None = None
             target_rct=target_rct,
             intervention_override=intr_ovr,
             comparator_override=comp_ovr,
-            confirm_arm_mismatch=confirm_mismatch,
+            confirm_arm_mismatch=confirm_arm,
+            confirm_protocol_mismatch=confirm_proto,
         )
     elif pmode == SOURCE_MODE_SIMULATED_COHORT:
         pico = payload.get("pico") if isinstance(payload.get("pico"), dict) else None
@@ -737,7 +780,8 @@ async def _launch_dual_run_payload(payload: dict, forced_mode: str | None = None
             comparator=comp_ovr,
             protocol=proto_in,
             sim_config=sim_config,
-            confirm_arm_mismatch=confirm_mismatch,
+            confirm_arm_mismatch=confirm_arm,
+            confirm_protocol_mismatch=confirm_proto,
         )
     else:
         raise ContractError("UNSUPPORTED_SOURCE_MODE", f"Unsupported project_mode: {pmode}")
@@ -917,7 +961,10 @@ inner = Starlette(
         Route("/api/samples/{sample_id}/download", api_download_sample),
         Route("/api/sessions/upload", api_upload_or_load_session, methods=["POST"]),
         Route("/api/sessions/{session_id}/note", api_update_session_note, methods=["POST"]),
+        Route("/api/sessions/{session_id}", api_get_session, methods=["GET"]),
         Route("/api/sessions/{session_id}", api_delete_session, methods=["DELETE"]),
+        Route("/api/cohorts/{session_id}", api_get_session, methods=["GET"]),
+        Route("/api/cohorts/{session_id}", api_delete_session, methods=["DELETE"]),
         Route("/api/idea/parse", api_parse_idea, methods=["POST"]),
         Route("/api/rcts/search", api_search_rcts, methods=["POST"]),
         Route("/api/rcts/draft", api_draft_mapping_or_protocol, methods=["POST"]),

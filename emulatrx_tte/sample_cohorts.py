@@ -20,14 +20,19 @@ SAMPLE_COHORT_SPECS = {
     "cardiorenal_sglt2i": {
         "sample_id": "cardiorenal_sglt2i",
         "filename": "cardiorenal_dapagliflozin_vs_sitagliptin_1500.csv",
-        "title_zh": "样表 1 · 心肾代谢住院/门诊专病队列（Dapagliflozin vs Sitagliptin，1,500 例）",
-        "subtitle_zh": "真实医院导出列名风格（deid_patient_id = Hosp-2023-0001..），随访以「月」为单位，含年龄/eGFR 纳排空间、多分类心功能分级与非心血管竞争死亡",
-        "domain_hint_zh": "2型糖尿病合并心肾高危/心衰人群，比较达格列净（Dapagliflozin）对比西格列汀（Sitagliptin）对心衰住院或心血管事件（主要结局）及非心血管竞争死亡的影响",
+        "title_zh": "样表 1 · 心肾代谢心衰专病队列（Dapagliflozin vs Sitagliptin，1,500 例）",
+        "subtitle_zh": (
+            "真实医院导出列名风格（deid_patient_id = Hosp-2023-0001..），随访以「月」为单位；"
+            "注：真实世界 ACNU 观察性研究常以 DPP-4i 替代安慰剂，实时检索将诚实标记缺少心衰或以血酮等替代指标为终点的偏离试验，并并列展示 DAPA-HF 等心衰硬终点参考框架"
+        ),
+        "domain_hint_zh": "2型糖尿病合并心力衰竭人群，比较达格列净（Dapagliflozin）对比西格列汀（Sitagliptin）对心衰住院或心血管死亡（主要结局）及非心血管竞争死亡的影响",
         "active_intervention_zh": "达格列净 (Dapagliflozin)",
         "active_intervention_en": "Dapagliflozin",
         "comparator_intervention_zh": "西格列汀 (Sitagliptin)",
         "comparator_intervention_en": "Sitagliptin",
         "condition_en": "Type 2 Diabetes Heart Failure",
+        "outcome_en": "Heart Failure Hospitalization or Cardiovascular Death",
+        "target_followup_days": 540.0,
         "row_count": 1500,
         "recommended_eligibility": [
             {"id": "inc_age_45", "kind": "inclusion", "variable": "age_years", "operator": ">=", "value": 45, "description": "纳入年龄 ≥ 45 岁成人患者"},
@@ -38,19 +43,65 @@ SAMPLE_COHORT_SPECS = {
         "sample_id": "oncology_io_nsclc",
         "filename": "oncology_nsclc_pembrolizumab_chemo_1200.csv",
         "title_zh": "样表 2 · 晚期非小细胞肺癌一线免疫联合队列（Pembrolizumab+Chemo vs 含铂双药，1,200 例）",
-        "subtitle_zh": "真实肿瘤专病登记列名风格（case_no = ONC-880001..），随访以「天」为单位，含 ECOG / PD-L1 / 吸烟史多分类协变量与非肿瘤治疗无关竞争死亡",
+        "subtitle_zh": "真实肿瘤专病登记列名风格（case_no = ONC-880001..），随访以「天」为单位，四维精确对标 III 期 KEYNOTE-189（NCT02578680）OS/PFS 临床终点",
         "domain_hint_zh": "晚期非小细胞肺癌（NSCLC）一线治疗，比较帕博利珠单抗联合含铂化疗（Pembrolizumab_Plus_Chemo）对比单纯含铂双药化疗（Platinum_Doublet_Chemo）的疾病进展/肿瘤死亡与非肿瘤竞争死亡",
         "active_intervention_zh": "帕博利珠单抗联合含铂化疗 (Pembrolizumab + Chemo)",
         "active_intervention_en": "Pembrolizumab",
         "comparator_intervention_zh": "含铂双药化疗 (Platinum Doublet Chemo)",
         "comparator_intervention_en": "Platinum Chemotherapy",
         "condition_en": "Non-Small Cell Lung Cancer",
+        "outcome_en": "Overall Survival and Progression-Free Survival",
+        "target_followup_days": 540.0,
         "row_count": 1200,
         "recommended_eligibility": [
             {"id": "inc_age_18", "kind": "inclusion", "variable": "age", "operator": ">=", "value": 40, "description": "纳入年龄 ≥ 40 岁患者"},
             {"id": "exc_ecog_2", "kind": "exclusion", "variable": "ecog_ps", "operator": ">=", "value": 2, "description": "排除基线 ECOG 体力评分 ≥ 2 分患者"},
         ],
     },
+    "t2dm_cv_carolina": {
+        "sample_id": "t2dm_cv_carolina",
+        "filename": "cardiovascular_t2dm_linagliptin_vs_glimepiride_1400.csv",
+        "title_zh": "样表 3 · 2 型糖尿病高心血管风险主动对照队列（Linagliptin vs Glimepiride，1,400 例）",
+        "subtitle_zh": "四维精确对标国际多中心 III 期心血管结局试验 CAROLINA（NCT01243424：利格列汀 vs 格列美脲 3P-MACE 硬终点），可直接无摩擦一键对标运行",
+        "domain_hint_zh": "2型糖尿病合并高心血管风险成人患者，比较利格列汀（Linagliptin）对比格列美脲（Glimepiride）对心血管死亡、非致死性心肌梗死或卒中（MACE）及非心血管竞争死亡的影响",
+        "active_intervention_zh": "利格列汀 (Linagliptin)",
+        "active_intervention_en": "Linagliptin",
+        "comparator_intervention_zh": "格列美脲 (Glimepiride)",
+        "comparator_intervention_en": "Glimepiride",
+        "condition_en": "Type 2 Diabetes Cardiovascular Risk",
+        "outcome_en": "Cardiovascular Death Myocardial Infarction Stroke MACE",
+        "target_followup_days": 730.0,
+        "row_count": 1400,
+        "recommended_eligibility": [
+            {"id": "inc_age_40", "kind": "inclusion", "variable": "age_years", "operator": ">=", "value": 40, "description": "纳入年龄 ≥ 40 岁合并心血管风险患者"},
+            {"id": "inc_egfr_30", "kind": "inclusion", "variable": "egfr_ml_min", "operator": ">=", "value": 30, "description": "纳入基线 eGFR ≥ 30 mL/min/1.73m²"},
+        ],
+    },
+    "nsclc_egfr_flaura": {
+        "sample_id": "nsclc_egfr_flaura",
+        "filename": "oncology_egfr_nsclc_osimertinib_vs_gefitinib_1200.csv",
+        "title_zh": "样表 4 · EGFR 突变晚期非小细胞肺癌靶向队列（Osimertinib vs Gefitinib，1,200 例）",
+        "subtitle_zh": "四维精确对标 III 期头对头注册试验 FLAURA（NCT02296125：奥希替尼 vs 吉非替尼一线治疗 EGFR 敏感突变晚期 NSCLC 的 PFS/OS）",
+        "domain_hint_zh": "EGFR 敏感突变（Exon19del / L858R）晚期非小细胞肺癌一线初治人群，比较奥希替尼（Osimertinib）对比吉非替尼（Gefitinib）的无进展生存/肿瘤死亡与非肿瘤竞争死亡",
+        "active_intervention_zh": "奥希替尼 (Osimertinib)",
+        "active_intervention_en": "Osimertinib",
+        "comparator_intervention_zh": "吉非替尼 (Gefitinib)",
+        "comparator_intervention_en": "Gefitinib",
+        "condition_en": "EGFR-Mutated Non-Small Cell Lung Cancer",
+        "outcome_en": "Progression-Free Survival and Overall Survival",
+        "target_followup_days": 540.0,
+        "row_count": 1200,
+        "recommended_eligibility": [
+            {"id": "inc_age_18", "kind": "inclusion", "variable": "age", "operator": ">=", "value": 18, "description": "纳入年龄 ≥ 18 岁成人患者"},
+            {"id": "exc_ecog_2", "kind": "exclusion", "variable": "ecog_ps", "operator": ">=", "value": 2, "description": "排除基线 ECOG 体力评分 ≥ 2 分患者"},
+        ],
+    },
+}
+
+SAMPLE_ID_ALIASES = {
+    "sample_cardiorenal_sglt2_dpp4": "cardiorenal_sglt2i",
+    "sample_nsclc_egfr_tki": "nsclc_egfr_flaura",
+    "sample_t2dm_cv_carolina": "t2dm_cv_carolina",
 }
 
 
@@ -98,15 +149,26 @@ CLINICAL_IDEA_PRESETS = (
 
 def generate_sample_cohort_csv_bytes(sample_id: str) -> tuple[str, bytes]:
     """Generate deterministic realistic-header CSV bytes for the requested demo sample."""
-    if sample_id == "cardiorenal_sglt2i":
+    canonical = SAMPLE_ID_ALIASES.get(sample_id, sample_id)
+    if canonical == "cardiorenal_sglt2i":
         return (
             SAMPLE_COHORT_SPECS["cardiorenal_sglt2i"]["filename"],
             _build_cardiorenal_csv(),
         )
-    if sample_id == "oncology_io_nsclc":
+    if canonical == "oncology_io_nsclc":
         return (
             SAMPLE_COHORT_SPECS["oncology_io_nsclc"]["filename"],
             _build_oncology_csv(),
+        )
+    if canonical == "t2dm_cv_carolina":
+        return (
+            SAMPLE_COHORT_SPECS["t2dm_cv_carolina"]["filename"],
+            _build_carolina_csv(),
+        )
+    if canonical == "nsclc_egfr_flaura":
+        return (
+            SAMPLE_COHORT_SPECS["nsclc_egfr_flaura"]["filename"],
+            _build_flaura_csv(),
         )
     raise ValueError(f"Unknown sample_id: {sample_id}")
 
@@ -300,6 +362,117 @@ def _build_oncology_csv() -> bytes:
                 "Pembrolizumab_Plus_Chemo" if is_io[i] == 1 else "Platinum_Doublet_Chemo",
                 f"{obs_days[i]:.1f}",
                 vital[i],
+            ]
+        )
+    return buf.getvalue().encode("utf-8")
+
+
+def _build_carolina_csv() -> bytes:
+    rng = np.random.default_rng(20261403)
+    n = 1400
+    age = np.clip(rng.normal(64.0, 9.5, size=n), 40.0, 86.0)
+    female = (rng.uniform(size=n) < 0.40).astype(int)
+    egfr = np.clip(rng.normal(74.0 - 0.30 * (age - 64.0), 16.0, size=n), 24.0, 115.0)
+    hba1c = np.clip(rng.normal(7.6, 0.85, size=n), 6.2, 10.5)
+    prior_ascvd = (rng.uniform(size=n) < expit(-0.35 + 0.03 * (age - 64.0))).astype(int)
+
+    logit_lina = 0.05 + 0.015 * (age - 64.0) - 0.010 * (egfr - 74.0) + 0.38 * prior_ascvd + 0.12 * (hba1c - 7.5)
+    is_lina = (rng.uniform(size=n) < expit(logit_lina)).astype(int)
+
+    lin_mace = 0.028 * (age - 64.0) - 0.012 * (egfr - 74.0) + 0.48 * prior_ascvd + 0.10 * (hba1c - 7.5) - 0.04 * is_lina
+    t_mace_mo = -np.log(np.clip(rng.uniform(size=n), 1e-12, 1.0)) / (0.0085 * np.exp(lin_mace))
+    lin_comp = 0.040 * (age - 64.0) + 0.25 * prior_ascvd
+    t_comp_mo = -np.log(np.clip(rng.uniform(size=n), 1e-12, 1.0)) / (0.0038 * np.exp(lin_comp))
+    c_mo = np.minimum(-np.log(np.clip(rng.uniform(size=n), 1e-12, 1.0)) / 0.008, rng.uniform(24.0, 48.0, size=n))
+    obs_mo = np.maximum(0.20, np.minimum(np.minimum(t_mace_mo, t_comp_mo), c_mo))
+
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(
+        [
+            "deid_patient_id",
+            "age_years",
+            "female",
+            "egfr_ml_min",
+            "hba1c_pct",
+            "prior_ascvd",
+            "initiated_drug",
+            "followup_months",
+            "mace_outcome",
+        ]
+    )
+    for i in range(n):
+        if t_mace_mo[i] <= t_comp_mo[i] and t_mace_mo[i] <= c_mo[i]:
+            ev = "MACE_CV_Event"
+        elif t_comp_mo[i] < t_mace_mo[i] and t_comp_mo[i] <= c_mo[i]:
+            ev = "NonCV_Competing_Death"
+        else:
+            ev = "Alive_Censored"
+        writer.writerow(
+            [
+                f"Hosp-2024-{i + 1:04d}",
+                f"{age[i]:.1f}",
+                int(female[i]),
+                f"{egfr[i]:.1f}",
+                f"{hba1c[i]:.2f}",
+                int(prior_ascvd[i]),
+                "Linagliptin" if is_lina[i] == 1 else "Glimepiride",
+                f"{obs_mo[i]:.2f}",
+                ev,
+            ]
+        )
+    return buf.getvalue().encode("utf-8")
+
+
+def _build_flaura_csv() -> bytes:
+    rng = np.random.default_rng(20261204)
+    n = 1200
+    age = np.clip(rng.normal(63.2, 10.2, size=n), 32.0, 84.0)
+    u_ecog = rng.uniform(size=n)
+    ecog = np.where(u_ecog < 0.38, 0, np.where(u_ecog < 0.92, 1, 2))
+    cns_met = (rng.uniform(size=n) < 0.22).astype(int)
+    exon19 = (rng.uniform(size=n) < 0.58).astype(int)
+
+    logit_osi = 0.08 - 0.012 * (age - 63.0) + 0.48 * cns_met + 0.22 * exon19 - 0.25 * (ecog >= 1)
+    is_osi = (rng.uniform(size=n) < expit(logit_osi)).astype(int)
+
+    lin_pfs = 0.012 * (age - 63.0) + 0.45 * cns_met + 0.35 * (ecog >= 1) - 0.18 * exon19 - 0.52 * is_osi
+    t_pfs = -np.log(np.clip(rng.uniform(size=n), 1e-12, 1.0)) / (0.0022 * np.exp(lin_pfs))
+    t_comp = -np.log(np.clip(rng.uniform(size=n), 1e-12, 1.0)) / (0.00045 * np.exp(0.03 * (age - 63.0)))
+    c_day = np.minimum(-np.log(np.clip(rng.uniform(size=n), 1e-12, 1.0)) / 0.0005, rng.uniform(420.0, 780.0, size=n))
+    obs_days = np.maximum(5.0, np.minimum(np.minimum(t_pfs, t_comp), c_day))
+
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(
+        [
+            "case_no",
+            "age",
+            "ecog_ps",
+            "cns_met",
+            "egfr_subtype",
+            "first_line_tki",
+            "pfs_days",
+            "vital_event",
+        ]
+    )
+    for i in range(n):
+        if t_pfs[i] <= t_comp[i] and t_pfs[i] <= c_day[i]:
+            ev = "Progression_or_CancerDeath"
+        elif t_comp[i] < t_pfs[i] and t_comp[i] <= c_day[i]:
+            ev = "TreatmentUnrelated_Death"
+        else:
+            ev = "Censored"
+        writer.writerow(
+            [
+                f"ONC-{890001 + i}",
+                f"{math.floor(age[i]):d}",
+                int(ecog[i]),
+                int(cns_met[i]),
+                "Exon19del" if exon19[i] == 1 else "L858R",
+                "Osimertinib" if is_osi[i] == 1 else "Gefitinib",
+                f"{obs_days[i]:.1f}",
+                ev,
             ]
         )
     return buf.getvalue().encode("utf-8")

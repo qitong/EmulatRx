@@ -567,6 +567,69 @@ class TTERunner:
             comp_raw = str(interp.get("comparator_query_en") or comp_raw).strip()
         return act_raw, comp_raw
 
+    def resolve_user_cohort_pico_context(
+        self,
+        sess: dict,
+        mapping: dict,
+        *,
+        intervention_override: str = "",
+        comparator_override: str = "",
+    ) -> dict:
+        """Resolve full 4D PICO-T target context (arms, condition, clinical outcome, follow-up days) for a user-cohort session."""
+        from emulatrx_tte.sample_cohorts import SAMPLE_COHORT_SPECS, SAMPLE_ID_ALIASES
+
+        eff_act, eff_comp = self.resolve_user_cohort_arms(
+            sess,
+            mapping,
+            intervention_override=intervention_override,
+            comparator_override=comparator_override,
+        )
+        meta = sess.get("meta") or {}
+        interp = sess.get("interpretation") or {}
+        raw_sid = str(meta.get("sample_id") or "").strip()
+        canon_sid = SAMPLE_ID_ALIASES.get(raw_sid, raw_sid)
+        spec = SAMPLE_COHORT_SPECS.get(canon_sid) if canon_sid else None
+
+        target_cond = (
+            str(spec.get("condition_en", "")).strip()
+            if spec and spec.get("condition_en")
+            else str(interp.get("condition_query_en", "")).strip()
+        )
+        out_parts: list[str] = []
+        if spec and spec.get("outcome_en"):
+            out_parts.append(str(spec["outcome_en"]))
+        if interp.get("outcome_query_en"):
+            out_parts.append(str(interp["outcome_query_en"]))
+        for v in mapping.get("primary_event_values") or []:
+            vs = str(v).strip()
+            if vs and vs.lower() not in ("0", "1", "2"):
+                out_parts.append(vs.replace("_", " "))
+        if mapping.get("outcome_column"):
+            out_parts.append(str(mapping["outcome_column"]).replace("_", " "))
+        target_out = " ".join(dict.fromkeys(p for p in out_parts if p)).strip()
+
+        fu_candidates: list[float] = []
+        if spec and spec.get("target_followup_days"):
+            fu_candidates.append(float(spec["target_followup_days"]))
+        if interp.get("target_followup_days"):
+            try:
+                fu_candidates.append(float(interp["target_followup_days"]))
+            except (TypeError, ValueError):
+                pass
+        for h in mapping.get("horizon_days") or []:
+            try:
+                fu_candidates.append(float(h))
+            except (TypeError, ValueError):
+                pass
+        target_fu = max(fu_candidates) if fu_candidates else 365.0
+        return {
+            "intervention": eff_act,
+            "comparator": eff_comp,
+            "target_condition": target_cond,
+            "target_outcome": target_out,
+            "target_followup_days": target_fu,
+        }
+
     def save_session_arm_overrides(self, session_id: str, intervention: str = "", comparator: str = "") -> None:
         """Persist researcher-supplied active/comparator drug labels for binary 0/1 user-cohort sessions."""
         if not session_id or not SESSION_ID.fullmatch(session_id):
@@ -695,6 +758,7 @@ class TTERunner:
         protocol: dict | None = None,
         sim_config: dict | None = None,
         confirm_arm_mismatch: bool = False,
+        confirm_protocol_mismatch: bool = False,
     ) -> dict:
         cfg = dict(sim_config or {})
         if str(intervention or "").strip():
@@ -725,14 +789,19 @@ class TTERunner:
             protocol=protocol,
             target_rct=target_rct,
         )
-        # Unconditional server-side alignment gate whenever `target_rct` is provided (even when `pico` was omitted!)
+        # Unconditional server-side 4D PICO-T alignment gate whenever `target_rct` is provided
         if target_rct:
+            sim_cond = str((eff_pico or {}).get("condition_query_en") or "").strip()
+            sim_out = str((eff_pico or {}).get("primary_outcome") or "").strip()
             target_rct = verify_and_enrich_target_rct(
                 target_rct,
                 intervention=sim_intr,
                 comparator=sim_comp,
+                target_condition=sim_cond,
+                target_outcome=sim_out,
                 project_mode=SOURCE_MODE_SIMULATED_COHORT,
                 confirm_arm_mismatch=confirm_arm_mismatch,
+                confirm_protocol_mismatch=confirm_protocol_mismatch,
             )
 
         normalized_proto, dgp_params = build_simulated_protocol_and_dgp(
@@ -786,6 +855,7 @@ class TTERunner:
         intervention_override: str = "",
         comparator_override: str = "",
         confirm_arm_mismatch: bool = False,
+        confirm_protocol_mismatch: bool = False,
     ) -> dict:
         if intervention_override.strip() or comparator_override.strip():
             self.save_session_arm_overrides(session_id, intervention_override, comparator_override)
@@ -803,7 +873,7 @@ class TTERunner:
             raise ContractError("INVALID_BOOTSTRAP_ITERATIONS", f"Bootstrap 次数须在 20 至 {MAX_BOOTSTRAP} 之间。")
 
         if target_rct:
-            eff_act, eff_comp = self.resolve_user_cohort_arms(
+            pctx = self.resolve_user_cohort_pico_context(
                 sess,
                 mapping,
                 intervention_override=intervention_override,
@@ -811,10 +881,14 @@ class TTERunner:
             )
             target_rct = verify_and_enrich_target_rct(
                 target_rct,
-                intervention=eff_act,
-                comparator=eff_comp,
+                intervention=pctx["intervention"],
+                comparator=pctx["comparator"],
+                target_condition=pctx["target_condition"],
+                target_outcome=pctx["target_outcome"],
+                target_followup_days=pctx["target_followup_days"],
                 project_mode=SOURCE_MODE_USER_COHORT,
                 confirm_arm_mismatch=confirm_arm_mismatch,
+                confirm_protocol_mismatch=confirm_protocol_mismatch,
             )
 
         if not self._slot.acquire(blocking=False):

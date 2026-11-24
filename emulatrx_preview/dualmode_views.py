@@ -246,18 +246,26 @@ def render_dualmode_run_view(result: dict, root: Path, *, standalone_report: boo
         f"<p>{subtitle}</p>",
     ]
     if trct.get("nct_id"):
-        rct_role_label = "参考框架 RCT（仅借用纳排与随访窗）" if trct.get("arm_alignment_warning") else "对标目标 RCT"
+        any_warn = trct.get("arm_alignment_warning") or trct.get("protocol_alignment_warning")
+        rct_role_label = "参考框架 RCT（局部方案参考）" if any_warn else "对标目标 RCT"
         parts.append(
             f"<p><strong>{rct_role_label}：</strong><a href='{esc(trct.get('record_url', 'https://clinicaltrials.gov/study/' + trct['nct_id']))}' target='_blank' rel='noopener'>"
             f"{esc(trct['nct_id'])}</a> — {esc(trct.get('brief_title', ''))} "
             f"（来源标识：<code>{esc(trct.get('source', 'clinicaltrials_gov_api_v2'))}</code>"
             + (f"，分组对齐状态：<code>{esc(trct['arm_alignment_status'])}</code>" if trct.get("arm_alignment_status") else "")
+            + (f"，四维对标状态：<code>{esc(trct['overall_alignment_status'])}</code>" if trct.get("overall_alignment_status") else "")
             + "）</p>"
         )
         if trct.get("arm_alignment_warning"):
             parts.append(
                 "<div class='notice arm-mismatch-callout' style='background:#fffbeb;border-left:5px solid #d97706;color:#92400e'>"
                 f"<strong>⚠️ 对照不一致参考声明：</strong>{esc(trct['arm_alignment_warning'])}"
+                "</div>"
+            )
+        elif trct.get("protocol_alignment_warning"):
+            parts.append(
+                "<div class='notice protocol-mismatch-callout arm-mismatch-callout' style='background:#fffbeb;border-left:5px solid #d97706;color:#92400e'>"
+                f"<strong>⚠️ 四维 PICO-T 方案偏离参考声明：</strong>{esc(trct['protocol_alignment_warning'])}"
                 "</div>"
             )
     parts.append(
@@ -433,6 +441,11 @@ def workbench_home_view() -> str:
 .tag-align-class{{background:#fef3c7;color:#92400e;border:1px solid #fcd34d;font-weight:700}}
 .tag-align-mismatch{{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;font-weight:700}}
 .tag-fallback{{background:#ffedd5;color:#9a3412}}
+.pico-pills{{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}}
+.pico-pill{{display:inline-block;padding:2px 9px;border-radius:999px;font-size:.78rem;font-weight:700}}
+.pico-pill-ok{{background:#dcfce7;color:#166534;border:1px solid #86efac}}
+.pico-pill-warn{{background:#fef3c7;color:#92400e;border:1px solid #fcd34d}}
+.pico-pill-bad{{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5}}
 .mismatch-confirm-box{{background:#fffbeb;border:1.5px solid #f59e0b;border-radius:6px;padding:12px 16px;margin:12px 0;color:#78350f}}
 .mode-banner{{padding:20px 24px;border-radius:8px;margin:16px 0}}
 .mode-banner.user-mode{{background:#ecfdf5;border-left:6px solid #0f766e}}
@@ -558,7 +571,7 @@ def workbench_home_view() -> str:
     <div id="rct-mismatch-confirm-box" class="mismatch-confirm-box hidden">
       <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;font-weight:700">
         <input type="checkbox" id="confirm-arm-mismatch-checkbox" name="confirm_arm_mismatch" value="true" style="width:auto;margin-top:4px" onchange="onToggleMismatchConfirm(this.checked)">
-        <span>我已知晓该 RCT 的干预/对照臂与本研究不一致，仅借用其纳排与随访时间窗作为参考框架</span>
+        <span>我已知晓该试验在干预对照、目标人群、主要终点或随访窗上与当前研究存在偏离，仅将其作为局部方案参考框架</span>
       </label>
       <p id="rct-mismatch-detail-text" style="margin:6px 0 0 26px;font-size:.86rem;color:#92400e"></p>
     </div>
@@ -949,6 +962,12 @@ async function parseIdeaAndSearchRCTs() {{
   );
 }}
 
+function needsRctConfirmation(cand) {{
+  if (!cand) return false;
+  if (cand.overall_alignment_status) return cand.overall_alignment_status !== 'protocol_aligned';
+  return Boolean(cand.requires_protocol_confirmation || cand.requires_mismatch_confirmation);
+}}
+
 function onSelectRCTRadio(idx) {{
   STATE.selectedRctIdx = idx;
   STATE.confirmArmMismatch = false;
@@ -960,9 +979,12 @@ function onSelectRCTRadio(idx) {{
   const cand = STATE.rctCandidates[idx];
   const box = document.getElementById('rct-mismatch-confirm-box');
   const detailEl = document.getElementById('rct-mismatch-detail-text');
-  if (cand && cand.requires_mismatch_confirmation) {{
+  if (cand && needsRctConfirmation(cand)) {{
     box.classList.remove('hidden');
-    detailEl.textContent = `当前研究对照：${{cand.expected_arms_summary || '—'}} ｜ 该试验实际分组：${{cand.trial_arms_summary || '—'}}`;
+    const divTxt = (cand.diverged_dimensions && cand.diverged_dimensions.length)
+      ? cand.diverged_dimensions.join('；')
+      : `当前研究对照：${{cand.expected_arms_summary || '—'}} ｜ 该试验实际分组：${{cand.trial_arms_summary || '—'}}`;
+    detailEl.textContent = divTxt;
   }} else {{
     box.classList.add('hidden');
     detailEl.textContent = '';
@@ -983,7 +1005,7 @@ async function executeRCTSearch(cond='', intr='', comp='') {{
   const effComp = compBox || comp || ctx.comparator_query_en || '';
   const effCond = cond || ctx.condition_query_en || '';
   const listEl = document.getElementById('rct-cards-list');
-  listEl.innerHTML = '<p>正在检索 ClinicalTrials.gov 公开注册随机对照试验并核验双臂干预对齐度…</p>';
+  listEl.innerHTML = '<p>正在检索 ClinicalTrials.gov 公开注册随机对照试验并执行四维 PICO-T 对齐核验…</p>';
   const resp = await fetch('/api/rcts/search', {{
     method: 'POST',
     headers: {{ 'Content-Type': 'application/json' }},
@@ -1005,9 +1027,9 @@ async function executeRCTSearch(cond='', intr='', comp='') {{
   if (cb) cb.checked = false;
   document.getElementById('rct-mismatch-confirm-box').classList.add('hidden');
 
-  // Auto-preselect #1 ONLY when it is exact_dual_arm, or single_intervention_matched in idea mode!
-  const firstStatus = STATE.rctCandidates[0] && STATE.rctCandidates[0].arm_alignment_status;
-  const allowPreselect = firstStatus === 'exact_dual_arm' || (STATE.mode !== 'user_cohort' && ['single_intervention_matched', 'unspecified'].includes(firstStatus));
+  // Auto-preselect #1 ONLY when full 4D PICO-T `overall_alignment_status === 'protocol_aligned'` holds!
+  const firstCand = STATE.rctCandidates[0];
+  const allowPreselect = Boolean(firstCand && firstCand.overall_alignment_status === 'protocol_aligned');
   STATE.selectedRctIdx = allowPreselect ? 0 : -1;
 
   const isFallback = data.source === 'offline_curated_catalog_fallback';
@@ -1019,28 +1041,44 @@ async function executeRCTSearch(cond='', intr='', comp='') {{
     const po = (c.primary_outcomes && c.primary_outcomes[0]) || {{ measure: '—', timeFrame: '—' }};
     const reasons = (c.match_reasons || []).map(r => `<li>${{escHtml(r)}}</li>`).join('');
     const elig = ((c.eligibility_summary && c.eligibility_summary.highlights) || []).slice(0, 3).map(h => `<li>${{escHtml(h)}}</li>`).join('');
-    const st = c.arm_alignment_status || 'unspecified';
+    const overallSt = c.overall_alignment_status || 'protocol_aligned';
     const rawSc = typeof c.match_score === 'number' ? c.match_score : 0.5;
     const pct = c.match_score_pct != null ? c.match_score_pct : Math.round(rawSc <= 1 ? rawSc * 100 : rawSc);
 
     let alignCls = 'tag-align-exact';
     let scoreCls = 'tag-score';
-    let alignText = c.arm_alignment_label || '双臂干预一致 · 推荐对标';
-    if (st === 'class_dual_arm') {{
-      alignCls = 'tag-align-class';
-      scoreCls = 'tag-score-warn';
-      alignText = c.arm_alignment_label || '同机制类别参考 · 需确认';
-    }} else if (st === 'single_arm_or_comparator_mismatch' || st === 'unmatched_interventions') {{
+    let alignText = c.overall_alignment_label || '四维方案一致 · 推荐对标';
+    if (overallSt === 'non_efficacy_excluded') {{
       alignCls = 'tag-align-mismatch';
       scoreCls = 'tag-score-mismatch';
-      alignText = c.arm_alignment_label || '对照不一致 · 仅供参考';
+      alignText = c.overall_alignment_label || '健康受试者/药代试验 · 不可直接对标';
+    }} else if (overallSt === 'partial_protocol_reference') {{
+      alignCls = 'tag-align-class';
+      scoreCls = 'tag-score-warn';
+      alignText = c.overall_alignment_label || '双臂一致但人群/终点偏离 · 仅供参考';
+    }} else if (overallSt === 'arm_mismatch_reference') {{
+      const st = c.arm_alignment_status || 'single_arm_or_comparator_mismatch';
+      alignCls = st === 'class_dual_arm' ? 'tag-align-class' : 'tag-align-mismatch';
+      scoreCls = st === 'class_dual_arm' ? 'tag-score-warn' : 'tag-score-mismatch';
+      alignText = c.overall_alignment_label || c.arm_alignment_label || '对照不一致 · 仅供参考';
     }}
+
+    const da = c.dimension_audit || {{}};
+    const pillKeys = ['arms', 'population', 'outcome', 'followup'];
+    const pillsHtml = pillKeys.map(k => {{
+      const d = da[k];
+      if (!d || !d.pill_zh) return '';
+      const cls = d.tone === 'ok' ? 'pico-pill-ok' : (d.tone === 'warn' ? 'pico-pill-warn' : 'pico-pill-bad');
+      return `<span class="pico-pill ${{cls}}" title="${{escHtml(d.detail_zh || '')}}">${{escHtml(d.pill_zh)}}</span>`;
+    }}).join('');
+
     const isChecked = idx === STATE.selectedRctIdx;
-    const mismatchBanner = (st === 'single_arm_or_comparator_mismatch' || st === 'unmatched_interventions' || st === 'class_dual_arm')
+    const reqConfirm = needsRctConfirmation(c);
+    const mismatchBanner = reqConfirm
       ? `<div style="background:#fffbeb;border-left:4px solid #d97706;padding:8px 12px;margin:8px 0;font-size:.86rem;color:#92400e">
            <strong>当前研究对照：</strong>${{escHtml(c.expected_arms_summary || '—')}} &nbsp;|&nbsp;
            <strong>该试验分组：</strong>${{escHtml(c.trial_arms_summary || '—')}}<br>
-           <span>${{escHtml(c.arm_alignment_detail || '')}}</span>
+           <span>${{escHtml(((c.diverged_dimensions || []).join('；')) || c.arm_alignment_detail || '')}}</span>
          </div>`
       : '';
 
@@ -1059,12 +1097,13 @@ async function executeRCTSearch(cond='', intr='', comp='') {{
           ${{c.enrollment_count ? `<span class="tag">入组规模 N=${{c.enrollment_count}}</span>` : ''}}
         </div>
         <h3 style="margin:6px 0 8px">${{escHtml(c.brief_title)}}</h3>
+        <div class="pico-pills">${{pillsHtml}}</div>
         <p style="margin:4px 0;font-size:.9rem"><strong>试验组 (Active)：</strong>${{escHtml((c.experimental_arms||[]).join('；'))}} &nbsp;|&nbsp; <strong>对照组 (Comparator)：</strong>${{escHtml((c.comparator_arms||[]).join('；'))}}</p>
         ${{mismatchBanner}}
         <p style="margin:4px 0;font-size:.9rem"><strong>主要终点与随访期：</strong>${{escHtml(po.measure)}}（随访窗：<code>${{escHtml(po.timeFrame)}}</code> → 建议评估天数：<code>${{(c.parsed_horizon_days||[]).join(', ')}}</code> 天）</p>
         ${{elig ? `<details style="margin:8px 0;padding:6px 10px"><summary style="font-size:.86rem">查看核心纳排标准要点</summary><ul style="font-size:.85rem;margin:6px 0">${{elig}}</ul></details>` : ''}}
-        <div style="background:#f8fafc;padding:8px 12px;border-radius:5px;margin:8px 0;font-size:.86rem"><strong>与当前研究的匹配核验：</strong><ul style="margin:4px 0">${{reasons}}</ul></div>
-        <button type="button" class="${{c.requires_mismatch_confirmation ? 'secondary' : ''}}" onclick="chooseTargetRCT(${{idx}})">${{c.requires_mismatch_confirmation ? '设为参考框架（需勾选下方不一致确认）' : `选定 ${{escHtml(c.nct_id)}} 作为对标目标试验 →`}}</button>
+        <div style="background:#f8fafc;padding:8px 12px;border-radius:5px;margin:8px 0;font-size:.86rem"><strong>与当前研究的四维匹配核验：</strong><ul style="margin:4px 0">${{reasons}}</ul></div>
+        <button type="button" class="${{reqConfirm ? 'secondary' : ''}}" onclick="chooseTargetRCT(${{idx}})">${{reqConfirm ? '设为局部参考框架（需勾选下方偏离知情确认）' : `选定 ${{escHtml(c.nct_id)}} 作为对标目标试验 →`}}</button>
       </div>
     `;
   }}).join('');
@@ -1072,7 +1111,7 @@ async function executeRCTSearch(cond='', intr='', comp='') {{
 
 async function confirmSelectedTargetRCT() {{
   if (STATE.selectedRctIdx < 0 || !STATE.rctCandidates[STATE.selectedRctIdx]) {{
-    showError('请先在上方候选列表中勾选一项随机对照试验（若候选均为「对照不一致」，需手动点选并勾选下方不一致知情确认框）。');
+    showError('请先在上方候选列表中点选一项随机对照试验（若候选存在人群、主要终点、设计或双臂偏离，需手动点选并勾选下方知情确认框）。');
     return;
   }}
   await chooseTargetRCT(STATE.selectedRctIdx);
@@ -1084,8 +1123,8 @@ async function chooseTargetRCT(idx) {{
   if (STATE.selectedRctIdx !== idx) {{
     onSelectRCTRadio(idx);
   }}
-  if (rct.requires_mismatch_confirmation && !STATE.confirmArmMismatch) {{
-    showError(`所选试验 ${{rct.nct_id}} 的干预/对照臂与本研究不一致（${{rct.arm_alignment_label || rct.arm_alignment_status}}）。若仅借用其纳排与随访时间窗，请先勾选列表下方的「我已知晓该 RCT 的干预/对照臂与本研究不一致…」确认框后再继续。`);
+  if (needsRctConfirmation(rct) && !STATE.confirmArmMismatch) {{
+    showError(`所选试验 ${{rct.nct_id}} 与当前研究存在方案偏离（${{rct.overall_alignment_label || rct.arm_alignment_label || rct.overall_alignment_status}}）。若仅将其作为局部方案参考框架，请先勾选列表下方的「我已知晓该试验在干预对照、目标人群、主要终点或随访窗上与当前研究存在偏离…」确认框后再继续。`);
     return;
   }}
   const intrOvr = document.getElementById('rct-intr-input').value.trim();
@@ -1100,7 +1139,8 @@ async function chooseTargetRCT(idx) {{
       pico: STATE.pico,
       intervention: intrOvr,
       comparator: compOvr,
-      confirm_arm_mismatch: STATE.confirmArmMismatch
+      confirm_arm_mismatch: STATE.confirmArmMismatch,
+      confirm_protocol_mismatch: STATE.confirmArmMismatch
     }})
   }});
   const data = await resp.json();
@@ -1108,12 +1148,14 @@ async function chooseTargetRCT(idx) {{
   STATE.selectedRct = data.target_rct || rct;
 
   const activeRct = STATE.selectedRct;
-  const warnHtml = activeRct.arm_alignment_warning
-    ? `<div class="notice arm-mismatch-callout" style="background:#fffbeb;border-left-color:#d97706;color:#92400e"><strong>⚠️ 对照不一致参考声明：</strong>${{escHtml(activeRct.arm_alignment_warning)}}</div>`
+  const combinedWarn = activeRct.arm_alignment_warning || activeRct.protocol_alignment_warning || '';
+  const warnTitle = activeRct.arm_alignment_warning ? '⚠️ 对照不一致参考声明：' : '⚠️ 四维 PICO-T 方案偏离参考声明：';
+  const warnHtml = combinedWarn
+    ? `<div class="notice arm-mismatch-callout protocol-mismatch-callout" style="background:#fffbeb;border-left-color:#d97706;color:#92400e"><strong>${{warnTitle}}</strong>${{escHtml(combinedWarn)}}</div>`
     : '';
   document.getElementById('selected-rct-summary').innerHTML = `
     <div class="notice" style="background:#eef6f4;border-left-color:var(--accent)">
-      <strong>${{activeRct.arm_alignment_warning ? '当前参考框架 RCT（仅借用纳排与随访窗）：' : '当前对标目标 RCT：'}}</strong><a href="${{escHtml(activeRct.record_url)}}" target="_blank" rel="noopener">${{escHtml(activeRct.nct_id)}} ↗</a> — ${{escHtml(activeRct.brief_title)}}
+      <strong>${{combinedWarn ? '当前局部参考框架 RCT：' : '当前四维对标目标 RCT：'}}</strong><a href="${{escHtml(activeRct.record_url)}}" target="_blank" rel="noopener">${{escHtml(activeRct.nct_id)}} ↗</a> — ${{escHtml(activeRct.brief_title)}}
     </div>
     ${{warnHtml}}
   `;
@@ -1323,7 +1365,8 @@ async function launchUserCohortRun() {{
       target_rct: STATE.selectedRct,
       intervention: document.getElementById('rct-intr-input').value.trim(),
       comparator: document.getElementById('rct-comp-input').value.trim(),
-      confirm_arm_mismatch: STATE.confirmArmMismatch
+      confirm_arm_mismatch: STATE.confirmArmMismatch,
+      confirm_protocol_mismatch: STATE.confirmArmMismatch
     }})
   }});
   const data = await resp.json();
@@ -1356,7 +1399,8 @@ async function launchSimulatedRun() {{
       sim_config: simConfig,
       intervention: document.getElementById('rct-intr-input').value.trim(),
       comparator: document.getElementById('rct-comp-input').value.trim(),
-      confirm_arm_mismatch: STATE.confirmArmMismatch
+      confirm_arm_mismatch: STATE.confirmArmMismatch,
+      confirm_protocol_mismatch: STATE.confirmArmMismatch
     }})
   }});
   const data = await resp.json();

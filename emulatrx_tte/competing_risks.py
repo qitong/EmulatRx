@@ -1236,8 +1236,12 @@ def _render_audit_report_md(estimates: dict) -> str:
         )
         if trct.get("arm_alignment_status"):
             lines.append(f"- **Target RCT Arm Alignment (`arm_alignment_status`)**: `{trct['arm_alignment_status']}`")
+        if trct.get("overall_alignment_status"):
+            lines.append(f"- **Target RCT 4D Protocol Alignment (`overall_alignment_status`)**: `{trct['overall_alignment_status']}`")
         if trct.get("arm_alignment_warning"):
             lines.append(f"- **⚠️ Target RCT Arm Alignment Warning (`arm_alignment_warning`)**: {trct['arm_alignment_warning']}")
+        if trct.get("protocol_alignment_warning") and trct.get("protocol_alignment_warning") != trct.get("arm_alignment_warning"):
+            lines.append(f"- **⚠️ Target RCT Protocol Alignment Warning (`protocol_alignment_warning`)**: {trct['protocol_alignment_warning']}")
     if smode == SOURCE_MODE_USER_COHORT and isinstance(estimates.get("ingest_lineage"), dict):
         lin = estimates["ingest_lineage"]
         lines.append(

@@ -1,18 +1,18 @@
 ---
 name: emulatrx-tte
-description: Run deterministic Target Trial Emulation (TTE) protocol validation, ClinicalTrials.gov target RCT matching, privacy-safe user cohort ingestion (`user_cohort`), target-RCT simulated cohort rehearsal (`simulated_cohort`), synthetic competing-risks benchmarking (`synthetic_only`), overlap/IPTW diagnostic gating, and weighted competing-risks survival analysis (Aalen-Johansen CIF, Fine-Gray sHR, cause-specific Cox csHR, horizon RD/RR_CIF, E-values) via `python -m emulatrx_tte` or the Dual-Mode Web/MCP Workbench.
+description: Run deterministic Target Trial Emulation (TTE) protocol validation, ClinicalTrials.gov target RCT matching, privacy-safe user cohort ingestion (`user_cohort`), target-RCT simulated cohort rehearsal (`simulated_cohort`), synthetic competing-risks benchmarking (`synthetic_only`), overlap/IPTW diagnostic gating, weighted competing-risks survival analysis (Aalen-Johansen CIF, Fine-Gray sHR, cause-specific Cox csHR, horizon RD/RR_CIF, E-values), and bilateral grace-period Clone-Censor-Weight (CCW) immortal-time bias correction (`validate-ccw`, `synth-ccw`, `run-ccw-synthetic`) via `python -m emulatrx_tte` or the Dual-Mode Web/MCP Workbench.
 ---
 
 # `emulatrx-tte` External Agent Execution Contract
 
-Deterministic Python CLI, SDK (`emulatrx_tte`), and Web/MCP Dual-Mode Workbench (`emulatrx_preview`) for seven-element Target Trial Emulation (TTE) protocol checking, `ClinicalTrials.gov` target RCT matching, propensity/overlap diagnostic gating, and weighted competing-risks survival analysis.
+Deterministic Python CLI, SDK (`emulatrx_tte`), and Web/MCP Dual-Mode Workbench (`emulatrx_preview`) for seven-element Target Trial Emulation (TTE) and `tte-ccw-v1` grace-period Clone–Censor–Weight (CCW) protocol checking, `ClinicalTrials.gov` target RCT matching, propensity/overlap/IPCW diagnostic gating, immortal-time bias correction, and weighted competing-risks survival analysis.
 
 ## 1. Non-Negotiable Provenance, Privacy & Claim Guardrails
 
 Every run explicitly locks one of three `source_mode` (`project_mode`) contracts:
 
-1. **`"synthetic_only"` (default CLI benchmark)**:
-   - Accepts only seeded synthetic cohorts (`SYN-000001..`). Rejects any non-`SYN-*` subject ID (`NON_SYNTHETIC_COHORT_REJECTED`).
+1. **`"synthetic_only"` (default CLI benchmark & `tte-ccw-v1` grace-period CCW)**:
+   - Accepts only seeded synthetic cohorts (`SYN-000001..`) across `run-synthetic`, `validate-ccw`, `synth-ccw`, and `run-ccw-synthetic`. Rejects any non-`SYN-*` subject ID (`NON_SYNTHETIC_COHORT_REJECTED`).
    - Enforces `prohibited_claims`: `非真实患者数据`, `非临床疗效证据`, `非因果实证证明`.
 2. **`"simulated_cohort"` (no-data target-RCT feasibility rehearsal)**:
    - Aligns treatment arms and follow-up horizons with a matched `ClinicalTrials.gov` target RCT (`emulatrx_tte/rct_matcher.py`), generates a virtual confounded cohort (`SIM-000001..`), and outputs **🟣《目标试验模拟（无数据模拟预演项目）可行性报告》** including a DGP truth vs weighted estimate recovery table (`simulation_recovery_table`).
@@ -22,7 +22,7 @@ Every run explicitly locks one of three `source_mode` (`project_mode`) contracts
    - Outputs **🟢《真实队列目标试验模拟（真项目）分析报告》**, explicitly stating the four observational causal identification assumptions (`Consistency`, `Conditional Exchangeability / No Unmeasured Confounding`, `Positivity`, `Conditional Non-Informative Censoring`) and residual unmeasured confounding limitations.
    - **Strict LLM Privacy Redline**: Whenever optional LLM assistance (`emulatrx_tte/llm_assist.py`) is enabled, outbound payloads are scrubbed by `sanitize_profile_for_llm` + `assert_llm_payload_privacy_safe` to contain **only column names, inferred types, missingness rates, deduplicated short category labels (<= 20 non-ID labels), and aggregate quantiles/means/SDs — NEVER a single individual patient record or subject ID**. When no LLM key is set, 100% of steps fall back deterministically without error.
 4. **Zero hardcoded clinical thresholds & atomic non-overwrite staging**:
-   - Read gate thresholds (`max_abs_smd`, `min_ess_ratio`, `positivity_epsilon`) and default `horizon_days` from the validated protocol JSON, pass `--seed` and `--bootstrap-iterations` explicitly, and always pass a **new, non-existent** `--out` directory (`OUTPUT_EXISTS` exits `2`).
+   - Read gate thresholds (`max_abs_smd`, `min_ess_ratio`, `positivity_epsilon`, or CCW `max_post_grace_smd`, `max_stabilized_weight`, `min_uncensored_subjects_per_clone`) and evaluation horizons from the validated protocol JSON, pass `--seed` and `--bootstrap-iterations` explicitly, and always pass a **new, non-existent** `--out` directory (`OUTPUT_EXISTS` exits `2`).
 
 ## 2. Workflow & CLI Subcommands
 
@@ -92,13 +92,46 @@ python -m emulatrx_tte estimate \
   --out /tmp/tte-step4-estimate
 ```
 
+**Completion criterion**: Process exits `0`, `run_manifest.json` exists in `--out`, and every file in `output_sha256` matches its on-disk SHA-256 digest.
+
+### Option E: Bilateral Grace-Period Clone–Censor–Weight (`validate-ccw` / `synth-ccw` / `run-ccw-synthetic`)
+
+Use when treatment initiation occurs within a post-baseline grace window $[0, g]$ (`schemas/tte-ccw-v1.schema.json`) to eliminate immortal-time bias without discarding early $\le g$ events:
+
+```bash
+# Validate tte-ccw-v1 protocol JSON (divisible time grid Δ, anti-time-travel covariate rules)
+python -m emulatrx_tte validate-ccw \
+  --protocol examples/tte_grace_period_ccw_v1.json \
+  --out /tmp/ccw-step1-protocol
+
+# Generate seeded synthetic delayed-initiation cohort + counterfactual truth
+python -m emulatrx_tte synth-ccw \
+  --protocol examples/tte_grace_period_ccw_v1.json \
+  --seed 42 \
+  --cases 2500 \
+  --out /tmp/ccw-step2-synth
+
+# End-to-end bilateral CCW + subject-cluster bootstrap + Chinese SVG preview report
+python -m emulatrx_tte run-ccw-synthetic \
+  --protocol examples/tte_grace_period_ccw_v1.json \
+  --seed 42 \
+  --cases 2500 \
+  --bootstrap-iterations 200 \
+  --out /tmp/ccw-run-synthetic
+```
+
+- Baseline-only Strategy 1 uses an unpenalized grace-boundary adherence logistic fit on $T_i > g$, while declared `time_varying_covariates` (`X_tv`) use pooled per-period pre-decision initiation hazards under a no-treatment-confounder-feedback boundary ([`docs/tte-ccw-v1.md`](../../docs/tte-ccw-v1.md)).
+- Never call legacy `emulation_utils.adjust_immortal_time_bias` (disabled with `RuntimeError` due to missing grace-period censoring and pooled Cox censoring defects).
+- On exit code `3` (`UNCENSORED_BELOW_MIN`, `PRE_TRUNCATION_WEIGHT_EXCEEDED`, `EXCESSIVE_WEIGHT_TRUNCATION`, `MAX_WEIGHT_EXCEEDED`, `ESS_RATIO_BELOW_MIN`, `POST_GRACE_SMD_EXCEEDS_MAX`), `run-ccw-synthetic` writes `ccw_diagnostics.json`, `ccw_attrition.json`, and `run_manifest.json` while **100% omitting** `ccw_estimates.json`. Optional `diagnostic_gates` truncation controls (`max_pre_truncation_weight` defaulting to `max_stabilized_weight`, `min_truncation_quantile_span` defaulting to `0.80`, and `max_truncated_weight_fraction` defaulting to `min(1.0, q_low + (1.0 - q_high) + 0.05)` when `truncate_quantiles` is enabled) are resolved and audited as `effective_*` fields in `ccw_diagnostics.json`.
+- Always report `ccw_rd_event1` (`subject_cluster_bootstrap_with_ipcw_refit` 95% CI) alongside `naive_immortal_time_comparison` (`naive_rd` and `immortal_time_bias_rd_inflation = naive_rd - ccw_rd`) and the four mandatory causal identification assumptions.
+
 ## 3. Exit Codes & Fail-Closed Gate Rules
 
 | Exit Code | Meaning | Required Agent Action |
 | --- | --- | --- |
-| `0` | Contract & diagnostic gates passed; full artifacts + `run_manifest.json` atomically published | Parse `estimates.json`, `audit_report.md`, `curves/*.csv`, and verify `run_manifest.json` |
+| `0` | Contract & diagnostic gates passed; full artifacts + `run_manifest.json` atomically published | Parse `estimates.json` / `ccw_estimates.json`, `audit_report.md`, `curves/*.csv`, and verify `run_manifest.json` |
 | `2` | `ContractError` (schema violation, `MISSING_TIME_ZERO`, `INVALID_TIME_ZERO`, `POST_TIME_ZERO_ELIGIBILITY`, `POST_LANDMARK_COVARIATE_LEAK`, `INVALID_STRATEGIES`, `UNHANDLED_COMPETING_EVENT`, `UNSUPPORTED_EVALUE_MEASURE`, `MISSING_USER_COHORT_INGEST_MANIFEST`, `PRIVACY_VIOLATION_BLOCKED`, `OUTPUT_EXISTS`, etc.) | Stop immediately; inspect the error code + `Hint:` on `stderr` and fix protocol/mapping/arguments before retrying into a new `--out` directory |
-| `3` | Statistical / upstream gate blocked (`POSITIVITY_VIOLATION`, `ESS_RATIO_BELOW_MIN`, `SMD_EXCEEDS_MAX`, `ZERO_RISK_SET`, `UPSTREAM_GATE_NOT_PASSED`, `MISSING_WEIGHTED_COHORT`, `MANIFEST_INTEGRITY_MISMATCH`, `PROTOCOL_DIAGNOSTICS_MISMATCH`, `INGEST_LINEAGE_MISMATCH`) | **Fail closed**: report the diagnostic gate failure from `diagnostics_summary.json` / `stderr`. Never fabricate survival estimates, never bypass `diagnose`, and never copy an unverified `weighted_cohort.csv` |
+| `3` | Statistical / upstream gate blocked (`POSITIVITY_VIOLATION`, `ESS_RATIO_BELOW_MIN`, `SMD_EXCEEDS_MAX`, `ZERO_RISK_SET`, `UNCENSORED_BELOW_MIN`, `PRE_TRUNCATION_WEIGHT_EXCEEDED`, `EXCESSIVE_WEIGHT_TRUNCATION`, `MAX_WEIGHT_EXCEEDED`, `POST_GRACE_SMD_EXCEEDS_MAX`, `UPSTREAM_GATE_NOT_PASSED`, `MISSING_WEIGHTED_COHORT`, `MANIFEST_INTEGRITY_MISMATCH`, `PROTOCOL_DIAGNOSTICS_MISMATCH`, `INGEST_LINEAGE_MISMATCH`) | **Fail closed**: report the diagnostic gate failure from `diagnostics_summary.json` / `ccw_diagnostics.json` / `stderr`. Never fabricate survival estimates, never bypass `diagnose`, and never copy an unverified `weighted_cohort.csv` |
 
 ## 4. Mandatory Side-by-Side Competing-Risks Interpretation Rules
 
@@ -110,4 +143,4 @@ When reporting `estimates.json` (`co_presented_comparison_table`) or `audit_repo
 4. **Enforce E-value competing-risks boundaries**: Report sensitivity E-values strictly from horizon `RR_CIF_1(t)` (`evalue_rr_cif_point` and `evalue_rr_cif_ci_limit`). Never apply single-event E-value conversions to `sHR`, and never convert competing-risks `csHR` / `HR` when cumulative incidence `> 0.15`.
 5. **State censoring & bootstrap variance scope**: When `--censoring-ipcw none` is used, report the arm-conditional independent right-censoring assumption; note that CIF/`RD`/`RR_CIF` bootstrap CIs hold Stage-1 baseline propensity weights fixed (`baseline_propensity_weights: "fixed"`).
 
-For full CLI flags, JSON field schemas, Web/MCP endpoints, and Python SDK signatures, read [`docs/tte-cli-and-agent-contract-v1.md`](../../docs/tte-cli-and-agent-contract-v1.md) and [`docs/FEATURE_API_OVERVIEW.md`](../../docs/FEATURE_API_OVERVIEW.md).
+For full CLI flags, JSON field schemas, Web/MCP endpoints, and Python SDK signatures, read [`docs/tte-cli-and-agent-contract-v1.md`](../../docs/tte-cli-and-agent-contract-v1.md), [`docs/tte-ccw-v1.md`](../../docs/tte-ccw-v1.md), and [`docs/FEATURE_API_OVERVIEW.md`](../../docs/FEATURE_API_OVERVIEW.md).

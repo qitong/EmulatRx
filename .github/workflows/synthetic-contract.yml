@@ -36,5 +36,5 @@ jobs:
             pandas==2.2.3 \
             scikit-learn==1.5.2 \
             lifelines==0.30.0
-      - name: Test TTE foundation, competing-risks estimators, pipeline, and E-values
-        run: PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_tte_*.py' -v
+      - name: Test TTE foundation, competing risks, P1 grace-period CCW, and 4D dual-mode modules
+        run: PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -p 'test_tte_*.py' -v

@@ -270,6 +270,12 @@
         },
         "arm_alignment_warning": {
           "type": "string"
+        },
+        "overall_alignment_status": {
+          "type": "string"
+        },
+        "protocol_alignment_warning": {
+          "type": "string"
         }
       }
     }

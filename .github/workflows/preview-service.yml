@@ -26,12 +26,75 @@ jobs:
           COMMIT_SHA="$(git rev-parse HEAD)"
           git merge-base --is-ancestor "152af0610d4317cd18691da1173cd297566fee09" "$COMMIT_SHA"
           docker build --platform linux/arm64 --build-arg CODE_COMMIT="$COMMIT_SHA" --build-arg TTE_DEPENDENCY_COMMIT="$COMMIT_SHA" -f Dockerfile.preview -t "emulatrx-preview:$COMMIT_SHA" .
-      - name: Check architecture, dual-mode & synthetic smoke tests, and export exact image
+      - name: Check architecture, CLI & live container HTTP black-box smoke tests, and export exact image
         run: |
           COMMIT_SHA="$(git rev-parse HEAD)"
           test "$(docker image inspect "emulatrx-preview:$COMMIT_SHA" --format '{{.Architecture}}')" = arm64
           docker run --rm "emulatrx-preview:$COMMIT_SHA" python -m emulatrx_tte run-synthetic --protocol /app/examples/tte_preview_v1.json --seed 42 --cases 1000 --weight-method overlap --bootstrap-iterations 20 --out /tmp/arm-smoke
-          docker run --rm "emulatrx-preview:$COMMIT_SHA" python -c "import tempfile; from pathlib import Path; from emulatrx_tte import generate_sample_cohort_csv_bytes, read_tabular_cohort_bytes, profile_cohort_dataframe, recommend_column_mapping, run_user_cohort_pipeline; td=Path(tempfile.mkdtemp()); fn,raw=generate_sample_cohort_csv_bytes('cardiorenal_sglt2i'); p=td/fn; p.write_bytes(raw); df,_,_=read_tabular_cohort_bytes(raw,fn); prof=profile_cohort_dataframe(df,filename=fn); mp=recommend_column_mapping(prof); res,code=run_user_cohort_pipeline(p,mp,out_dir=td/'out',bootstrap_iterations=20); assert code==0 and res['source_mode']=='user_cohort'"
+          docker run --rm "emulatrx-preview:$COMMIT_SHA" python -m emulatrx_tte run-ccw-synthetic --protocol /app/examples/tte_grace_period_ccw_v1.json --seed 42 --cases 800 --bootstrap-iterations 20 --out /tmp/arm-ccw-smoke
+          SMOKE_SECRETS="$(mktemp -d)"
+          printf '%s\n' "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww" > "$SMOKE_SECRETS/web_pass"
+          printf '%s\n' "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm" > "$SMOKE_SECRETS/mcp_token"
+          chmod 0755 "$SMOKE_SECRETS" && chmod 0644 "$SMOKE_SECRETS/web_pass" "$SMOKE_SECRETS/mcp_token"
+          docker run -d --name emulatrx-http-smoke -p 127.0.0.1:18602:8000 \
+            -e EMULATRX_RUNS_DIR=/tmp/tte-smoke-runs \
+            -e EMULATRX_OFFLINE_RCT_CATALOG=1 \
+            -e EMULATRX_ALLOWED_HOSTS=127.0.0.1:18602 \
+            -e EMULATRX_WEB_PASSWORD_FILE=/run/secrets/web_pass \
+            -e EMULATRX_MCP_TOKEN_FILE=/run/secrets/mcp_token \
+            -v "$SMOKE_SECRETS/web_pass:/run/secrets/web_pass:ro" \
+            -v "$SMOKE_SECRETS/mcp_token:/run/secrets/mcp_token:ro" \
+            "emulatrx-preview:$COMMIT_SHA"
+          trap 'docker rm -f emulatrx-http-smoke >/dev/null 2>&1 || true; rm -rf "$SMOKE_SECRETS"' EXIT
+          python3 - <<'PY'
+          import base64, json, time, urllib.error, urllib.request
+
+          base = "http://127.0.0.1:18602"
+          web_hdr = {"Authorization": "Basic " + base64.b64encode(b"preview:" + b"w" * 40).decode()}
+          mcp_hdr = {
+              "Authorization": "Bearer " + "m" * 40,
+              "Content-Type": "application/json",
+              "Accept": "application/json, text/event-stream",
+          }
+
+          for _ in range(30):
+              try:
+                  with urllib.request.urlopen(f"{base}/healthz", timeout=2) as r:
+                      if r.status == 200:
+                          break
+              except Exception:
+                  time.sleep(0.5)
+          else:
+              raise SystemExit("Container /healthz did not become ready")
+
+          def status_of(req):
+              try:
+                  with urllib.request.urlopen(req, timeout=10) as resp:
+                      return resp.status, resp.read().decode("utf-8")
+              except urllib.error.HTTPError as exc:
+                  return exc.code, exc.read().decode("utf-8")
+
+          # 1. Auth separation: unauth -> 401, Web Basic -> 200, Web Basic on /mcp -> 401, MCP Bearer -> 200
+          assert status_of(urllib.request.Request(f"{base}/"))[0] == 401
+          assert status_of(urllib.request.Request(f"{base}/", headers=web_hdr))[0] == 200
+          assert status_of(urllib.request.Request(f"{base}/mcp", data=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}', headers={**web_hdr, "Content-Type": "application/json"}, method="POST"))[0] == 401
+          mcp_code, mcp_body = status_of(urllib.request.Request(f"{base}/mcp", data=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}', headers=mcp_hdr, method="POST"))
+          assert mcp_code == 200 and "start_user_cohort_tte" in mcp_body
+
+          # 2. Offline dual-entry smoke: sample cohort upload -> 4D CAROLINA match -> session purge -> 404
+          up_code, up_txt = status_of(urllib.request.Request(f"{base}/api/sessions/upload", data=json.dumps({"sample_id": "t2dm_cv_carolina"}).encode(), headers={**web_hdr, "Content-Type": "application/json"}, method="POST"))
+          assert up_code == 200, up_txt
+          sid = json.loads(up_txt)["session_id"]
+          sr_code, sr_txt = status_of(urllib.request.Request(f"{base}/api/rcts/search", data=json.dumps({"session_id": sid, "project_mode": "user_cohort", "query": "Linagliptin Glimepiride"}).encode(), headers={**web_hdr, "Content-Type": "application/json"}, method="POST"))
+          assert sr_code == 200 and json.loads(sr_txt)["candidates"][0]["overall_alignment_status"] == "protocol_aligned", sr_txt
+          id_code, _ = status_of(urllib.request.Request(f"{base}/api/idea/parse", data=json.dumps({"idea_text": "帕博利珠单抗联合含铂化疗对比单纯含铂化疗一线治疗晚期非小细胞肺癌"}).encode(), headers={**web_hdr, "Content-Type": "application/json"}, method="POST"))
+          assert id_code == 200
+          del_code, _ = status_of(urllib.request.Request(f"{base}/api/cohorts/{sid}", headers=web_hdr, method="DELETE"))
+          assert del_code == 200
+          assert status_of(urllib.request.Request(f"{base}/api/cohorts/{sid}", headers=web_hdr))[0] == 404
+          print("ARM64 live HTTP black-box smoke passed!")
+          PY
+          docker rm -f emulatrx-http-smoke
           docker save "emulatrx-preview:$COMMIT_SHA" | gzip -1 > emulatrx-preview-arm64.tar.gz
           sha256sum emulatrx-preview-arm64.tar.gz > emulatrx-preview-arm64.tar.gz.sha256
       - uses: actions/upload-artifact@v4

@@ -34,6 +34,7 @@ STUDY_FIELDS = (
     "protocolSection.armsInterventionsModule.interventions",
     "protocolSection.eligibilityModule",
     "protocolSection.outcomesModule.primaryOutcomes",
+    "protocolSection.outcomesModule.secondaryOutcomes",
     "hasResults",
 )
 
@@ -327,6 +328,74 @@ ALIGNMENT_RANKS: dict[str, int] = {
 # Every entry returned from this catalog is explicitly labeled source="offline_curated_catalog_fallback".
 OFFLINE_CURATED_RCTS: tuple[dict, ...] = (
     {
+        "nct_id": "NCT01243424",
+        "brief_title": "CAROLINA: Cardiovascular Outcome Study of Linagliptin Versus Glimepiride in Patients With Type 2 Diabetes",
+        "official_title": "A Multicenter, International, Randomized, Parallel Group, Double Blind Study to Evaluate Cardiovascular Safety of Linagliptin Versus Glimepiride in Patients With Type 2 Diabetes Mellitus at High Cardiovascular Risk",
+        "phases": ["PHASE3"],
+        "overall_status": "COMPLETED",
+        "enrollment_count": 6042,
+        "allocation": "RANDOMIZED",
+        "conditions": ["Diabetes Mellitus, Type 2", "Cardiovascular Risk", "Cardiovascular Diseases"],
+        "experimental_arms": ["Linagliptin 5 mg once daily"],
+        "comparator_arms": ["Glimepiride 1–4 mg once daily"],
+        "interventions": ["Drug: Linagliptin", "Drug: Glimepiride"],
+        "eligibility_summary": {
+            "min_age": "40 Years",
+            "max_age": "85 Years",
+            "sex": "ALL",
+            "highlights": [
+                "确诊 2 型糖尿病且伴高心血管风险或既往动脉粥样硬化性心血管疾病成人患者（40–85 岁）",
+                "头对头随机双盲比较利格列汀（DPP-4i）对比格列美脲（磺脲类）主动对照",
+                "排除终末期肾病或严重肝功能损害患者",
+            ],
+        },
+        "primary_outcomes": [
+            {
+                "measure": "Time to First Occurrence of 3P-MACE (Cardiovascular Death, Non-fatal Myocardial Infarction, or Non-fatal Stroke)",
+                "timeFrame": "Up to approximately 8 years (median follow-up 6.3 years)",
+            }
+        ],
+        "parsed_horizon_days": [180.0, 365.0, 730.0],
+        "parsed_admin_end_day": 1095.0,
+    },
+    {
+        "nct_id": "NCT02296125",
+        "brief_title": "AZD9291 (Osimertinib) Versus Gefitinib or Erlotinib in Patients With Locally Advanced or Metastatic Non-small Cell Lung Cancer (FLAURA)",
+        "official_title": "A Phase III, Double-blind, Randomised Study to Assess the Efficacy and Safety of AZD9291 Versus a Standard of Care Epidermal Growth Factor Receptor-Tyrosine Kinase Inhibitor in First-Line EGFR Mutation Positive Advanced NSCLC",
+        "phases": ["PHASE3"],
+        "overall_status": "COMPLETED",
+        "enrollment_count": 556,
+        "allocation": "RANDOMIZED",
+        "conditions": ["Non-Small Cell Lung Cancer", "EGFR-Mutated NSCLC"],
+        "experimental_arms": ["Osimertinib 80 mg once daily"],
+        "comparator_arms": ["Gefitinib 250 mg once daily"],
+        "interventions": ["Drug: Osimertinib", "Drug: Gefitinib"],
+        "eligibility_summary": {
+            "min_age": "18 Years",
+            "max_age": "N/A",
+            "sex": "ALL",
+            "highlights": [
+                "组织学确诊局部晚期或转移性 EGFR 敏感突变（Exon 19 缺失或 L858R）非小细胞肺癌初治成人患者",
+                "头对头随机双盲比较奥希替尼对比一代 EGFR-TKI（吉非替尼）",
+                "排除既往接受过晚期系统抗肿瘤治疗或 EGFR-TKI 治疗患者",
+            ],
+        },
+        "primary_outcomes": [
+            {
+                "measure": "Progression-Free Survival (PFS) per RECIST 1.1",
+                "timeFrame": "Approximately 18 months",
+            }
+        ],
+        "secondary_outcomes": [
+            {
+                "measure": "Overall Survival (OS)",
+                "timeFrame": "Up to 36 months",
+            }
+        ],
+        "parsed_horizon_days": [90.0, 180.0, 365.0],
+        "parsed_admin_end_day": 720.0,
+    },
+    {
         "nct_id": "NCT01095653",
         "brief_title": "Efficacy and Safety of Dapagliflozin Added to Metformin Compared With Sitagliptin Added to Metformin in Patients With Type 2 Diabetes Mellitus",
         "official_title": "A 24-Week With a 24-Week Extension, Multicenter, Randomized, Double-Blind, Active-Controlled Phase III Study to Evaluate Dapagliflozin Versus Sitagliptin in Type 2 Diabetes",
@@ -334,7 +403,7 @@ OFFLINE_CURATED_RCTS: tuple[dict, ...] = (
         "overall_status": "COMPLETED",
         "enrollment_count": 1450,
         "allocation": "RANDOMIZED",
-        "conditions": ["Type 2 Diabetes Mellitus", "Cardiorenal Metabolic Risk"],
+        "conditions": ["Type 2 Diabetes Mellitus"],
         "experimental_arms": ["Dapagliflozin 10 mg once daily"],
         "comparator_arms": ["Sitagliptin 100 mg once daily"],
         "interventions": ["Drug: Dapagliflozin", "Drug: Sitagliptin"],
@@ -343,19 +412,19 @@ OFFLINE_CURATED_RCTS: tuple[dict, ...] = (
             "max_age": "N/A",
             "sex": "ALL",
             "highlights": [
-                "确诊 2 型糖尿病成人患者（年龄 ≥ 18 岁）",
-                "头对头随机双盲比较达格列净（SGLT2i）对比西格列汀（DPP-4i）主动阳性对照",
-                "排除基线重度肾功能衰竭或 1 型糖尿病患者",
+                "确诊单纯 2 型糖尿病成人患者（年龄 ≥ 18 岁）",
+                "头对头随机双盲比较达格列净对比西格列汀 24 周降糖疗效",
+                "排除心力衰竭 NYHA III–IV 级、重度肾功能衰竭或 1 型糖尿病患者",
             ],
         },
         "primary_outcomes": [
             {
-                "measure": "Glycemic & Cardiorenal Metabolic Composite Progression Over Active-Controlled Follow-up",
-                "timeFrame": "Up to 48 weeks (approximately 12 months)",
+                "measure": "Change From Baseline in HbA1c at Week 24",
+                "timeFrame": "24 weeks",
             }
         ],
-        "parsed_horizon_days": [90.0, 180.0, 365.0],
-        "parsed_admin_end_day": 540.0,
+        "parsed_horizon_days": [42.0, 84.0, 134.0],
+        "parsed_admin_end_day": 168.0,
     },
     {
         "nct_id": "NCT03036124",
@@ -1070,25 +1139,880 @@ def audit_study_arm_alignment(
     }
 
 
+# ---------------------------------------------------------------------------
+# Four-Dimensional PICO-T Target Trial Alignment Engine
+# (Design/PK + Population + Dual-Arm Interventions + Primary Outcome + Horizon)
+# ---------------------------------------------------------------------------
+
+EXCLUSION_HEADING_RE = re.compile(
+    r"(?im)(?:^\s*[\*•\-0-9.)]*\s*(?:key\s+|main\s+|major\s+)?exclusion\s+criteria\b|exclusion\s+criteria\s*:|排除标准)",
+)
+
+HEALTHY_VOLUNTEER_RE = re.compile(
+    r"(?i)\b(?:healthy\s+(?:adult\s+|male\s+|female\s+)?(?:volunteers?|subjects?|participants?|adults?|individuals?|men|women)|normal\s+healthy)\b|健康受试者|健康志愿者|健康成人",
+)
+
+PK_BIOMARKER_DESIGN_RE = re.compile(
+    r"(?i)(?:\b(?:pharmacokinetic|pharmacokinetics|cmax|tmax|auc(?:0|_[0-9a-z]+|\(0|\s|$)|bioequivalence|bioavailability|drug-drug\s+interaction|drug\s+interaction|mass\s+balance|single\s+ascending\s+dose|multiple\s+ascending\s+dose)\b|药代动力学|生物等效性|药物相互作用)",
+)
+
+POPULATION_DOMAIN_TAXONOMY: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "t2dm",
+        "2型糖尿病",
+        (
+            "type 2 diabetes",
+            "type ii diabetes",
+            "diabetes mellitus, type 2",
+            "diabetes mellitus type 2",
+            "t2dm",
+            "t2d",
+            "diabetic",
+            "2型糖尿病",
+            "2 型糖尿病",
+            "二型糖尿病",
+            "糖尿病",
+        ),
+    ),
+    (
+        "heart_failure",
+        "心力衰竭",
+        (
+            "heart failure",
+            "hfref",
+            "hfpef",
+            "cardiac failure",
+            "chronic heart failure",
+            "worsening heart failure",
+            "心力衰竭",
+            "心衰",
+            "心功能不全",
+        ),
+    ),
+    (
+        "ckd",
+        "慢性肾脏病",
+        (
+            "chronic kidney disease",
+            "kidney disease",
+            "renal insufficiency",
+            "diabetic kidney",
+            "diabetic nephropathy",
+            "nephropathy",
+            "albuminuria",
+            "proteinuria",
+            "ckd",
+            "dkd",
+            "慢性肾脏病",
+            "慢性肾病",
+            "糖尿病肾病",
+            "肾病",
+            "肾功能不全",
+        ),
+    ),
+    (
+        "cv_high_risk",
+        "心血管高危",
+        (
+            "cardiovascular risk",
+            "cardiovascular outcome",
+            "cardiovascular outcomes",
+            "cardiovascular safety",
+            "cardiovascular disease",
+            "cardiovascular diseases",
+            "elevated cardiovascular",
+            "high cardiovascular",
+            "atherosclerotic",
+            "ascvd",
+            "coronary artery",
+            "coronary heart",
+            "cardiorenal",
+            "心血管风险",
+            "心血管高危",
+            "心血管疾病",
+            "动脉粥样硬化",
+            "冠心病",
+            "心肾",
+        ),
+    ),
+    (
+        "nsclc",
+        "非小细胞肺癌",
+        (
+            "non-small cell lung",
+            "non-small-cell lung",
+            "nonsquamous non-small cell",
+            "squamous non-small cell",
+            "nsclc",
+            "lung cancer",
+            "非小细胞肺癌",
+            "肺癌",
+            "肺腺癌",
+            "肺鳞癌",
+        ),
+    ),
+    (
+        "egfr_mut",
+        "EGFR突变",
+        (
+            "egfr-mutated",
+            "egfr mutated",
+            "egfr mutation",
+            "egfr mutations",
+            "egfr-positive",
+            "egfr positive",
+            "egfr exon",
+            "exon 19",
+            "exon19",
+            "l858r",
+            "t790m",
+            "azd9291",
+            "egfr突变",
+            "egfr 突变",
+            "egfr敏感",
+            "egfr 敏感",
+            "egfr阳性",
+        ),
+    ),
+    ("afib", "心房颤动", ("atrial fibrillation", "atrial flutter", "afib", "nvaf", "心房颤动", "房颤")),
+    ("breast_cancer", "乳腺癌", ("breast cancer", "breast neoplasm", "乳腺癌")),
+    ("copd", "慢阻肺", ("chronic obstructive pulmonary", "copd", "慢阻肺", "慢性阻塞性肺")),
+    ("sepsis", "脓毒症", ("sepsis", "septic shock", "脓毒症", "感染性休克")),
+)
+
+POPULATION_DOMAIN_ZH: dict[str, str] = {dom_id: zh for dom_id, zh, _ in POPULATION_DOMAIN_TAXONOMY}
+
+CLINICAL_OUTCOME_DOMAINS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "hf_cv_composite",
+        "心衰/心血管事件",
+        (
+            "heart failure",
+            "worsening hf",
+            "hf hospitalization",
+            "hospitalization for heart failure",
+            "hhf",
+            "cardiovascular death",
+            "cv death",
+            "cv mortality",
+            "cardiovascular mortality",
+            "cardiovascular event",
+            "cardiovascular events",
+            "cardiorenal",
+            "mace",
+            "3p-mace",
+            "major adverse cardiovascular",
+            "myocardial infarction",
+            "stroke",
+            "systemic embolism",
+            "thromboembolic",
+            "hf_or_cv",
+            "hf_hospitalization",
+            "hf event",
+            "cv_event",
+            "mace_cv",
+            "心衰住院",
+            "心衰恶化",
+            "心力衰竭",
+            "心血管死亡",
+            "心血管事件",
+            "主要不良心血管",
+            "心肌梗死",
+            "卒中",
+            "体循环栓塞",
+        ),
+    ),
+    (
+        "mortality_os",
+        "总生存/死亡",
+        (
+            "overall survival",
+            "all-cause mortality",
+            "all cause mortality",
+            "total mortality",
+            "time to death",
+            "survival rate",
+            "cancer death",
+            "cancerdeath",
+            "os_days",
+            "总生存",
+            "全因死亡",
+            "肿瘤特异死亡",
+            "死亡风险",
+        ),
+    ),
+    (
+        "oncology_progression",
+        "无进展生存/进展",
+        (
+            "progression-free survival",
+            "progression free survival",
+            "disease-free survival",
+            "event-free survival",
+            "time to progression",
+            "tumor progression",
+            "disease progression",
+            "progression_or",
+            "pfs_days",
+            "primary relapse",
+            "relapse",
+            "recurrence",
+            "无进展生存",
+            "无病生存",
+            "疾病进展",
+            "肿瘤进展",
+            "复发",
+        ),
+    ),
+    (
+        "renal_hard_endpoint",
+        "肾脏硬终点",
+        (
+            "end-stage kidney",
+            "end stage kidney",
+            "end-stage renal",
+            "eskd",
+            "esrd",
+            "kidney failure",
+            "renal failure",
+            "dialysis",
+            "kidney transplant",
+            "sustained egfr",
+            "sustained decrease",
+            "sustained decline",
+            "kidney disease progression",
+            "renal death",
+            "renal composite",
+            "终末期肾病",
+            "肾功能衰竭",
+            "肾衰竭",
+            "透析",
+            "持续 egfr",
+        ),
+    ),
+)
+
+SURROGATE_OUTCOME_DOMAINS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "ketone_metabolic_lab",
+        "血酮",
+        (
+            "ketone",
+            "ketones",
+            "ketonemia",
+            "ketosis",
+            "beta-hydroxybutyrate",
+            "b-hydroxybutyrate",
+            "3-hydroxybutyrate",
+            "acetoacetate",
+            "血酮",
+            "酮体",
+            "酮症",
+        ),
+    ),
+    (
+        "glycemic_lab",
+        "HbA1c/血糖",
+        (
+            "hba1c",
+            "a1c",
+            "glycated hemoglobin",
+            "glycosylated hemoglobin",
+            "fasting plasma glucose",
+            "postprandial glucose",
+            "blood glucose",
+            "mean amplitude of glycemic",
+            "time in range",
+            "insulin sensitivity",
+            "homa-ir",
+            "糖化血红蛋白",
+            "空腹血糖",
+            "血糖",
+        ),
+    ),
+    (
+        "vitals_lipids_weight",
+        "体重/血压/生物标志物",
+        (
+            "body weight",
+            "waist circumference",
+            "bmi",
+            "systolic blood pressure",
+            "diastolic blood pressure",
+            "ldl",
+            "triglyceride",
+            "nt-probnp",
+            "lvef",
+            "ejection fraction",
+            "uacr",
+            "albumin-to-creatinine",
+            "urinary albumin",
+            "体重变化",
+            "血压变化",
+            "射血分数",
+        ),
+    ),
+    (
+        "pk_safety_only",
+        "药代/安全性",
+        (
+            "cmax",
+            "tmax",
+            "auc",
+            "auc0",
+            "pharmacokinetic",
+            "pharmacokinetics",
+            "bioequivalence",
+            "drug-drug interaction",
+            "mass balance",
+            "clearance",
+            "adverse event",
+            "adverse events",
+            "teae",
+            "dose-limiting toxicity",
+            "药代动力学",
+            "生物等效性",
+            "不良事件",
+        ),
+    ),
+)
+
+SURROGATE_OUTCOME_ZH: dict[str, str] = {sid: zh for sid, zh, _ in SURROGATE_OUTCOME_DOMAINS}
+CLINICAL_OUTCOME_ZH: dict[str, str] = {cid: zh for cid, zh, _ in CLINICAL_OUTCOME_DOMAINS}
+
+OVERALL_ALIGNMENT_RANKS: dict[str, int] = {
+    "protocol_aligned": 5,
+    "partial_protocol_reference": 3,
+    "arm_mismatch_reference": 2,
+    "non_efficacy_excluded": 1,
+}
+
+
+def extract_positive_inclusion_text(raw_criteria: str) -> str:
+    """Return ONLY eligibility text strictly prior to 'Exclusion Criteria' / '排除标准'."""
+    if not raw_criteria:
+        return ""
+    parts = EXCLUSION_HEADING_RE.split(str(raw_criteria), maxsplit=1)
+    return parts[0].strip()
+
+
+def extract_condition_domains(raw_text: str) -> set[str]:
+    """Map English/Chinese disease or population text into canonical clinical indication domains."""
+    if not raw_text or not raw_text.strip():
+        return set()
+    cleaned = re.sub(r"(?i)type\s*1\s*diabetes|1\s*型糖尿病|diabetes\s+insipidus", " ", raw_text.lower())
+    cleaned_norm = re.sub(r"[_/]+", " ", cleaned)
+    matched: set[str] = set()
+    for dom_id, _, triggers in POPULATION_DOMAIN_TAXONOMY:
+        for trig in triggers:
+            tl = trig.lower()
+            if tl.isascii() and tl.replace("-", "").isalpha() and len(tl) <= 5:
+                if re.search(rf"(?<![a-z0-9]){re.escape(tl)}(?![a-z0-9])", cleaned_norm):
+                    matched.add(dom_id)
+                    break
+            elif tl in cleaned_norm or tl in cleaned:
+                matched.add(dom_id)
+                break
+    return matched
+
+
+def classify_outcome_domains(raw_text: str) -> tuple[set[str], set[str]]:
+    """Classify outcome measure text into (clinical_hard_domains, surrogate_biomarker_domains)."""
+    if not raw_text or not raw_text.strip():
+        return set(), set()
+    low = re.sub(r"[_/]+", " ", raw_text.lower())
+    clin: set[str] = set()
+    surr: set[str] = set()
+    for cid, _, triggers in CLINICAL_OUTCOME_DOMAINS:
+        for trig in triggers:
+            tl = trig.lower()
+            if tl.isascii() and tl.isalpha() and len(tl) <= 4:
+                if re.search(rf"(?<![a-z0-9]){re.escape(tl)}(?![a-z0-9])", low):
+                    clin.add(cid)
+                    break
+            elif tl in low:
+                clin.add(cid)
+                break
+    if re.search(r"\b(?:pfs|dfs|efs)\b", low):
+        clin.add("oncology_progression")
+    if re.search(r"\bos\b", low) and any(k in low for k in ("survival", "cancer", "tumor", "month", "recist")):
+        clin.add("mortality_os")
+
+    for sid, _, triggers in SURROGATE_OUTCOME_DOMAINS:
+        for trig in triggers:
+            tl = trig.lower()
+            if tl.isascii() and tl.isalpha() and len(tl) <= 4:
+                if re.search(rf"(?<![a-z0-9]){re.escape(tl)}(?![a-z0-9])", low):
+                    surr.add(sid)
+                    break
+            elif tl in low:
+                surr.add(sid)
+                break
+    return clin, surr
+
+
+def _parse_outcome_timeframe_days(timeframes: list[str]) -> tuple[float | None, bool, str]:
+    """Return (max_parsed_days_or_None, is_event_driven, concise_display_tf) from outcome timeFrame strings."""
+    joined = " ; ".join(t.strip() for t in timeframes if t and t.strip() and t.strip().lower() != "not specified")
+    if not joined:
+        return None, False, "未注明"
+    low = joined.lower()
+    is_event_driven = bool(
+        re.search(
+            r"event[- ]driven|until\s+(?:\d+\s+)?(?:primary\s+)?(?:endpoint\s+)?events?|until\s+(?:disease\s+)?progression|until\s+death|events?\s+accrue",
+            low,
+        )
+    )
+    candidates: list[float] = []
+    for x in re.findall(r"([0-9]+(?:\.[0-9]+)?)\s*(?:year|years|yr|yrs|年)", low):
+        candidates.append(float(x) * 365.0)
+    for x in re.findall(r"([0-9]+(?:\.[0-9]+)?)\s*(?:month|months|mo|mos|个月|月)", low):
+        candidates.append(float(x) * 30.4375)
+    for x in re.findall(r"([0-9]+(?:\.[0-9]+)?)\s*(?:week|weeks|wk|wks|周)", low):
+        candidates.append(float(x) * 7.0)
+    for x in re.findall(r"(?:day\s*)?([0-9]+(?:\.[0-9]+)?)\s*(?:day|days|天|日)", low):
+        candidates.append(float(x))
+    for m in re.findall(r"\bday\s+([0-9]+(?:\.[0-9]+)?)\b", low):
+        candidates.append(float(m))
+    for x in re.findall(r"([0-9]+(?:\.[0-9]+)?)\s*(?:hour|hours|hr|hrs|小时)", low):
+        candidates.append(float(x) / 24.0)
+
+    short_disp = timeframes[0].strip()[:32] if timeframes and timeframes[0].strip() else "未注明"
+    if not candidates:
+        return None, is_event_driven, short_disp
+    return max(candidates), is_event_driven, short_disp
+
+
+def _extract_study_positive_population_text(study: dict) -> str:
+    """Gather conditions, titles, and strictly pre-exclusion inclusion criteria text for a study."""
+    parts: list[str] = [
+        str(study.get("brief_title", "")),
+        str(study.get("official_title", "")),
+        " ".join(str(c) for c in (study.get("conditions") or [])),
+    ]
+    has_raw_or_inclusion = False
+    if "inclusion_text" in study:
+        has_raw_or_inclusion = True
+        if study["inclusion_text"]:
+            parts.append(str(study["inclusion_text"]))
+    raw_elig = (
+        study.get("eligibility_criteria")
+        or ((study.get("eligibilityModule") or {}).get("eligibilityCriteria") if isinstance(study.get("eligibilityModule"), dict) else "")
+        or ((study.get("protocolSection") or {}).get("eligibilityModule", {}).get("eligibilityCriteria") if isinstance(study.get("protocolSection"), dict) else "")
+    )
+    if raw_elig:
+        has_raw_or_inclusion = True
+        parts.append(extract_positive_inclusion_text(str(raw_elig)))
+    elig_sum = study.get("eligibility_summary")
+    if not has_raw_or_inclusion and isinstance(elig_sum, dict):
+        for hl in elig_sum.get("highlights") or []:
+            hl_s = str(hl).strip()
+            if hl_s and not hl_s.startswith("排除") and not re.match(r"(?i)^exclu", hl_s):
+                parts.append(hl_s)
+    return " ".join(p for p in parts if p)
+
+
+def audit_study_pico4d_alignment(
+    study: dict,
+    *,
+    intervention: str = "",
+    comparator: str = "",
+    target_condition: str = "",
+    target_outcome: str = "",
+    target_followup_days: float | None = None,
+    project_mode: str = "",
+) -> dict:
+    """Evaluate a candidate RCT across all 5 PICO-T dimensions and compute overall alignment verdict & score cap."""
+    is_cohort_mode = str(project_mode or "").strip() == "user_cohort"
+    arm_audit = audit_study_arm_alignment(
+        study,
+        intervention=intervention,
+        comparator=comparator,
+        project_mode=project_mode,
+    )
+    arm_status = arm_audit["arm_alignment_status"]
+    arm_cap = float(arm_audit["arm_alignment_score_cap"])
+
+    # --- 1. Study Design & Healthy-Volunteer / PK-PD Suitability (`design_suitability`) ---
+    elig_mod = study.get("eligibilityModule") if isinstance(study.get("eligibilityModule"), dict) else {}
+    healthy_flag = bool(study.get("healthy_volunteers") is True or elig_mod.get("healthyVolunteers") is True)
+    pos_pop_text = _extract_study_positive_population_text(study)
+    title_cond_text = f"{study.get('brief_title', '')} {study.get('official_title', '')} {' '.join(str(c) for c in (study.get('conditions') or []))}"
+    healthy_text_hit = bool(
+        HEALTHY_VOLUNTEER_RE.search(pos_pop_text)
+        and not re.search(r"(?i)no\s+healthy\s+volunteers|healthy\s+volunteers\s*:\s*no", pos_pop_text)
+    )
+
+    prim_list = study.get("primary_outcomes") or []
+    sec_list = study.get("secondary_outcomes") or []
+    prim_measures = " ; ".join(
+        str(po.get("measure", po) if isinstance(po, dict) else po) for po in prim_list
+    )
+    sec_measures = " ; ".join(
+        str(so.get("measure", so) if isinstance(so, dict) else so) for so in sec_list
+    )
+    prim_clin, prim_surr = classify_outcome_domains(prim_measures)
+    sec_clin, _ = classify_outcome_domains(sec_measures)
+
+    pk_primary_hit = bool(
+        (PK_BIOMARKER_DESIGN_RE.search(prim_measures) and not prim_clin)
+        or (PK_BIOMARKER_DESIGN_RE.search(title_cond_text) and not prim_clin)
+    )
+    phases_upper = {str(p).upper() for p in (study.get("phases") or []) if str(p).strip()}
+    exclusively_phase1 = bool(phases_upper) and phases_upper.issubset({"EARLY_PHASE1", "PHASE1"})
+
+    if healthy_flag or healthy_text_hit or pk_primary_hit or (exclusively_phase1 and not (prim_clin & {"mortality_os", "oncology_progression"})):
+        design_suitability = "non_efficacy_pk_or_healthy"
+        design_cap = 0.20
+        design_detail = (
+            "该研究为健康受试者或药代动力学/生物等效性/早期药理研究，不具备临床疾病结局疗效可比性。"
+            if (healthy_flag or healthy_text_hit or pk_primary_hit)
+            else "该研究仅为早期 I 期探索试验且主要终点非生存结局，不可作为临床疗效目标试验。"
+        )
+    elif exclusively_phase1:
+        design_suitability = "phase1_exploratory"
+        design_cap = 0.30
+        design_detail = "该研究为 I 期探索性试验，样本与随访设计受限（上限 30%）。"
+    else:
+        design_suitability = "clinical_efficacy_rct"
+        design_cap = 1.0
+        design_detail = "随机对照临床研究设计。"
+
+    # --- 2. Population / Indication Domain Alignment (`population_alignment`) ---
+    target_cond_clean = (target_condition or "").strip()
+    target_pop_domains = extract_condition_domains(target_cond_clean)
+    study_pop_domains = extract_condition_domains(pos_pop_text)
+    missing_pop_zh: list[str] = []
+
+    if healthy_flag or healthy_text_hit:
+        population_alignment = "mismatched"
+        population_cap = 0.25
+        pop_pill_zh = "目标人群: 健康受试者"
+        pop_tone = "bad"
+        pop_detail = "该试验招募健康受试者，非目标临床疾病人群。"
+    elif not target_cond_clean:
+        population_alignment = "unspecified"
+        population_cap = 1.0
+        pop_pill_zh = "目标人群: 成人临床人群"
+        pop_tone = "ok"
+        pop_detail = "未限定额外疾病亚型约束。"
+    elif target_pop_domains:
+        missing_doms = target_pop_domains - study_pop_domains
+        matched_doms = target_pop_domains & study_pop_domains
+        if not missing_doms:
+            population_alignment = "matched"
+            population_cap = 1.0
+            pop_pill_zh = "目标人群: 一致"
+            pop_tone = "ok"
+            matched_zh = " + ".join(POPULATION_DOMAIN_ZH.get(d, d) for d in sorted(matched_doms))
+            pop_detail = f"目标适应证人群一致（{matched_zh}）。"
+        elif matched_doms:
+            population_alignment = "partial"
+            population_cap = 0.55
+            missing_pop_zh = [POPULATION_DOMAIN_ZH.get(d, d) for d in sorted(missing_doms)]
+            pop_pill_zh = f"目标人群: 缺关键适应证({'/'.join(missing_pop_zh)})"
+            pop_tone = "warn"
+            pop_detail = (
+                f"人群仅部分重叠：缺少关键适应证/合并症「{'、'.join(missing_pop_zh)}」（匹配度上限 55%）。"
+            )
+        else:
+            population_alignment = "mismatched"
+            population_cap = 0.25
+            missing_pop_zh = [POPULATION_DOMAIN_ZH.get(d, d) for d in sorted(target_pop_domains)]
+            pop_pill_zh = "目标人群: 适应证不符"
+            pop_tone = "bad"
+            pop_detail = f"试验纳排人群未覆盖目标适应证「{'、'.join(missing_pop_zh)}」（上限 25%）。"
+    else:
+        # Generic normalized keyword fallback for unlisted rare conditions
+        kw_tokens = [
+            w.lower()
+            for w in re.findall(r"[A-Za-z]{4,}|[\u4e00-\u9fff]{2,}", target_cond_clean)
+            if w.lower() not in {"patients", "with", "adult", "adults", "disease", "syndrome", "患者", "成人", "合并"}
+        ]
+        pos_low = pos_pop_text.lower()
+        if not kw_tokens or any(k in pos_low for k in kw_tokens):
+            population_alignment = "matched"
+            population_cap = 1.0
+            pop_pill_zh = "目标人群: 一致"
+            pop_tone = "ok"
+            pop_detail = "目标疾病关键词与试验纳入人群匹配。"
+        else:
+            population_alignment = "mismatched"
+            population_cap = 0.25
+            pop_pill_zh = "目标人群: 适应证不符"
+            pop_tone = "bad"
+            pop_detail = f"试验纳入人群未命中目标疾病特征「{target_cond_clean[:36]}」（上限 25%）。"
+
+    # --- 3. Primary Outcome / Endpoint Domain Alignment (`outcome_alignment`) ---
+    raw_target_out = (target_outcome or "").strip()
+    is_default_generic_idea_out = raw_target_out in ("", "主要临床终点事件（时间至事件结局）")
+    target_clin, target_surr = classify_outcome_domains("" if is_default_generic_idea_out else raw_target_out)
+    # Minimal mock dicts with generic placeholder measure ("Primary Clinical Endpoint" / "Composite") and zero surrogate terms
+    prim_low = prim_measures.strip().lower()
+    is_minimal_clinical_placeholder = (
+        not prim_measures.strip()
+        or prim_low in ("primary clinical endpoint", "composite", "clinical composite")
+    ) and not prim_surr
+
+    surr_labels_zh = [SURROGATE_OUTCOME_ZH.get(s, s) for s in sorted(prim_surr)]
+    surr_short = "/".join(surr_labels_zh[:2]) or "替代指标"
+
+    if design_suitability == "non_efficacy_pk_or_healthy" or ("pk_safety_only" in prim_surr and not prim_clin):
+        outcome_alignment = "surrogate_or_mismatched"
+        outcome_cap = 0.48
+        out_pill_zh = "主要终点: 药代指标"
+        out_tone = "bad"
+        out_detail = f"该试验主要终点为药代动力学或早期安全性指标（{prim_measures[:60] or 'PK'}），非临床事件终点。"
+    elif target_clin:
+        if (target_clin & prim_clin) or is_minimal_clinical_placeholder:
+            outcome_alignment = "matched"
+            outcome_cap = 1.0
+            out_pill_zh = "主要终点: 临床终点一致"
+            out_tone = "ok"
+            out_detail = f"主要终点与目标临床硬终点一致（{prim_measures[:72] or '临床复合终点'}）。"
+        elif target_clin & sec_clin:
+            outcome_alignment = "secondary_only"
+            outcome_cap = 0.65
+            out_pill_zh = "主要终点: 仅次要终点匹配"
+            out_tone = "warn"
+            out_detail = f"主要终点未直接覆盖目标结局，仅次要终点含目标临床事件（上限 65%）。"
+        else:
+            outcome_alignment = "surrogate_or_mismatched"
+            outcome_cap = 0.48
+            if prim_surr:
+                out_pill_zh = f"主要终点: 替代指标({surr_short})"
+                out_detail = (
+                    f"主要终点为短期实验室/替代生物标志物「{surr_short}」（{prim_measures[:68]}），"
+                    "与目标临床事件终点不符（硬上限 48%）。"
+                )
+            else:
+                out_pill_zh = "主要终点: 终点领域偏离"
+                out_detail = f"该试验主要终点（{prim_measures[:68]}）与目标临床结局领域不一致（硬上限 48%）。"
+            out_tone = "bad"
+    elif target_surr and not is_cohort_mode:
+        if target_surr & prim_surr:
+            outcome_alignment = "matched"
+            outcome_cap = 1.0
+            out_pill_zh = "主要终点: 指标一致"
+            out_tone = "ok"
+            out_detail = f"主要终点匹配所查询指标（{prim_measures[:68]}）。"
+        else:
+            outcome_alignment = "surrogate_or_mismatched"
+            outcome_cap = 0.48
+            out_pill_zh = "主要终点: 终点偏离"
+            out_tone = "bad"
+            out_detail = f"主要终点（{prim_measures[:68]}）与目标终点不一致（上限 48%）。"
+    elif is_cohort_mode:
+        # Opaque user_cohort survival CSV (`event=0/1`, `time_days`): still a time-to-event clinical study; NEVER pass pure PK/surrogate lab trials!
+        if prim_surr and not prim_clin:
+            outcome_alignment = "surrogate_or_mismatched"
+            outcome_cap = 0.48
+            out_pill_zh = f"主要终点: 替代指标({surr_short})"
+            out_tone = "bad"
+            out_detail = f"当前队列为生存时间至事件分析，而该试验主要终点仅为短期替代指标「{surr_short}」（上限 48%）。"
+        else:
+            outcome_alignment = "unspecified_target_outcome"
+            outcome_cap = 1.0
+            out_pill_zh = "主要终点: 临床事件终点"
+            out_tone = "ok"
+            out_detail = f"试验具备临床事件主要终点（{prim_measures[:68] or '临床事件'}）。"
+    else:
+        # Idea mode where user left primary outcome unspecified
+        if prim_surr and not prim_clin:
+            outcome_alignment = "surrogate_or_mismatched"
+            outcome_cap = 0.48
+            out_pill_zh = f"主要终点: 替代指标({surr_short})"
+            out_tone = "bad"
+            out_detail = f"该试验主要终点仅为短期实验室替代指标「{surr_short}」，非临床硬终点（上限 48%）。"
+        else:
+            outcome_alignment = "unspecified_clinical"
+            outcome_cap = 1.0
+            out_pill_zh = "主要终点: 临床事件终点"
+            out_tone = "ok"
+            out_detail = f"临床疗效事件终点（{prim_measures[:68] or '临床终点'}）。"
+
+    # --- 4. Follow-Up Horizon Adequacy (`followup_alignment`) ---
+    prim_tfs = [str(po.get("timeFrame", "")) for po in prim_list if isinstance(po, dict) and po.get("timeFrame")]
+    sec_tfs = [str(so.get("timeFrame", "")) for so in sec_list if isinstance(so, dict) and so.get("timeFrame")]
+    parsed_days, is_ev_driven, disp_tf = _parse_outcome_timeframe_days(prim_tfs or sec_tfs)
+    eff_target_fu = float(target_followup_days) if (target_followup_days is not None and float(target_followup_days) > 0) else (365.0 if is_cohort_mode else 0.0)
+
+    if is_ev_driven and (parsed_days is None or parsed_days >= 180.0):
+        followup_alignment = "adequate"
+        followup_cap = 1.0
+        fu_pill_zh = "随访窗口: 充足"
+        fu_tone = "ok"
+        fu_detail = f"事件驱动长期随访窗充足（{disp_tf}）。"
+    elif parsed_days is None:
+        followup_alignment = "unparsed"
+        followup_cap = 1.0
+        fu_pill_zh = "随访窗口: 充足"
+        fu_tone = "ok"
+        fu_detail = f"随访时间窗：{disp_tf}。"
+    elif eff_target_fu >= 365.0 and parsed_days < 90.0:
+        followup_alignment = "severely_short"
+        followup_cap = 0.35
+        fu_pill_zh = f"随访窗口: 过短({disp_tf})"
+        fu_tone = "bad"
+        fu_detail = f"主要终点随访窗极短（{disp_tf} ≈ {parsed_days:.0f} 天 < 90 天，远短于目标长期随访，上限 35%）。"
+    elif eff_target_fu > 0.0 and parsed_days < 0.5 * eff_target_fu:
+        followup_alignment = "shorter_than_target"
+        followup_cap = 0.62
+        fu_pill_zh = f"随访窗口: 偏短({disp_tf})"
+        fu_tone = "warn"
+        fu_detail = f"主要终点随访窗偏短（{disp_tf} ≈ {parsed_days:.0f} 天，短于目标随访窗 {eff_target_fu:.0f} 天的一半，上限 62%）。"
+    else:
+        followup_alignment = "adequate"
+        followup_cap = 1.0
+        fu_pill_zh = "随访窗口: 充足"
+        fu_tone = "ok"
+        fu_detail = f"主要终点随访窗充足（{disp_tf}）。"
+
+    # --- Arm pill formatting ---
+    comp_arms_joined = " ".join(str(x) for x in (study.get("comparator_arms") or [])).lower()
+    if arm_status in ("exact_dual_arm", "single_intervention_matched"):
+        arm_pill_zh = "双臂干预: 一致"
+        arm_tone = "ok"
+    elif arm_status == "class_dual_arm":
+        arm_pill_zh = "双臂干预: 同类/背景差异"
+        arm_tone = "warn"
+    elif arm_status == "single_arm_or_comparator_mismatch":
+        arm_pill_zh = "双臂干预: 安慰剂参考" if "placebo" in comp_arms_joined or "安慰剂" in comp_arms_joined else "双臂干预: 错配"
+        arm_tone = "bad"
+    elif arm_status == "unmatched_interventions":
+        arm_pill_zh = "双臂干预: 错配"
+        arm_tone = "bad"
+    else:
+        arm_pill_zh = "双臂干预: 参考框架"
+        arm_tone = "ok"
+
+    # --- 5. Overall Protocol Alignment Verdict & Hard Score Cap ---
+    arms_ok = arm_status == "exact_dual_arm" or (
+        not is_cohort_mode and arm_status in ("single_intervention_matched", "unspecified")
+    )
+    pop_ok = population_alignment in ("matched", "unspecified")
+    out_ok = outcome_alignment in ("matched", "unspecified_clinical", "unspecified_target_outcome")
+    fu_ok = followup_alignment in ("adequate", "unparsed")
+
+    diverged_dimensions: list[str] = []
+    if design_suitability != "clinical_efficacy_rct":
+        diverged_dimensions.append(f"design_suitability={design_suitability} ({design_detail})")
+    if not arms_ok:
+        diverged_dimensions.append(f"arm_alignment_status={arm_status} ({arm_audit['arm_alignment_detail']})")
+    if not pop_ok:
+        diverged_dimensions.append(f"population_alignment={population_alignment} ({pop_detail})")
+    if not out_ok:
+        diverged_dimensions.append(f"outcome_alignment={outcome_alignment} ({out_detail})")
+    if not fu_ok:
+        diverged_dimensions.append(f"followup_alignment={followup_alignment} ({fu_detail})")
+
+    effective_cap = round(min(arm_cap, design_cap, population_cap, outcome_cap, followup_cap), 2)
+
+    if design_suitability == "non_efficacy_pk_or_healthy":
+        overall_status = "non_efficacy_excluded"
+        overall_rank = OVERALL_ALIGNMENT_RANKS["non_efficacy_excluded"]
+        overall_label = "健康受试者/药代试验 · 不可直接对标"
+    elif not arms_ok:
+        overall_status = "arm_mismatch_reference"
+        overall_rank = 3 if arm_status == "class_dual_arm" else OVERALL_ALIGNMENT_RANKS["arm_mismatch_reference"]
+        overall_label = arm_audit["arm_alignment_label"]
+    elif design_suitability == "clinical_efficacy_rct" and pop_ok and out_ok and fu_ok:
+        overall_status = "protocol_aligned"
+        overall_rank = OVERALL_ALIGNMENT_RANKS["protocol_aligned"]
+        overall_label = "四维方案一致 · 推荐对标"
+    else:
+        overall_status = "partial_protocol_reference"
+        overall_rank = OVERALL_ALIGNMENT_RANKS["partial_protocol_reference"]
+        overall_label = "双臂一致但人群/终点偏离 · 仅供参考"
+
+    is_recommended = overall_status == "protocol_aligned"
+    requires_protocol_confirmation = overall_status != "protocol_aligned"
+
+    dimension_audit = {
+        "design": {
+            "status": design_suitability,
+            "score_cap": design_cap,
+            "pill_zh": "研究设计: 临床疗效RCT" if design_suitability == "clinical_efficacy_rct" else "研究设计: 药代/健康人/早期",
+            "tone": "ok" if design_suitability == "clinical_efficacy_rct" else "bad",
+            "detail_zh": design_detail,
+        },
+        "arms": {
+            "status": arm_status,
+            "score_cap": arm_cap,
+            "pill_zh": arm_pill_zh,
+            "tone": arm_tone,
+            "detail_zh": arm_audit["arm_alignment_detail"],
+        },
+        "population": {
+            "status": population_alignment,
+            "score_cap": population_cap,
+            "pill_zh": pop_pill_zh,
+            "tone": pop_tone,
+            "detail_zh": pop_detail,
+            "missing_domains_zh": missing_pop_zh,
+        },
+        "outcome": {
+            "status": outcome_alignment,
+            "score_cap": outcome_cap,
+            "pill_zh": out_pill_zh,
+            "tone": out_tone,
+            "detail_zh": out_detail,
+        },
+        "followup": {
+            "status": followup_alignment,
+            "score_cap": followup_cap,
+            "pill_zh": fu_pill_zh,
+            "tone": fu_tone,
+            "detail_zh": fu_detail,
+            "parsed_primary_days": parsed_days,
+        },
+    }
+
+    return {
+        **arm_audit,
+        "design_suitability": design_suitability,
+        "population_alignment": population_alignment,
+        "outcome_alignment": outcome_alignment,
+        "followup_alignment": followup_alignment,
+        "overall_alignment_status": overall_status,
+        "overall_alignment_rank": overall_rank,
+        "overall_alignment_label": overall_label,
+        "effective_score_cap": effective_cap,
+        "dimension_audit": dimension_audit,
+        "diverged_dimensions": diverged_dimensions,
+        "requires_protocol_confirmation": requires_protocol_confirmation,
+        "is_recommended": is_recommended,
+    }
+
+
 def verify_and_enrich_target_rct(
     target_rct: dict | None,
     *,
     intervention: str = "",
     comparator: str = "",
+    target_condition: str = "",
+    target_outcome: str = "",
+    target_followup_days: float | None = None,
     project_mode: str = "",
     confirm_arm_mismatch: bool = False,
+    confirm_protocol_mismatch: bool = False,
 ) -> dict | None:
-    """Fail-closed server-side alignment gate before drafting or launching a TTE run against `target_rct`."""
+    """Fail-closed server-side 4D PICO-T alignment gate before drafting or launching a TTE run against `target_rct`."""
     if not target_rct or not isinstance(target_rct, dict) or not target_rct.get("nct_id"):
         return target_rct
 
-    audit = audit_study_arm_alignment(
+    audit = audit_study_pico4d_alignment(
         target_rct,
         intervention=intervention,
         comparator=comparator,
+        target_condition=target_condition,
+        target_outcome=target_outcome,
+        target_followup_days=target_followup_days,
         project_mode=project_mode,
     )
     status = audit["arm_alignment_status"]
+    overall_status = audit["overall_alignment_status"]
+    confirmed = bool(confirm_arm_mismatch or confirm_protocol_mismatch)
     enriched = {
         **target_rct,
         **audit,
@@ -1096,11 +2020,11 @@ def verify_and_enrich_target_rct(
     if "match_score" in enriched and isinstance(enriched["match_score"], (int, float)):
         raw_sc = float(enriched["match_score"])
         norm_sc = raw_sc / 100.0 if raw_sc > 1.0 else raw_sc
-        enriched["match_score"] = round(min(norm_sc, audit["arm_alignment_score_cap"]), 2)
+        enriched["match_score"] = round(min(norm_sc, audit["effective_score_cap"]), 2)
         enriched["match_score_pct"] = int(round(enriched["match_score"] * 100))
 
     if audit["requires_mismatch_confirmation"]:
-        if not bool(confirm_arm_mismatch):
+        if not confirmed:
             raise ContractError(
                 "ARM_MISMATCH_CONFIRMATION_REQUIRED",
                 (
@@ -1110,13 +2034,34 @@ def verify_and_enrich_target_rct(
                     "pass confirm_arm_mismatch=true only if intentionally borrowing eligibility/follow-up structure."
                 ),
             )
-        enriched["arm_alignment_warning"] = (
+        arm_warn = (
             f"对照臂不一致参考声明（研究者已显式确认 confirm_arm_mismatch=true）：当前研究对比「{audit['expected_arms_summary']}」，"
             f"所引用的注册试验 {target_rct['nct_id']} 实际分组为「{audit['trial_arms_summary']}」"
             f"（arm_alignment_status={status}），仅借用其基线纳排与终点随访时间窗作为方案框架，不代表两项研究干预对照相同。"
         )
+        enriched["arm_alignment_warning"] = arm_warn
+        enriched["protocol_alignment_warning"] = arm_warn
+    elif overall_status != "protocol_aligned":
+        div_summary = "；".join(audit["diverged_dimensions"])
+        if not confirmed:
+            raise ContractError(
+                "PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED",
+                (
+                    f"PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED: 目标 RCT（{target_rct['nct_id']}）虽干预药物匹配，"
+                    f"但在 PICO-T 关键方案维度上与当前研究存在偏离（overall_alignment_status={overall_status}）：{div_summary}。"
+                    "Pass confirm_protocol_mismatch=true (or confirm_arm_mismatch=true) only if intentionally using this study as a partial protocol reference."
+                ),
+            )
+        proto_warn = (
+            f"四维 PICO-T 方案偏离参考声明（研究者已显式确认）：所引用的注册试验 {target_rct['nct_id']} "
+            f"（overall_alignment_status={overall_status}）在人群、研究设计、主要终点或随访窗上与当前研究存在偏离（{div_summary}），"
+            "仅作为局部方案参考框架，绝不可直接等同为同适应证同终点目标试验对标。"
+        )
+        enriched["arm_alignment_warning"] = ""
+        enriched["protocol_alignment_warning"] = proto_warn
     else:
         enriched["arm_alignment_warning"] = ""
+        enriched["protocol_alignment_warning"] = ""
 
     return enriched
 
@@ -1164,10 +2109,16 @@ def _extract_eligibility_highlights(criteria_text: str) -> list[str]:
     if not criteria_text:
         return []
     lines = []
+    in_exclusion = False
     for raw_line in criteria_text.splitlines():
+        if EXCLUSION_HEADING_RE.search(raw_line):
+            in_exclusion = True
+            continue
         cleaned = re.sub(r"^[\s*•\-0-9.)]+", "", raw_line).strip()
         if len(cleaned) < 10 or cleaned.lower() in ("inclusion criteria:", "exclusion criteria:", "inclusion criteria", "exclusion criteria"):
             continue
+        if in_exclusion and not cleaned.startswith("排除") and not re.match(r"(?i)^exclu", cleaned):
+            cleaned = f"排除: {cleaned}"
         lines.append(cleaned[:140])
         if len(lines) >= 5:
             break
@@ -1263,9 +2214,19 @@ def _normalize_api_study(study: dict, *, source: str = "clinicaltrials_gov_api_v
                     "timeFrame": str(po.get("timeFrame", "")).strip() or "Not specified",
                 }
             )
+    secondary_outcomes = []
+    for so in (out_mod.get("secondaryOutcomes") or [])[:5]:
+        if isinstance(so, dict) and so.get("measure"):
+            secondary_outcomes.append(
+                {
+                    "measure": str(so.get("measure", "")).strip(),
+                    "timeFrame": str(so.get("timeFrame", "")).strip() or "Not specified",
+                }
+            )
 
     first_tf = primary_outcomes[0]["timeFrame"] if primary_outcomes else ""
     horizons, admin_end = parse_timeframe_to_horizons(first_tf)
+    raw_criteria_str = str(elig_mod.get("eligibilityCriteria", ""))
 
     canonical_bytes = raw_bytes if raw_bytes is not None else json.dumps(study, sort_keys=True).encode("utf-8")
     return {
@@ -1273,10 +2234,13 @@ def _normalize_api_study(study: dict, *, source: str = "clinicaltrials_gov_api_v
         "record_url": f"https://clinicaltrials.gov/study/{nct_id}",
         "brief_title": brief_title,
         "official_title": official_title,
+        "study_type": str(design.get("studyType", "INTERVENTIONAL")).upper(),
         "phases": phases or ["INTERVENTIONAL"],
         "overall_status": str(status.get("overallStatus", "UNKNOWN")),
         "enrollment_count": enrollment_count,
         "allocation": allocation,
+        "healthy_volunteers": bool(elig_mod.get("healthyVolunteers") is True),
+        "inclusion_text": extract_positive_inclusion_text(raw_criteria_str)[:3000],
         "conditions": conditions,
         "experimental_arms": exp_arms,
         "comparator_arms": comp_arms,
@@ -1286,9 +2250,10 @@ def _normalize_api_study(study: dict, *, source: str = "clinicaltrials_gov_api_v
             "min_age": str(elig_mod.get("minimumAge", "18 Years")),
             "max_age": str(elig_mod.get("maximumAge", "N/A")),
             "sex": str(elig_mod.get("sex", "ALL")),
-            "highlights": _extract_eligibility_highlights(str(elig_mod.get("eligibilityCriteria", ""))),
+            "highlights": _extract_eligibility_highlights(raw_criteria_str),
         },
         "primary_outcomes": primary_outcomes or [{"measure": "Primary Clinical Endpoint", "timeFrame": "12 months"}],
+        "secondary_outcomes": secondary_outcomes,
         "parsed_horizon_days": horizons,
         "parsed_admin_end_day": admin_end,
         "source": source,
@@ -1303,9 +2268,12 @@ def _score_and_audit_study(
     *,
     intervention: str = "",
     comparator: str = "",
+    target_condition: str = "",
+    target_outcome: str = "",
+    target_followup_days: float | None = None,
     project_mode: str = "",
 ) -> dict:
-    """Compute deterministic relevance score in [0.01, 0.99], audit dual-arm alignment, and apply hard score cap."""
+    """Compute deterministic relevance score in [0.01, 0.99], audit 4D PICO-T alignment, and apply hard score cap."""
     haystack_title = f"{study['brief_title']} {study['official_title']}".lower()
     haystack_arms = " ".join(
         study.get("experimental_arms", []) + study.get("comparator_arms", []) + study.get("interventions", [])
@@ -1343,24 +2311,37 @@ def _score_and_audit_study(
     if "RANDOMIZED" in str(study.get("allocation", "")).upper():
         raw_pts += 5
 
-    audit = audit_study_arm_alignment(
+    audit = audit_study_pico4d_alignment(
         study,
         intervention=intervention,
         comparator=comparator,
+        target_condition=target_condition,
+        target_outcome=target_outcome,
+        target_followup_days=target_followup_days,
         project_mode=project_mode,
     )
     if audit["arm_alignment_status"] == "exact_dual_arm":
         raw_pts += 22
     elif audit["arm_alignment_status"] == "class_dual_arm":
         raw_pts += 6
+    if audit["population_alignment"] == "matched":
+        raw_pts += 8
+    if audit["outcome_alignment"] == "matched":
+        raw_pts += 10
 
     uncapped_score = min(0.98, max(0.20, (42 + raw_pts * 0.52) / 100.0))
-    capped_score = round(min(uncapped_score, float(audit["arm_alignment_score_cap"])), 2)
+    capped_score = round(min(uncapped_score, float(audit["effective_score_cap"])), 2)
 
-    reasons: list[str] = [audit["arm_alignment_detail"]]
+    reasons: list[str] = []
+    if audit["overall_alignment_status"] != "protocol_aligned" and audit["diverged_dimensions"]:
+        reasons.append(
+            f"四维 PICO-T 核验提示（{audit['overall_alignment_label']}）："
+            + "；".join(d.split("(", 1)[-1].rstrip(")") for d in audit["diverged_dimensions"][:3])
+        )
+    reasons.append(audit["arm_alignment_detail"])
     if matched_arms:
         reasons.append(f"试验干预/对照文本命中关键词（{', '.join(dict.fromkeys(matched_arms[:3]))}）")
-    if matched_conds:
+    if matched_conds and audit["population_alignment"] in ("matched", "unspecified"):
         reasons.append(f"目标适应证/疾病人群匹配（{', '.join(dict.fromkeys(matched_conds[:3]))}）")
     tf_preview = study["primary_outcomes"][0]["timeFrame"] if study.get("primary_outcomes") else "未注明"
     reasons.append(f"主要终点随访窗：{tf_preview}")
@@ -1376,24 +2357,38 @@ def _score_and_audit_study(
 
 
 def _enforce_alignment_caps_and_sort(candidates: list[dict]) -> list[dict]:
-    """Post-LLM deterministic guardrail: clamp `match_score <= arm_alignment_score_cap`, lock `is_recommended`, and sort by alignment rank first."""
+    """Post-LLM deterministic guardrail: clamp `match_score <= effective_score_cap`, lock `is_recommended`, and sort by 4D alignment rank first."""
     out: list[dict] = []
     for cand in candidates:
         item = dict(cand)
         status = str(item.get("arm_alignment_status", "unspecified"))
-        cap = float(item.get("arm_alignment_score_cap", ALIGNMENT_SCORE_CAPS.get(status, 1.0)))
+        arm_cap = float(item.get("arm_alignment_score_cap", ALIGNMENT_SCORE_CAPS.get(status, 1.0)))
+        eff_cap = float(item.get("effective_score_cap", arm_cap))
+        cap = min(arm_cap, eff_cap)
         raw_sc = float(item.get("match_score", 0.5))
         norm_sc = raw_sc / 100.0 if raw_sc > 1.0 else raw_sc
         clamped = round(max(0.01, min(norm_sc, cap)), 2)
         item["match_score"] = clamped
         item["match_score_pct"] = int(round(clamped * 100))
-        item["arm_alignment_score_cap"] = cap
+        item["arm_alignment_score_cap"] = arm_cap
+        item["effective_score_cap"] = cap
         item["arm_alignment_rank"] = int(item.get("arm_alignment_rank", ALIGNMENT_RANKS.get(status, 2)))
-        item["is_recommended"] = status in ("exact_dual_arm", "single_intervention_matched", "unspecified")
+        overall_st = str(item.get("overall_alignment_status", ""))
+        if overall_st:
+            item["overall_alignment_rank"] = int(
+                item.get("overall_alignment_rank", OVERALL_ALIGNMENT_RANKS.get(overall_st, 2))
+            )
+            item["is_recommended"] = overall_st == "protocol_aligned"
+            item["requires_protocol_confirmation"] = overall_st != "protocol_aligned"
+        else:
+            item["overall_alignment_rank"] = item["arm_alignment_rank"]
+            item["is_recommended"] = status in ("exact_dual_arm", "single_intervention_matched", "unspecified")
+            item["requires_protocol_confirmation"] = not item["is_recommended"]
         out.append(item)
 
     out.sort(
         key=lambda c: (
+            int(c.get("overall_alignment_rank", 0)),
             int(c.get("arm_alignment_rank", 0)),
             float(c.get("match_score", 0.0)),
             int(c.get("enrollment_count") or 0),
@@ -1513,27 +2508,50 @@ def search_candidate_rcts(
     condition: str = "",
     intervention: str = "",
     comparator: str = "",
+    outcome: str = "",
+    target_followup_days: float | None = None,
     project_mode: str = "",
     context_summary: dict | None = None,
     forbidden_values: tuple[str, ...] = (),
     max_results: int = 6,
     timeout: float = DEFAULT_CT_TIMEOUT,
 ) -> dict:
-    """Search ClinicalTrials.gov API v2 with bilingual normalization, dual-arm head-to-head priority, and hard alignment score caps."""
+    """Search ClinicalTrials.gov API v2 with bilingual normalization, 4D PICO-T auditing, multi-pass landmark backfill, and hard score caps."""
     clean_query = (query or "").strip()
-    eff_intr, eff_comp = _resolve_effective_arms(clean_query, intervention, comparator, context_summary)
+    ctx_d = context_summary if isinstance(context_summary, dict) else {}
+    eff_intr, eff_comp = _resolve_effective_arms(clean_query, intervention, comparator, ctx_d)
+    eff_target_cond = (
+        condition.strip()
+        or str(ctx_d.get("condition_query_en", "")).strip()
+        or str(ctx_d.get("population", "")).strip()
+    )
+    if not eff_target_cond:
+        eff_target_cond = translate_condition_to_english(clean_query)
+    eff_target_out = (
+        outcome.strip()
+        or str(ctx_d.get("outcome_query_en", "")).strip()
+        or str(ctx_d.get("primary_outcome", "")).strip()
+    )
+    eff_target_fu: float | None = target_followup_days
+    if eff_target_fu is None and ctx_d.get("target_followup_days") is not None:
+        try:
+            eff_target_fu = float(ctx_d["target_followup_days"])
+        except (TypeError, ValueError):
+            eff_target_fu = None
 
     nct_hit = NCT_RE.search(clean_query)
     if nct_hit and len(clean_query) <= 20:
         single = fetch_rct_by_nct(nct_hit.group(1), timeout=timeout)
-        if eff_intr or eff_comp or project_mode == "user_cohort":
-            audit = audit_study_arm_alignment(
-                single,
-                intervention=eff_intr,
-                comparator=eff_comp,
-                project_mode=project_mode,
-            )
-            single = _enforce_alignment_caps_and_sort([{**single, **audit}])[0]
+        audit = audit_study_pico4d_alignment(
+            single,
+            intervention=eff_intr,
+            comparator=eff_comp,
+            target_condition=eff_target_cond,
+            target_outcome=eff_target_out,
+            target_followup_days=eff_target_fu,
+            project_mode=project_mode,
+        )
+        single = _enforce_alignment_caps_and_sort([{**single, **audit}])[0]
         return {
             "source": single["source"],
             "query_used": nct_hit.group(1).upper(),
@@ -1545,8 +2563,16 @@ def search_candidate_rcts(
     comp_spec = normalize_intervention_spec(eff_comp)
     intr_en = intr_spec["en_terms"][0] if intr_spec["en_terms"] else translate_query_to_english(eff_intr)
     comp_en = comp_spec["en_terms"][0] if comp_spec["en_terms"] else translate_query_to_english(eff_comp)
-    cond_en = translate_condition_to_english(condition or str((context_summary or {}).get("condition_query_en", ""))) or translate_condition_to_english(clean_query)
+    cond_en = translate_condition_to_english(eff_target_cond) or translate_condition_to_english(clean_query)
     en_query = translate_query_to_english(clean_query)
+    out_clin_domains, _ = classify_outcome_domains(eff_target_out)
+    out_query_en = ""
+    if "hf_cv_composite" in out_clin_domains:
+        out_query_en = "heart failure OR cardiovascular death OR MACE"
+    elif "oncology_progression" in out_clin_domains or "mortality_os" in out_clin_domains:
+        out_query_en = "progression-free survival OR overall survival"
+    elif "renal_hard_endpoint" in out_clin_domains:
+        out_query_en = "kidney failure OR eGFR OR renal death"
 
     raw_tokens = [
         tok
@@ -1571,7 +2597,7 @@ def search_candidate_rcts(
             "pageSize": 15,
         }
         search_attempts: list[dict[str, str | int]] = []
-        # 1. Dual-arm head-to-head query FIRST (`intervention AND comparator`) so exact dual-arm trials surface at top
+        # 1. Dual-arm head-to-head query FIRST (`intervention AND comparator`) so exact 4D head-to-head trials surface at top
         if intr_en and comp_en and intr_en.lower() != comp_en.lower():
             dual_intr_expr = f"{intr_en} AND {comp_en}"
             query_used_display = f"{dual_intr_expr}" + (f" | {cond_en}" if cond_en else "")
@@ -1579,7 +2605,11 @@ def search_candidate_rcts(
                 search_attempts.append({**base_filter, "query.cond": cond_en, "query.intr": dual_intr_expr})
             search_attempts.append({**base_filter, "query.intr": dual_intr_expr})
 
-        # 2. Single-intervention + condition backfill if dual-arm returned fewer than max_results studies
+        # 2. Landmark primary-indication + clinical-outcome query (`intr + cond + outc`) so landmark trials like DAPA-HF appear alongside demoted biomarker H2H trials
+        if intr_en and cond_en and out_query_en:
+            search_attempts.append(
+                {**base_filter, "query.cond": cond_en, "query.intr": intr_en, "query.outc": out_query_en}
+            )
         if cond_en or intr_en:
             p_single: dict[str, str | int] = dict(base_filter)
             if cond_en:
@@ -1624,22 +2654,25 @@ def search_candidate_rcts(
                             tokens,
                             intervention=eff_intr,
                             comparator=eff_comp,
+                            target_condition=eff_target_cond,
+                            target_outcome=eff_target_out,
+                            target_followup_days=eff_target_fu,
                             project_mode=project_mode,
                         )
                         live_by_nct[norm["nct_id"]] = scored
-                    # Stop early once we have enough exact dual-arm matches (or enough total matches when no comparator)
-                    exact_cnt = sum(
+                    # Stop early ONLY once we have enough full 4D `protocol_aligned` matches (so demoted ketone/PK H2H trials don't block landmark HF outcome backfill!)
+                    aligned_cnt = sum(
                         1
                         for v in live_by_nct.values()
-                        if v["arm_alignment_status"] in ("exact_dual_arm", "single_intervention_matched")
+                        if v.get("overall_alignment_status") == "protocol_aligned"
                     )
-                    if exact_cnt >= max_results or (not comp_en and len(live_by_nct) >= max_results):
+                    if aligned_cnt >= max_results or (not comp_en and aligned_cnt >= 1 and len(live_by_nct) >= max_results):
                         break
             except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
                 live_error = type(exc).__name__
                 break
 
-    ctx_for_llm = dict(context_summary or {})
+    ctx_for_llm = dict(ctx_d)
     ctx_for_llm.setdefault("query", en_query)
     ctx_for_llm.setdefault("condition", cond_en)
     ctx_for_llm.setdefault("intervention", intr_en)
@@ -1682,6 +2715,9 @@ def search_candidate_rcts(
             tokens,
             intervention=eff_intr,
             comparator=eff_comp,
+            target_condition=eff_target_cond,
+            target_outcome=eff_target_out,
+            target_followup_days=eff_target_fu,
             project_mode=project_mode,
         )
         scored_fb["match_reasons"] = [

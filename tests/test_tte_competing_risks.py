@@ -762,6 +762,26 @@ class TTECompetingRisksBenchmarkTests(unittest.TestCase):
         self.assertIn("baseline_propensity_weights", contract_text)
         self.assertNotIn("能力卡 10（排队预告｜尚未合并）", overview_text)
 
+        overview_html = ROOT / "docs" / "FEATURE_API_OVERVIEW.html"
+        self.assertTrue(overview_html.is_file())
+        html_text = overview_html.read_text(encoding="utf-8")
+        self.assertNotRegex(html_text.lower(), r"<script[^>]+src=['\"]https?://")
+        self.assertNotRegex(html_text.lower(), r"<link[^>]+href=['\"]https?://")
+        for token in (
+            "a9f98790",
+            "emulatrx_tte.ccw",
+            "EMULATRX_LLM_API_KEY_FILE",
+            "Bearer",
+            "/api/cohorts/",
+            "/mcp",
+            "COHORT_FILE_TOO_LARGE",
+            "PRIVACY_VIOLATION_BLOCKED",
+            "ARM_MISMATCH_CONFIRMATION_REQUIRED",
+            "PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED",
+            "White-Box Oracle",
+        ):
+            self.assertIn(token, html_text)
+
     def test_covariate_cox_fine_gray_joint_ipcw_score_oracle_and_sandwich_consistency(self):
         """Regression test for Round 1 review: covariate_cox Fine-Gray unified IPCW risk set & Lin-Wei SE."""
         from emulatrx_tte.competing_risks import (

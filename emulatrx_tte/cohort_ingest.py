@@ -924,6 +924,10 @@ def ingest_user_cohort(
             trct_entry["arm_alignment_status"] = str(target_rct["arm_alignment_status"])
         if target_rct.get("arm_alignment_warning"):
             trct_entry["arm_alignment_warning"] = str(target_rct["arm_alignment_warning"])
+        if target_rct.get("overall_alignment_status"):
+            trct_entry["overall_alignment_status"] = str(target_rct["overall_alignment_status"])
+        if target_rct.get("protocol_alignment_warning"):
+            trct_entry["protocol_alignment_warning"] = str(target_rct["protocol_alignment_warning"])
         protocol_dict["target_rct"] = trct_entry
 
     normalized_protocol = validate_protocol_dict(protocol_dict)

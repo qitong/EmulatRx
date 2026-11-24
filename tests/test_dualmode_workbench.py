@@ -333,6 +333,14 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                 self.assertIn("目标试验模拟（无数据模拟预演项目）可行性报告", final["rendered_html"])
                 self.assertIn("预设模拟真值 vs 加权 TTE 估计恢复对比表", final["rendered_html"])
                 self.assertIn("class='cif-step'", final["rendered_html"])
+                for art_url in (
+                    f"/runs/{run_id}/report",
+                    f"/runs/{run_id}/artifacts/bundle/estimates.json",
+                    f"/runs/{run_id}/artifacts/bundle/cohort.csv",
+                    f"/runs/{run_id}/artifacts/preview_manifest.json",
+                ):
+                    r_art = self.client.get(art_url, headers=self.web_auth)
+                    self.assertEqual(r_art.status_code, 200, f"{art_url}: {r_art.text[:200]}")
 
     def test_mcp_dualmode_tools_end_to_end(self):
         with mock.patch.object(rct_matcher, "urlopen_ctgov", side_effect=URLError("offline")):
@@ -810,7 +818,7 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                             "enrollmentInfo": {"count": 1450},
                             "designInfo": {"allocation": "RANDOMIZED"},
                         },
-                        "conditionsModule": {"conditions": ["Type 2 Diabetes"]},
+                        "conditionsModule": {"conditions": ["Type 2 Diabetes", "Heart Failure"]},
                         "armsInterventionsModule": {
                             "armGroups": [
                                 {"label": "Dapagliflozin 10 mg", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Dapagliflozin"]},
@@ -822,7 +830,7 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                             ],
                         },
                         "eligibilityModule": {"minimumAge": "18 Years", "maximumAge": "N/A", "sex": "ALL", "eligibilityCriteria": "* Adults >= 45 years"},
-                        "outcomesModule": {"primaryOutcomes": [{"measure": "Cardiorenal Composite", "timeFrame": "Up to 12 months"}]},
+                        "outcomesModule": {"primaryOutcomes": [{"measure": "Heart Failure Hospitalization or Cardiorenal Composite", "timeFrame": "Up to 18 months"}]},
                     },
                     "hasResults": True,
                 },
@@ -1298,7 +1306,7 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                         "identificationModule": {"nctId": "NCT09990001", "briefTitle": "Dapagliflozin + Metformin vs Metformin Alone"},
                         "statusModule": {"overallStatus": "COMPLETED"},
                         "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE3"], "enrollmentInfo": {"count": 600}, "designInfo": {"allocation": "RANDOMIZED"}},
-                        "conditionsModule": {"conditions": ["Type 2 Diabetes"]},
+                        "conditionsModule": {"conditions": ["Type 2 Diabetes", "Heart Failure"]},
                         "armsInterventionsModule": {
                             "armGroups": [
                                 {"label": "Dapagliflozin + Metformin", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Dapagliflozin", "Drug: Metformin"]},
@@ -1306,7 +1314,7 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                             ],
                             "interventions": [{"name": "Dapagliflozin", "type": "DRUG"}, {"name": "Metformin", "type": "DRUG"}],
                         },
-                        "outcomesModule": {"primaryOutcomes": [{"measure": "Composite", "timeFrame": "12 months"}]},
+                        "outcomesModule": {"primaryOutcomes": [{"measure": "Heart Failure Hospitalization or Cardiorenal Composite", "timeFrame": "18 months"}]},
                     }
                 },
             ]
@@ -1513,6 +1521,403 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                 self.assertIn("NCT06642272", sim_trct["arm_alignment_warning"])
                 self.assertIn("arm-mismatch-callout", sim_final["rendered_html"])
                 self.assertIn("arm_alignment_warning", sim_final["audit_report_markdown"])
+
+    def test_pico4d_nct03959501_nct00842556_422_protocol_mismatch_gate_and_carolina_flaura_e2e(self):
+        """Live QA 4D PICO-T E2E: NCT03959501 (<=0.48), NCT00842556 (<=0.20), 422 PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED, and CAROLINA/FLAURA positive E2E."""
+        live_qa_ctgov_studies = {
+            "studies": [
+                # 1. NCT03959501: Dapagliflozin vs Sitagliptin, uncomplicated T2DM/Ketosis, 24-week blood ketone change
+                {
+                    "protocolSection": {
+                        "identificationModule": {
+                            "nctId": "NCT03959501",
+                            "briefTitle": "Comparison of Effects of Dapagliflozin and Sitagliptin on Blood Ketone Levels in Type 2 Diabetes",
+                        },
+                        "statusModule": {"overallStatus": "COMPLETED"},
+                        "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE4"], "enrollmentInfo": {"count": 60}, "designInfo": {"allocation": "RANDOMIZED"}},
+                        "conditionsModule": {"conditions": ["Type 2 Diabetes", "Ketosis"]},
+                        "armsInterventionsModule": {
+                            "armGroups": [
+                                {"label": "Dapagliflozin", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Dapagliflozin"]},
+                                {"label": "Sitagliptin", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Sitagliptin"]},
+                            ],
+                            "interventions": [{"name": "Dapagliflozin", "type": "DRUG"}, {"name": "Sitagliptin", "type": "DRUG"}],
+                        },
+                        "eligibilityModule": {
+                            "healthyVolunteers": False,
+                            "eligibilityCriteria": "Inclusion Criteria:\n* Type 2 Diabetes\nExclusion Criteria:\n* Chronic heart failure NYHA II-IV",
+                        },
+                        "outcomesModule": {
+                            "primaryOutcomes": [{"measure": "Change in blood ketone bodies at 24 weeks", "timeFrame": "24 weeks"}]
+                        },
+                    }
+                },
+                # 2. NCT00842556: Healthy-volunteer PK/DDI study of Dapagliflozin + Sitagliptin
+                {
+                    "protocolSection": {
+                        "identificationModule": {
+                            "nctId": "NCT00842556",
+                            "briefTitle": "Drug-Drug Interaction Study of Dapagliflozin and Sitagliptin in Healthy Subjects",
+                        },
+                        "statusModule": {"overallStatus": "COMPLETED"},
+                        "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE1"], "enrollmentInfo": {"count": 18}, "designInfo": {"allocation": "RANDOMIZED"}},
+                        "conditionsModule": {"conditions": ["Healthy Volunteers"]},
+                        "armsInterventionsModule": {
+                            "armGroups": [
+                                {"label": "Dapagliflozin", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Dapagliflozin"]},
+                                {"label": "Sitagliptin", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Sitagliptin"]},
+                            ],
+                            "interventions": [{"name": "Dapagliflozin", "type": "DRUG"}, {"name": "Sitagliptin", "type": "DRUG"}],
+                        },
+                        "eligibilityModule": {
+                            "healthyVolunteers": True,
+                            "eligibilityCriteria": "Inclusion Criteria:\n* Healthy volunteers aged 18-45 years",
+                        },
+                        "outcomesModule": {
+                            "primaryOutcomes": [{"measure": "AUC and Cmax of Dapagliflozin and Sitagliptin", "timeFrame": "Day 1 to Day 14"}]
+                        },
+                    }
+                },
+                # 3. NCT03036124: DAPA-HF landmark placebo-controlled HF outcome reference
+                {
+                    "protocolSection": {
+                        "identificationModule": {
+                            "nctId": "NCT03036124",
+                            "briefTitle": "Dapagliflozin in Patients With Chronic Heart Failure (DAPA-HF)",
+                        },
+                        "statusModule": {"overallStatus": "COMPLETED"},
+                        "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE3"], "enrollmentInfo": {"count": 4744}, "designInfo": {"allocation": "RANDOMIZED"}},
+                        "conditionsModule": {"conditions": ["Heart Failure", "Type 2 Diabetes"]},
+                        "armsInterventionsModule": {
+                            "armGroups": [
+                                {"label": "Dapagliflozin 10 mg", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Dapagliflozin"]},
+                                {"label": "Matching Placebo", "type": "PLACEBO_COMPARATOR", "interventionNames": ["Drug: Placebo"]},
+                            ],
+                            "interventions": [{"name": "Dapagliflozin", "type": "DRUG"}, {"name": "Placebo", "type": "DRUG"}],
+                        },
+                        "eligibilityModule": {"healthyVolunteers": False, "eligibilityCriteria": "Inclusion Criteria:\n* Symptomatic HFrEF"},
+                        "outcomesModule": {
+                            "primaryOutcomes": [{"measure": "Worsening Heart Failure or Cardiovascular Death", "timeFrame": "Up to 18 months"}]
+                        },
+                    }
+                },
+                # 4. NCT01243424: CAROLINA 4D positive control (Linagliptin vs Glimepiride in T2DM CV risk MACE)
+                {
+                    "protocolSection": {
+                        "identificationModule": {
+                            "nctId": "NCT01243424",
+                            "briefTitle": "CAROLINA: Cardiovascular Outcome Study of Linagliptin Versus Glimepiride in Patients With Type 2 Diabetes",
+                        },
+                        "statusModule": {"overallStatus": "COMPLETED"},
+                        "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE3"], "enrollmentInfo": {"count": 6042}, "designInfo": {"allocation": "RANDOMIZED"}},
+                        "conditionsModule": {"conditions": ["Diabetes Mellitus, Type 2", "Cardiovascular Risk"]},
+                        "armsInterventionsModule": {
+                            "armGroups": [
+                                {"label": "Linagliptin 5 mg", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Linagliptin"]},
+                                {"label": "Glimepiride 1-4 mg", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Glimepiride"]},
+                            ],
+                            "interventions": [{"name": "Linagliptin", "type": "DRUG"}, {"name": "Glimepiride", "type": "DRUG"}],
+                        },
+                        "eligibilityModule": {"healthyVolunteers": False, "eligibilityCriteria": "Inclusion Criteria:\n* Type 2 diabetes with elevated cardiovascular risk"},
+                        "outcomesModule": {
+                            "primaryOutcomes": [{"measure": "Time to First Occurrence of 3P-MACE (CV Death, Non-fatal MI, or Non-fatal Stroke)", "timeFrame": "Up to 8 years"}]
+                        },
+                    }
+                },
+                # 5. NCT02296125: FLAURA 4D positive control (Osimertinib vs Gefitinib in EGFR-mutated NSCLC PFS/OS)
+                {
+                    "protocolSection": {
+                        "identificationModule": {
+                            "nctId": "NCT02296125",
+                            "briefTitle": "AZD9291 (Osimertinib) Versus Gefitinib in Locally Advanced or Metastatic NSCLC (FLAURA)",
+                        },
+                        "statusModule": {"overallStatus": "COMPLETED"},
+                        "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE3"], "enrollmentInfo": {"count": 556}, "designInfo": {"allocation": "RANDOMIZED"}},
+                        "conditionsModule": {"conditions": ["Non-Small Cell Lung Cancer"]},
+                        "armsInterventionsModule": {
+                            "armGroups": [
+                                {"label": "Osimertinib 80 mg", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Osimertinib"]},
+                                {"label": "Gefitinib 250 mg", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Gefitinib"]},
+                            ],
+                            "interventions": [{"name": "Osimertinib", "type": "DRUG"}, {"name": "Gefitinib", "type": "DRUG"}],
+                        },
+                        "eligibilityModule": {
+                            "healthyVolunteers": False,
+                            "eligibilityCriteria": "Inclusion Criteria:\n* Locally advanced or metastatic NSCLC with EGFR exon 19 deletion or L858R mutation",
+                        },
+                        "outcomesModule": {
+                            "primaryOutcomes": [{"measure": "Progression-Free Survival (PFS)", "timeFrame": "18 months"}],
+                            "secondaryOutcomes": [{"measure": "Overall Survival (OS)", "timeFrame": "36 months"}],
+                        },
+                    }
+                },
+            ]
+        }
+
+        # Spin up a real local loopback HTTP fake DeepSeek gateway (`127.0.0.1:0`) trying to inflate NCT03959501 to 0.95 & NCT00842556 to 0.92!
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        import threading as _threading
+
+        class _LoopbackDeepSeekHandler(BaseHTTPRequestHandler):
+            def log_message(self, format, *args):
+                return
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                body_txt = self.rfile.read(length).decode("utf-8")
+                if "public_reference_context" in body_txt:
+                    ans = {
+                        "rankings": [
+                            {"nct_id": "NCT03959501", "match_score": 0.95, "recommended": True, "reason_zh": "双臂为达格列净与西格列汀"},
+                            {"nct_id": "NCT00842556", "match_score": 0.92, "recommended": True, "reason_zh": "同时包含达格列净与西格列汀"},
+                            {"nct_id": "NCT01243424", "match_score": 0.97, "recommended": True, "reason_zh": "CAROLINA 四维完全一致"},
+                            {"nct_id": "NCT02296125", "match_score": 0.97, "recommended": True, "reason_zh": "FLAURA 四维完全一致"},
+                        ]
+                    }
+                elif "Osimertinib" in body_txt:
+                    ans = {
+                        "domain_summary_zh": "EGFR突变肺癌队列",
+                        "condition_query_en": "EGFR-Mutated Non-Small Cell Lung Cancer",
+                        "intervention_query_en": "Osimertinib",
+                        "search_query_en": "Osimertinib Gefitinib EGFR Non-Small Cell Lung Cancer",
+                    }
+                elif "Linagliptin" in body_txt:
+                    ans = {
+                        "domain_summary_zh": "2型糖尿病高心血管风险队列",
+                        "condition_query_en": "Type 2 Diabetes Cardiovascular Risk",
+                        "intervention_query_en": "Linagliptin",
+                        "search_query_en": "Linagliptin Glimepiride Type 2 Diabetes Cardiovascular",
+                    }
+                else:
+                    ans = {
+                        "domain_summary_zh": "临床观察性队列",
+                        "condition_query_en": "Type 2 Diabetes Heart Failure",
+                        "intervention_query_en": "Dapagliflozin",
+                        "search_query_en": "Dapagliflozin Sitagliptin Heart Failure",
+                    }
+                payload = json.dumps({"choices": [{"message": {"content": json.dumps(ans, ensure_ascii=False)}}]}, ensure_ascii=False).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+        loopback_srv = ThreadingHTTPServer(("127.0.0.1", 0), _LoopbackDeepSeekHandler)
+        self.addCleanup(loopback_srv.server_close)
+        self.addCleanup(loopback_srv.shutdown)
+        _threading.Thread(target=loopback_srv.serve_forever, daemon=True).start()
+        loopback_url = f"http://127.0.0.1:{loopback_srv.server_address[1]}/v1"
+
+        by_id_raw = {s["protocolSection"]["identificationModule"]["nctId"]: s for s in live_qa_ctgov_studies["studies"]}
+
+        def fake_ctgov(req, timeout):
+            for nid, st_obj in by_id_raw.items():
+                if f"/studies/{nid}" in req.full_url:
+                    return _FakeHTTPResp(json.dumps(st_obj).encode("utf-8"))
+            return _FakeHTTPResp(json.dumps(live_qa_ctgov_studies).encode("utf-8"))
+
+        # Verify wrong Bearer token on /mcp and unauthenticated REST endpoint return 401
+        self.assertEqual(self.client.post("/api/rcts/search", json={"query": "Dapagliflozin"}).status_code, 401)
+        self.assertEqual(
+            self.client.post(
+                "/mcp",
+                headers={"Authorization": "Bearer " + "x" * 40, "Accept": "application/json, text/event-stream"},
+                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            ).status_code,
+            401,
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "EMULATRX_LLM_API_KEY_FILE": str(self.base / "absent_secret"),
+                "EMULATRX_LLM_API_KEY": "sk-pico4d-qa-test",
+                "EMULATRX_LLM_BASE_URL": loopback_url,
+                "EMULATRX_LLM_MODEL": "deepseek-chat",
+                "EMULATRX_OFFLINE_RCT_CATALOG": "0",
+            },
+            clear=False,
+        ):
+            with mock.patch.object(rct_matcher, "urlopen_ctgov", side_effect=fake_ctgov):
+                # --- Part A: Cardio-renal HF sample cohort vs NCT03959501 & NCT00842556 ---
+                up_hf = self.client.post(
+                    "/api/sessions/upload",
+                    headers=self.web_auth,
+                    json={"sample_id": "cardiorenal_sglt2i"},
+                )
+                self.assertEqual(up_hf.status_code, 200, up_hf.text)
+                sid_hf = up_hf.json()["session_id"]
+                mapping_hf = up_hf.json()["default_mapping"]
+                mapping_hf["bootstrap_iterations"] = 20
+
+                srch_hf = self.client.post(
+                    "/api/rcts/search",
+                    headers=self.web_auth,
+                    json={"session_id": sid_hf, "project_mode": "user_cohort", "query": "Dapagliflozin Sitagliptin Heart Failure", "max_results": 6},
+                )
+                self.assertEqual(srch_hf.status_code, 200, srch_hf.text)
+                hf_by_nct = {c["nct_id"]: c for c in srch_hf.json()["candidates"]}
+
+                ketone_card = hf_by_nct["NCT03959501"]
+                self.assertEqual(ketone_card["arm_alignment_status"], "exact_dual_arm")
+                self.assertNotEqual(ketone_card["population_alignment"], "matched")
+                self.assertEqual(ketone_card["outcome_alignment"], "surrogate_or_mismatched")
+                self.assertNotEqual(ketone_card["overall_alignment_status"], "protocol_aligned")
+                self.assertLessEqual(ketone_card["match_score"], 0.48)
+                self.assertFalse(ketone_card["is_recommended"])
+                self.assertIn("血酮", ketone_card["dimension_audit"]["outcome"]["pill_zh"])
+                self.assertIn("心力衰竭", ketone_card["dimension_audit"]["population"]["pill_zh"])
+
+                pk_card = hf_by_nct["NCT00842556"]
+                self.assertEqual(pk_card["design_suitability"], "non_efficacy_pk_or_healthy")
+                self.assertEqual(pk_card["overall_alignment_status"], "non_efficacy_excluded")
+                self.assertLessEqual(pk_card["match_score"], 0.20)
+                self.assertFalse(pk_card["is_recommended"])
+                self.assertIn("健康受试者", pk_card["dimension_audit"]["population"]["pill_zh"])
+                self.assertIn("药代指标", pk_card["dimension_audit"]["outcome"]["pill_zh"])
+
+                # Landmark HF outcome trial DAPA-HF is also surfaced alongside as a reference card!
+                self.assertIn("NCT03036124", hf_by_nct)
+
+                # Unconfirmed NCT03959501 & NCT00842556 MUST block with 422 PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED across all endpoints!
+                for bad_card in (ketone_card, pk_card):
+                    for ep in ("/api/rcts/draft", "/api/dual-runs"):
+                        r_422 = self.client.post(
+                            ep,
+                            headers=self.web_auth,
+                            json={"project_mode": "user_cohort", "session_id": sid_hf, "mapping": mapping_hf, "target_rct": bad_card},
+                        )
+                        self.assertEqual(r_422.status_code, 422, f"{bad_card['nct_id']} on {ep}: {r_422.text}")
+                        self.assertEqual(r_422.json()["error_code"], "PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED")
+
+                    r_v1_422 = self.client.post(
+                        "/api/v1/projects/user-cohort/runs",
+                        headers=self.web_auth,
+                        json={"session_id": sid_hf, "mapping": mapping_hf, "target_rct": bad_card},
+                    )
+                    self.assertEqual(r_v1_422.status_code, 422, r_v1_422.text)
+                    self.assertEqual(r_v1_422.json()["error_code"], "PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED")
+
+                    mcp_422 = self.client.post(
+                        "/mcp",
+                        headers=self.mcp_auth,
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": 101,
+                            "method": "tools/call",
+                            "params": {
+                                "name": "start_user_cohort_tte",
+                                "arguments": {"session_id": sid_hf, "nct_id": bad_card["nct_id"], "bootstrap_iterations": 20},
+                            },
+                        },
+                    )
+                    self.assertEqual(mcp_422.status_code, 200)
+                    self.assertTrue(mcp_422.json()["result"]["isError"], mcp_422.text)
+                    self.assertIn("PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED", mcp_422.text)
+
+                # Confirmed NCT03959501 with `confirm_protocol_mismatch=True` succeeds and persists `protocol_alignment_warning`!
+                draft_ketone_ok = self.client.post(
+                    "/api/rcts/draft",
+                    headers=self.web_auth,
+                    json={
+                        "project_mode": "user_cohort",
+                        "session_id": sid_hf,
+                        "target_rct": ketone_card,
+                        "confirm_protocol_mismatch": True,
+                    },
+                )
+                self.assertEqual(draft_ketone_ok.status_code, 200, draft_ketone_ok.text)
+                self.assertTrue(draft_ketone_ok.json()["target_rct"]["protocol_alignment_warning"])
+
+                run_ketone_ok = self.client.post(
+                    "/api/v1/projects/user-cohort/runs",
+                    headers=self.web_auth,
+                    json={
+                        "session_id": sid_hf,
+                        "mapping": mapping_hf,
+                        "target_rct": ketone_card,
+                        "confirm_protocol_mismatch": True,
+                    },
+                )
+                self.assertEqual(run_ketone_ok.status_code, 202, run_ketone_ok.text)
+                ketone_final = self.wait_dual_run(run_ketone_ok.json()["run_id"])
+                self.assertEqual(ketone_final["state"], "completed", ketone_final)
+                ketone_trct = ketone_final["estimates"]["target_rct"]
+                self.assertEqual(ketone_trct["overall_alignment_status"], "partial_protocol_reference")
+                self.assertIn("NCT03959501", ketone_trct["protocol_alignment_warning"])
+                self.assertIn("protocol-mismatch-callout", ketone_final["rendered_html"])
+                self.assertIn("protocol_alignment_warning", ketone_final["audit_report_markdown"])
+
+                # Also verify MCP `start_user_cohort_tte` succeeds when `confirm_protocol_mismatch=True` is explicitly passed!
+                mcp_ketone_ok = self.mcp_call(
+                    "start_user_cohort_tte",
+                    {
+                        "session_id": sid_hf,
+                        "nct_id": "NCT03959501",
+                        "bootstrap_iterations": 20,
+                        "confirm_protocol_mismatch": True,
+                    },
+                )
+                self.assertEqual(self.wait_dual_run(mcp_ketone_ok["run_id"])["state"], "completed")
+
+                # --- Part B: True 4D Positive Controls (CAROLINA NCT01243424 & FLAURA NCT02296125) run with zero confirmation friction ---
+                for sample_key, expected_nct in (("t2dm_cv_carolina", "NCT01243424"), ("nsclc_egfr_flaura", "NCT02296125")):
+                    up_pos = self.client.post(
+                        "/api/sessions/upload",
+                        headers=self.web_auth,
+                        json={"sample_id": sample_key},
+                    )
+                    self.assertEqual(up_pos.status_code, 200, up_pos.text)
+                    sid_pos = up_pos.json()["session_id"]
+                    interp_pos = up_pos.json()["interpretation"]
+                    srch_pos = self.client.post(
+                        "/api/rcts/search",
+                        headers=self.web_auth,
+                        json={
+                            "session_id": sid_pos,
+                            "project_mode": "user_cohort",
+                            "query": interp_pos["search_query_en"],
+                            "condition": interp_pos["condition_query_en"],
+                            "intervention": interp_pos["intervention_query_en"],
+                            "comparator": interp_pos["comparator_query_en"],
+                        },
+                    )
+                    self.assertEqual(srch_pos.status_code, 200, srch_pos.text)
+                    top_pos = srch_pos.json()["candidates"][0]
+                    self.assertEqual(top_pos["nct_id"], expected_nct)
+                    self.assertEqual(top_pos["overall_alignment_status"], "protocol_aligned")
+                    self.assertTrue(top_pos["is_recommended"])
+
+                    map_pos = up_pos.json()["default_mapping"]
+                    map_pos["bootstrap_iterations"] = 20
+                    run_pos = self.client.post(
+                        "/api/v1/projects/user-cohort/runs",
+                        headers=self.web_auth,
+                        json={"session_id": sid_pos, "mapping": map_pos, "target_rct": top_pos},
+                    )
+                    self.assertEqual(run_pos.status_code, 202, run_pos.text)
+                    pos_run_id = run_pos.json()["run_id"]
+                    fin_pos = self.wait_dual_run(pos_run_id)
+                    self.assertEqual(fin_pos["state"], "completed", fin_pos)
+                    self.assertEqual(fin_pos["estimates"]["target_rct"]["overall_alignment_status"], "protocol_aligned")
+
+                    # Verify report view & artifact download routes return 200 before purge, and 404 after `DELETE /api/cohorts/{session_id}`
+                    for ok_url in (
+                        f"/runs/{pos_run_id}/report",
+                        f"/runs/{pos_run_id}/artifacts/bundle/estimates.json",
+                        f"/runs/{pos_run_id}/artifacts/preview_manifest.json",
+                    ):
+                        self.assertEqual(self.client.get(ok_url, headers=self.web_auth).status_code, 200)
+
+                    del_cohort = self.client.delete(f"/api/cohorts/{sid_pos}", headers=self.web_auth)
+                    self.assertEqual(del_cohort.status_code, 200, del_cohort.text)
+                    self.assertTrue(del_cohort.json()["session_deleted"])
+                    self.assertEqual(self.client.get(f"/api/cohorts/{sid_pos}", headers=self.web_auth).status_code, 404)
+                    self.assertEqual(self.client.get(f"/api/dual-runs/{pos_run_id}", headers=self.web_auth).status_code, 404)
+                    self.assertEqual(
+                        self.client.get(f"/runs/{pos_run_id}/artifacts/bundle/estimates.json", headers=self.web_auth).status_code,
+                        404,
+                    )
 
 
 if __name__ == "__main__":

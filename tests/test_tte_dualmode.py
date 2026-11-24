@@ -849,6 +849,184 @@ class RCTMatcherTests(unittest.TestCase):
             "exact_dual_arm",
         )
 
+    def test_pico4d_nct03959501_ketone_surrogate_nct00842556_pk_exclusion_trap_and_carolina_flaura_positive_controls(self):
+        """4D PICO-T regression: NCT03959501 (<=0.48), NCT00842556 (<=0.20), Exclusion Criteria trap, and CAROLINA/FLAURA 4D aligned."""
+        # 1. NCT03959501: Dapagliflozin vs Sitagliptin in T2DM/Ketosis, 24-week blood ketone primary outcome
+        nct03959501_raw = {
+            "protocolSection": {
+                "identificationModule": {
+                    "nctId": "NCT03959501",
+                    "briefTitle": "Effects of Dapagliflozin Versus Sitagliptin on Blood Ketone Bodies in Type 2 Diabetes",
+                },
+                "statusModule": {"overallStatus": "COMPLETED"},
+                "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE4"], "enrollmentInfo": {"count": 60}, "designInfo": {"allocation": "RANDOMIZED"}},
+                "conditionsModule": {"conditions": ["Type 2 Diabetes Mellitus", "Ketosis"]},
+                "armsInterventionsModule": {
+                    "armGroups": [
+                        {"label": "Dapagliflozin 5 mg", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Dapagliflozin"]},
+                        {"label": "Sitagliptin 50 mg", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Sitagliptin"]},
+                    ],
+                    "interventions": [{"name": "Dapagliflozin", "type": "DRUG"}, {"name": "Sitagliptin", "type": "DRUG"}],
+                },
+                "eligibilityModule": {
+                    "healthyVolunteers": False,
+                    "minimumAge": "20 Years",
+                    "eligibilityCriteria": "Inclusion Criteria:\n* Uncomplicated Type 2 diabetes\nExclusion Criteria:\n* Chronic heart failure NYHA II-IV",
+                },
+                "outcomesModule": {
+                    "primaryOutcomes": [{"measure": "Change from baseline in fasting blood ketone bodies (beta-hydroxybutyrate) at 24 weeks", "timeFrame": "24 weeks"}]
+                },
+            }
+        }
+        norm_ketone = rct_matcher._normalize_api_study(nct03959501_raw)
+        audit_ketone = rct_matcher.audit_study_pico4d_alignment(
+            norm_ketone,
+            intervention="Dapagliflozin",
+            comparator="Sitagliptin",
+            target_condition="Type 2 Diabetes Heart Failure",
+            target_outcome="Heart Failure Hospitalization or Cardiovascular Death",
+            target_followup_days=1095.0,
+            project_mode="user_cohort",
+        )
+        self.assertEqual(audit_ketone["arm_alignment_status"], "exact_dual_arm")
+        self.assertEqual(audit_ketone["population_alignment"], "partial")
+        self.assertEqual(audit_ketone["outcome_alignment"], "surrogate_or_mismatched")
+        self.assertEqual(audit_ketone["followup_alignment"], "shorter_than_target")
+        self.assertEqual(audit_ketone["overall_alignment_status"], "partial_protocol_reference")
+        self.assertLessEqual(audit_ketone["effective_score_cap"], 0.48)
+        self.assertFalse(audit_ketone["is_recommended"])
+
+        with self.assertRaises(ContractError) as ctx_ketone:
+            rct_matcher.verify_and_enrich_target_rct(
+                norm_ketone,
+                intervention="Dapagliflozin",
+                comparator="Sitagliptin",
+                target_condition="Type 2 Diabetes Heart Failure",
+                target_outcome="Heart Failure Hospitalization or Cardiovascular Death",
+                target_followup_days=1095.0,
+                project_mode="user_cohort",
+            )
+        self.assertEqual(ctx_ketone.exception.code, "PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED")
+
+        # 2. NCT00842556: Healthy-volunteer PK/DDI study of Dapagliflozin + Sitagliptin
+        nct00842556_raw = {
+            "protocolSection": {
+                "identificationModule": {
+                    "nctId": "NCT00842556",
+                    "briefTitle": "Pharmacokinetic Drug-Drug Interaction Study Between Dapagliflozin and Sitagliptin in Healthy Subjects",
+                },
+                "statusModule": {"overallStatus": "COMPLETED"},
+                "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE1"], "enrollmentInfo": {"count": 18}, "designInfo": {"allocation": "RANDOMIZED"}},
+                "conditionsModule": {"conditions": ["Healthy"]},
+                "armsInterventionsModule": {
+                    "armGroups": [
+                        {"label": "Dapagliflozin", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Dapagliflozin"]},
+                        {"label": "Sitagliptin", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Sitagliptin"]},
+                    ],
+                    "interventions": [{"name": "Dapagliflozin", "type": "DRUG"}, {"name": "Sitagliptin", "type": "DRUG"}],
+                },
+                "eligibilityModule": {
+                    "healthyVolunteers": True,
+                    "minimumAge": "18 Years",
+                    "eligibilityCriteria": "Inclusion Criteria:\n* Healthy adult male and female subjects",
+                },
+                "outcomesModule": {
+                    "primaryOutcomes": [{"measure": "Cmax and AUC(0-inf) of Dapagliflozin and Sitagliptin", "timeFrame": "Day 1 to Day 14"}]
+                },
+            }
+        }
+        norm_pk = rct_matcher._normalize_api_study(nct00842556_raw)
+        audit_pk = rct_matcher.audit_study_pico4d_alignment(
+            norm_pk,
+            intervention="Dapagliflozin",
+            comparator="Sitagliptin",
+            target_condition="Type 2 Diabetes Heart Failure",
+            target_outcome="Heart Failure Hospitalization or Cardiovascular Death",
+            target_followup_days=540.0,
+            project_mode="user_cohort",
+        )
+        self.assertEqual(audit_pk["design_suitability"], "non_efficacy_pk_or_healthy")
+        self.assertEqual(audit_pk["overall_alignment_status"], "non_efficacy_excluded")
+        self.assertLessEqual(audit_pk["effective_score_cap"], 0.20)
+        self.assertFalse(audit_pk["is_recommended"])
+
+        with self.assertRaises(ContractError) as ctx_pk:
+            rct_matcher.verify_and_enrich_target_rct(
+                norm_pk,
+                intervention="Dapagliflozin",
+                comparator="Sitagliptin",
+                target_condition="Type 2 Diabetes Heart Failure",
+                target_outcome="Heart Failure Hospitalization or Cardiovascular Death",
+                target_followup_days=540.0,
+                project_mode="user_cohort",
+            )
+        self.assertEqual(ctx_pk.exception.code, "PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED")
+
+        # 3. Exclusion Criteria Trap Test: Heart failure mentioned ONLY under Exclusion Criteria must NOT match HF population!
+        trap_raw = {
+            "protocolSection": {
+                "identificationModule": {"nctId": "NCT09998888", "briefTitle": "Dapagliflozin vs Sitagliptin Outcomes in T2DM"},
+                "statusModule": {"overallStatus": "COMPLETED"},
+                "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE3"], "enrollmentInfo": {"count": 1200}, "designInfo": {"allocation": "RANDOMIZED"}},
+                "conditionsModule": {"conditions": ["Type 2 Diabetes Mellitus"]},
+                "armsInterventionsModule": {
+                    "armGroups": [
+                        {"label": "Dapagliflozin 10 mg", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Dapagliflozin"]},
+                        {"label": "Sitagliptin 100 mg", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Sitagliptin"]},
+                    ],
+                    "interventions": [{"name": "Dapagliflozin", "type": "DRUG"}, {"name": "Sitagliptin", "type": "DRUG"}],
+                },
+                "eligibilityModule": {
+                    "healthyVolunteers": False,
+                    "eligibilityCriteria": "Inclusion Criteria:\n* Adults >= 40 years with Type 2 Diabetes\nExclusion Criteria:\n* Chronic heart failure NYHA II-IV or prior heart failure hospitalization",
+                },
+                "outcomesModule": {"primaryOutcomes": [{"measure": "Cardiovascular Death or MACE", "timeFrame": "36 months"}]},
+            }
+        }
+        norm_trap = rct_matcher._normalize_api_study(trap_raw)
+        audit_trap = rct_matcher.audit_study_pico4d_alignment(
+            norm_trap,
+            intervention="Dapagliflozin",
+            comparator="Sitagliptin",
+            target_condition="Type 2 Diabetes Heart Failure",
+            target_outcome="Cardiovascular Death",
+            target_followup_days=730.0,
+            project_mode="user_cohort",
+        )
+        self.assertNotEqual(audit_trap["population_alignment"], "matched")
+        self.assertEqual(audit_trap["population_alignment"], "partial")
+        self.assertLessEqual(audit_trap["effective_score_cap"], 0.55)
+        self.assertFalse(audit_trap["is_recommended"])
+
+        # 4. Positive Controls: CAROLINA (NCT01243424) & FLAURA (NCT02296125) achieve 4-for-4 protocol_aligned
+        carolina = next(r for r in rct_matcher.OFFLINE_CURATED_RCTS if r["nct_id"] == "NCT01243424")
+        audit_carolina = rct_matcher.audit_study_pico4d_alignment(
+            carolina,
+            intervention="Linagliptin",
+            comparator="Glimepiride",
+            target_condition="Type 2 Diabetes Cardiovascular Risk",
+            target_outcome="Cardiovascular Death Myocardial Infarction Stroke MACE",
+            target_followup_days=730.0,
+            project_mode="user_cohort",
+        )
+        self.assertEqual(audit_carolina["overall_alignment_status"], "protocol_aligned")
+        self.assertTrue(audit_carolina["is_recommended"])
+        self.assertEqual(audit_carolina["effective_score_cap"], 1.0)
+
+        flaura = next(r for r in rct_matcher.OFFLINE_CURATED_RCTS if r["nct_id"] == "NCT02296125")
+        audit_flaura = rct_matcher.audit_study_pico4d_alignment(
+            flaura,
+            intervention="Osimertinib",
+            comparator="Gefitinib",
+            target_condition="EGFR-Mutated Non-Small Cell Lung Cancer",
+            target_outcome="Progression-Free Survival and Overall Survival",
+            target_followup_days=540.0,
+            project_mode="user_cohort",
+        )
+        self.assertEqual(audit_flaura["overall_alignment_status"], "protocol_aligned")
+        self.assertTrue(audit_flaura["is_recommended"])
+        self.assertEqual(audit_flaura["effective_score_cap"], 1.0)
+
 
 class CohortIngestAndDualModePipelineTests(unittest.TestCase):
     def setUp(self):

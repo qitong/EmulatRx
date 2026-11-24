@@ -560,6 +560,8 @@ def validate_protocol_dict(obj: dict) -> dict:
                 "primary_outcome_timeframe",
                 "arm_alignment_status",
                 "arm_alignment_warning",
+                "overall_alignment_status",
+                "protocol_alignment_warning",
             ),
             context="target_rct",
         )
@@ -576,6 +578,8 @@ def validate_protocol_dict(obj: dict) -> dict:
             "primary_outcome_timeframe",
             "arm_alignment_status",
             "arm_alignment_warning",
+            "overall_alignment_status",
+            "protocol_alignment_warning",
         ):
             if opt_k in trct:
                 if not isinstance(trct[opt_k], str):

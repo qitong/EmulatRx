@@ -410,6 +410,10 @@ def build_simulated_protocol_and_dgp(
             trct_entry["arm_alignment_status"] = str(trct["arm_alignment_status"])
         if trct.get("arm_alignment_warning"):
             trct_entry["arm_alignment_warning"] = str(trct["arm_alignment_warning"])
+        if trct.get("overall_alignment_status"):
+            trct_entry["overall_alignment_status"] = str(trct["overall_alignment_status"])
+        if trct.get("protocol_alignment_warning"):
+            trct_entry["protocol_alignment_warning"] = str(trct["protocol_alignment_warning"])
         protocol_obj["target_rct"] = trct_entry
 
     normalized = validate_protocol_dict(protocol_obj)

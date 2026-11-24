@@ -66,7 +66,8 @@ BILINGUAL_CLINICAL_TERMS: tuple[tuple[tuple[str, ...], str, str, str], ...] = (
     (("利拉鲁肽", "liraglutide"), "Liraglutide", "intervention", "利拉鲁肽 (Liraglutide)"),
     (("度拉糖肽", "dulaglutide"), "Dulaglutide", "intervention", "度拉糖肽 (Dulaglutide)"),
     (("二甲双胍", "metformin"), "Metformin", "comparator", "二甲双胍 (Metformin)"),
-    (("格列美脲", "格列齐特", "格列吡嗪", "磺脲", "glimepiride", "gliclazide", "glipizide", "sulfonylurea"), "Sulfonylurea", "comparator", "磺脲类降糖药 (Sulfonylurea)"),
+    (("格列美脲", "glimepiride"), "Glimepiride", "comparator", "格列美脲 (Glimepiride)"),
+    (("格列齐特", "格列吡嗪", "磺脲", "gliclazide", "glipizide", "sulfonylurea"), "Sulfonylurea", "comparator", "磺脲类降糖药 (Sulfonylurea)"),
     (("非奈利酮", "finerenone"), "Finerenone", "intervention", "非奈利酮 (Finerenone)"),
     (("帕博利珠单抗", "pembrolizumab", "keytruda", "pd-1", "pd1"), "Pembrolizumab", "intervention", "帕博利珠单抗 (Pembrolizumab)"),
     (("纳武利尤单抗", "nivolumab"), "Nivolumab", "intervention", "纳武利尤单抗 (Nivolumab)"),
@@ -88,8 +89,8 @@ BILINGUAL_CLINICAL_TERMS: tuple[tuple[tuple[str, ...], str, str, str], ...] = (
     (("房颤", "心房颤动", "atrial fibrillation", "afib"), "Atrial Fibrillation", "condition", "心房颤动 (Atrial Fibrillation)"),
     (("脓毒症", "重症", "sepsis", "icu"), "Sepsis", "condition", "脓毒症 / 重症感染 (Sepsis)"),
     (("卒中", "脑卒中", "栓塞", "stroke", "embolism"), "Stroke or Systemic Embolism", "outcome", "卒中或体循环栓塞"),
-    (("心衰恶化", "心衰住院", "心血管死亡", "心血管事件", "hf_or_cv", "cardiovascular"), "Heart Failure Hospitalization or CV Death", "outcome", "心衰住院或心血管事件"),
-    (("进展", "肿瘤死亡", "无进展生存", "总生存", "progression", "cancerdeath", "os_days"), "Disease Progression or Cancer Death", "outcome", "疾病进展或肿瘤特异死亡"),
+    (("心衰恶化", "心衰住院", "心血管死亡", "心血管事件", "主要不良心血管", "心肌梗死", "hf_or_cv", "mace", "cardiovascular"), "Heart Failure Hospitalization or CV Death", "outcome", "心衰住院或心血管事件"),
+    (("进展", "肿瘤死亡", "无进展生存", "总生存", "progression", "pfs", "cancerdeath", "os_days"), "Disease Progression or Cancer Death", "outcome", "疾病进展或肿瘤特异死亡"),
     (("肾衰竭", "终末期肾病", "esrd", "kidney failure"), "Kidney Failure or Sustained eGFR Decline", "outcome", "持续肾功能恶化或终末期肾病"),
 )
 
@@ -114,12 +115,12 @@ SAFE_CONTROLLED_CLINICAL_WORDS: frozenset[str] = frozenset(
         "apixaban", "rivaroxaban", "dabigatran", "edoxaban", "warfarin", "aspirin", "statin", "acei", "arb",
         # Whitelisted outcome & survival status words
         "censor", "censored", "alive", "dead", "death", "survive", "survived", "free",
-        "event", "primary", "competing", "outcome", "status", "hf", "cv", "noncv", "cardiovascular",
-        "progression", "cancer", "cancerdeath", "relapse", "recurrence", "treatment", "unrelated", "treatmentunrelated",
-        "stroke", "embolism", "bleeding", "esrd", "renal", "kidney", "hospitalization",
+        "event", "primary", "competing", "outcome", "status", "hf", "cv", "noncv", "cardiovascular", "mace", "mi", "infarction", "ascvd",
+        "progression", "cancer", "cancerdeath", "relapse", "recurrence", "treatment", "unrelated", "treatmentunrelated", "pfs",
+        "stroke", "embolism", "bleeding", "esrd", "renal", "kidney", "hospitalization", "ketone", "ketonemia",
         # Whitelisted staging / functional scales / smoking
         "nyha", "class", "i", "ii", "iii", "iv", "stage", "ia", "ib", "iia", "iib", "iiia", "iiib", "iva", "ivb",
-        "ecog", "ps", "g1", "g2", "g3", "g3a", "g3b", "g4", "g5",
+        "ecog", "ps", "g1", "g2", "g3", "g3a", "g3b", "g4", "g5", "egfr", "exon19del", "l858r", "cns", "tki",
         "never", "former", "current", "smoker", "nonsmoker", "smoking",
         "low", "medium", "moderate", "high", "positive", "negative",
         # Common Chinese controlled status labels
@@ -1028,6 +1029,31 @@ def interpret_cohort_profile(
         else (raw_comp or det_comp_en)
     )
 
+    det_outcome_en = ""
+    det_followup_days: float | None = None
+    if sample_spec:
+        det_outcome_en = str(sample_spec.get("outcome_en", "")).strip()
+        if sample_spec.get("target_followup_days"):
+            det_followup_days = float(sample_spec["target_followup_days"])
+    if not det_outcome_en:
+        out_clues: list[str] = []
+        if default_mapping:
+            out_clues.extend(str(v) for v in (default_mapping.get("primary_event_values") or []))
+            if default_mapping.get("outcome_column"):
+                out_clues.append(str(default_mapping["outcome_column"]))
+        for oc in (profile.get("candidate_outcome_columns") or [])[:1]:
+            out_clues.append(str(oc.get("column", "")))
+            for cat in oc.get("categories") or []:
+                val_s = str(cat.get("value", "")).strip()
+                if val_s.lower() not in ("0", "1", "2", "censored", "censor", "alive", "alive_censored"):
+                    out_clues.append(val_s)
+        det_outcome_en = " ".join(c.replace("_", " ") for c in out_clues if c).strip()
+    if det_followup_days is None and default_mapping and default_mapping.get("horizon_days"):
+        try:
+            det_followup_days = float(max(float(h) for h in default_mapping["horizon_days"]))
+        except (TypeError, ValueError):
+            det_followup_days = None
+
     domain_summary_zh = (
         f"识别到 {'、'.join(det['conditions_zh']) or '临床观察性专病队列'} 特征；"
         f"候选双臂对比为 {active_disp or '试验组'} vs {comp_disp or '对照组'}。"
@@ -1037,6 +1063,8 @@ def interpret_cohort_profile(
         "condition_query_en": det_cond_en,
         "intervention_query_en": det_intr_en,
         "comparator_query_en": det_comp_en,
+        "outcome_query_en": det_outcome_en,
+        "target_followup_days": det_followup_days,
         "active_arm_label": raw_active or det_intr_en,
         "comparator_arm_label": raw_comp or det_comp_en,
         "search_query_en": fallback_query,
@@ -1060,9 +1088,11 @@ def interpret_cohort_profile(
             val = llm_out.get(k)
             if isinstance(val, str) and val.strip():
                 fallback_res[k] = val.strip()
-        # Lock deterministically verified cohort active & comparator drugs; NEVER let LLM invent an unresolved 0/1 cohort arm!
+        # Lock deterministically verified cohort active & comparator drugs (and sample_spec condition when loading a known sample); NEVER let LLM invent an unresolved 0/1 cohort arm!
         fallback_res["intervention_query_en"] = det_intr_en
         fallback_res["comparator_query_en"] = det_comp_en
+        if sample_spec and det_cond_en:
+            fallback_res["condition_query_en"] = det_cond_en
         if det_comp_en and det_comp_en.lower() not in fallback_res["search_query_en"].lower():
             fallback_res["search_query_en"] = f"{det_intr_en} {det_comp_en} {fallback_res['condition_query_en']}".strip()
         fallback_res["assist_mode"] = "llm_assisted"
@@ -1121,7 +1151,8 @@ def rerank_and_explain_rcts(
         for cand in candidates:
             item = dict(cand)
             status = str(item.get("arm_alignment_status", "unspecified"))
-            cap = float(item.get("arm_alignment_score_cap", 1.0))
+            overall_status = str(item.get("overall_alignment_status", ""))
+            cap = float(item.get("effective_score_cap", item.get("arm_alignment_score_cap", 1.0)))
             hit = by_nct.get(item["nct_id"])
             if hit:
                 raw_sc = hit.get("match_score") if hit.get("match_score") is not None else hit.get("score")
@@ -1133,16 +1164,22 @@ def rerank_and_explain_rcts(
                 if isinstance(hit.get("reason_zh"), str) and hit["reason_zh"].strip():
                     # Keep deterministic mismatch warning visible alongside LLM rationale
                     det_first = item.get("match_reasons", [])[:1]
-                    if status in ("single_arm_or_comparator_mismatch", "class_dual_arm", "unmatched_interventions"):
+                    if overall_status and overall_status != "protocol_aligned":
+                        item["match_reasons"] = [*det_first, hit["reason_zh"].strip()]
+                    elif status in ("single_arm_or_comparator_mismatch", "class_dual_arm", "unmatched_interventions"):
                         item["match_reasons"] = [*det_first, hit["reason_zh"].strip()]
                     else:
                         item["match_reasons"] = [hit["reason_zh"].strip(), *det_first]
                 item["ranking_mode"] = "llm_assisted"
-            # Deterministic hard lock: LLM can NEVER flip is_recommended=True when dual-arm alignment failed
-            item["is_recommended"] = status in ("exact_dual_arm", "single_intervention_matched", "unspecified")
+            # Deterministic hard lock: LLM can NEVER flip is_recommended=True unless full 4D PICO-T protocol_aligned holds
+            if overall_status:
+                item["is_recommended"] = overall_status == "protocol_aligned"
+            else:
+                item["is_recommended"] = status in ("exact_dual_arm", "single_intervention_matched", "unspecified")
             enriched.append(item)
         enriched.sort(
             key=lambda x: (
+                int(x.get("overall_alignment_rank", x.get("arm_alignment_rank", 2))),
                 int(x.get("arm_alignment_rank", 2)),
                 float(x.get("match_score", 0.0)),
                 int(x.get("enrollment_count") or 0),
