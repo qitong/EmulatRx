@@ -97,7 +97,7 @@ python -m emulatrx_tte run-ccw-synthetic \
 ```
 
 - Never call legacy `emulation_utils.adjust_immortal_time_bias` (disabled with `RuntimeError` due to missing grace-period censoring and pooled Cox censoring defects).
-- On exit code `3` (`UNCENSORED_BELOW_MIN`, `MAX_WEIGHT_EXCEEDED`, `ESS_RATIO_BELOW_MIN`, `POST_GRACE_SMD_EXCEEDS_MAX`), `run-ccw-synthetic` writes `ccw_diagnostics.json`, `ccw_attrition.json`, and `run_manifest.json` while **100% omitting** `ccw_estimates.json`.
+- On exit code `3` (`UNCENSORED_BELOW_MIN`, `PRE_TRUNCATION_WEIGHT_EXCEEDED`, `EXCESSIVE_WEIGHT_TRUNCATION`, `MAX_WEIGHT_EXCEEDED`, `ESS_RATIO_BELOW_MIN`, `POST_GRACE_SMD_EXCEEDS_MAX`), `run-ccw-synthetic` writes `ccw_diagnostics.json`, `ccw_attrition.json`, and `run_manifest.json` while **100% omitting** `ccw_estimates.json`. Optional `diagnostic_gates` truncation controls (`max_pre_truncation_weight` defaulting to `max_stabilized_weight`, `min_truncation_quantile_span` defaulting to `0.80`, and `max_truncated_weight_fraction` defaulting to `min(1.0, q_low + (1.0 - q_high) + 0.05)` when `truncate_quantiles` is enabled) are resolved and audited as `effective_*` fields in `ccw_diagnostics.json`.
 - Always report `ccw_rd_event1` (`subject_cluster_bootstrap_with_ipcw_refit` 95% CI) alongside `naive_immortal_time_comparison` (`naive_rd` and `immortal_time_bias_rd_inflation = naive_rd - ccw_rd`) and the four mandatory causal identification assumptions.
 
 ## 3. Exit Codes & Fail-Closed Gate Rules

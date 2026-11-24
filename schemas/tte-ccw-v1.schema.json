@@ -140,6 +140,11 @@
           "type": "number",
           "minimum": 1.0
         },
+        "min_truncation_quantile_span": {
+          "type": "number",
+          "exclusiveMinimum": 0.0,
+          "maximum": 1.0
+        },
         "max_truncated_weight_fraction": {
           "type": "number",
           "exclusiveMinimum": 0.0,

@@ -603,14 +603,17 @@ class TTEGracePeriodCCWTests(unittest.TestCase):
         for trunc_spec, out_sub in (
             (None, "collapse_none"),
             ([0.49, 0.51], "collapse_4951"),
+            ([0.05, 0.95], "collapse_0595"),
             ([0.01, 0.99], "collapse_0199"),
         ):
             proto_c = copy.deepcopy(self.protocol)
             proto_c["ipcw_spec"]["truncate_quantiles"] = trunc_spec
-            proto_c["diagnostic_gates"]["max_stabilized_weight"] = 2.0
-            proto_c["diagnostic_gates"]["min_ess_ratio"] = 0.05
-            proto_c["diagnostic_gates"]["max_post_grace_smd"] = 2.0
-            proto_c["diagnostic_gates"]["min_uncensored_subjects_per_clone"] = 10
+            proto_c["diagnostic_gates"] = {
+                "max_stabilized_weight": 2.0,
+                "min_ess_ratio": 0.05,
+                "max_post_grace_smd": 2.0,
+                "min_uncensored_subjects_per_clone": 10,
+            }
 
             out_dir = self.base / out_sub
             res, code = run_grace_period_ccw(
@@ -625,6 +628,7 @@ class TTEGracePeriodCCWTests(unittest.TestCase):
             self.assertFalse((out_dir / "ccw_estimates.json").exists())
             diag = json.loads((out_dir / "ccw_diagnostics.json").read_text(encoding="utf-8"))
             self.assertEqual(diag["gate_status"], "blocked")
+            self.assertEqual(diag["diagnostic_gates"]["effective_max_pre_truncation_weight"], 2.0)
             self.assertGreater(diag["pre_truncation_max_stabilized_weight"], 20.0)
             codes = {f["code"] for f in diag["gate_failures"]}
             self.assertIn("PRE_TRUNCATION_WEIGHT_EXCEEDED", codes)
@@ -635,7 +639,12 @@ class TTEGracePeriodCCWTests(unittest.TestCase):
         # Verify CLI run-ccw-synthetic also fails closed (exit code 3, no ccw_estimates.json) under [0.49, 0.51]
         cli_proto = copy.deepcopy(self.protocol)
         cli_proto["ipcw_spec"]["truncate_quantiles"] = [0.49, 0.51]
-        cli_proto["diagnostic_gates"]["max_stabilized_weight"] = 2.0
+        cli_proto["diagnostic_gates"] = {
+            "min_ess_ratio": 0.35,
+            "max_post_grace_smd": 0.15,
+            "max_stabilized_weight": 2.0,
+            "min_uncensored_subjects_per_clone": 30,
+        }
         p_cli = self.write_json(cli_proto, "cli_collapse_4951.json")
         p_dgp_collapse = self.write_json(
             {"initiation_covariate_slopes": [0.0, 0.0, 0.0, 7.8], "grace_initiation_intercept": -3.9},
@@ -663,6 +672,68 @@ class TTEGracePeriodCCWTests(unittest.TestCase):
         self.assertFalse((out_cli / "ccw_estimates.json").exists())
         cli_diag = json.loads((out_cli / "ccw_diagnostics.json").read_text(encoding="utf-8"))
         self.assertGreater(cli_diag["pre_truncation_max_stabilized_weight"], 20.0)
+
+    def test_mild_005_095_truncation_passes_and_configurable_truncation_gates(self) -> None:
+        """Regression test for Review Round 2 Blocking #1: seed=99 n=1800 [0.05, 0.95] & configurable gates."""
+        mild_proto = copy.deepcopy(self.protocol)
+        mild_proto["protocol_id"] = "ccw_mild_005_095_repro"
+        mild_proto["ipcw_spec"] = {"truncate_quantiles": [0.05, 0.95], "include_admin_ipcw": False}
+        # Omit optional truncation gates to exercise quantile-aware & direct fallback rules
+        mild_proto["diagnostic_gates"] = {
+            "min_ess_ratio": 0.35,
+            "max_post_grace_smd": 0.15,
+            "max_stabilized_weight": 15.0,
+            "min_uncensored_subjects_per_clone": 30,
+        }
+        p_mild = self.write_json(mild_proto, "mild_005_095.json")
+        out_mild = self.base / "mild_005_095_out"
+        cli_ok = self.run_cli(
+            "run-ccw-synthetic",
+            [
+                "--protocol",
+                str(p_mild),
+                "--seed",
+                "99",
+                "--cases",
+                "1800",
+                "--bootstrap-iterations",
+                "20",
+                "--out",
+                str(out_mild),
+            ],
+        )
+        self.assertEqual(cli_ok.returncode, 0, cli_ok.stderr)
+        diag_ok = json.loads((out_mild / "ccw_diagnostics.json").read_text(encoding="utf-8"))
+        self.assertEqual(diag_ok["gate_status"], "passed")
+        self.assertEqual(diag_ok["diagnostic_gates"]["effective_max_pre_truncation_weight"], 15.0)
+        self.assertEqual(diag_ok["diagnostic_gates"]["effective_min_truncation_quantile_span"], 0.80)
+        self.assertEqual(diag_ok["diagnostic_gates"]["effective_max_truncated_weight_fraction"], 0.15)
+        self.assertTrue((out_mild / "ccw_estimates.json").is_file())
+
+        cohort_99 = pd.read_csv(out_mild / "cohort.csv", dtype={"subject_id": str})
+
+        # Custom min_truncation_quantile_span = 0.95 blocks [0.05, 0.95] (span = 0.90 < 0.95)
+        span_proto = copy.deepcopy(mild_proto)
+        span_proto["diagnostic_gates"]["min_truncation_quantile_span"] = 0.95
+        res_span, code_span = run_grace_period_ccw(span_proto, cohort_99, seed=99, bootstrap_iterations=10)
+        self.assertEqual(code_span, 3)
+        self.assertIn("EXCESSIVE_WEIGHT_TRUNCATION", {f["code"] for f in res_span["gate_failures"]})
+
+        # Custom max_truncated_weight_fraction = 0.05 blocks [0.05, 0.95] (~10.15% clipped > 5%)
+        frac_proto = copy.deepcopy(mild_proto)
+        frac_proto["diagnostic_gates"]["max_truncated_weight_fraction"] = 0.05
+        res_frac, code_frac = run_grace_period_ccw(frac_proto, cohort_99, seed=99, bootstrap_iterations=10)
+        self.assertEqual(code_frac, 3)
+        self.assertIn("EXCESSIVE_WEIGHT_TRUNCATION", {f["code"] for f in res_frac["gate_failures"]})
+
+        # Custom max_pre_truncation_weight override allows mild trimming from <= 10.0 down to <= 2.3
+        trim_proto = copy.deepcopy(mild_proto)
+        trim_proto["diagnostic_gates"]["max_stabilized_weight"] = 2.3
+        trim_proto["diagnostic_gates"]["max_pre_truncation_weight"] = 10.0
+        res_trim, code_trim = run_grace_period_ccw(trim_proto, cohort_99, seed=99, bootstrap_iterations=10)
+        self.assertEqual(code_trim, 0, res_trim.get("gate_failures"))
+        self.assertEqual(res_trim["diagnostics"]["diagnostic_gates"]["effective_max_pre_truncation_weight"], 10.0)
+        self.assertLessEqual(res_trim["diagnostics"]["post_truncation_max_stabilized_weight"], 2.3)
 
 
 if __name__ == "__main__":

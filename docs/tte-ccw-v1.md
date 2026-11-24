@@ -28,12 +28,17 @@ At each explicit evaluation horizon $t^* \in (0, H_{\max}]$, `emulatrx_tte.ccw` 
 
 ## 2. Protocol Schema (`schemas/tte-ccw-v1.schema.json`) & Exit Code Contract
 
-All clinical time windows and diagnostic thresholds are passed explicitly via JSON (zero hardcoded clinical thresholds):
+All clinical time windows and diagnostic thresholds are passed via JSON (canonical example `examples/tte_grace_period_ccw_v1.json` declares every core and truncation threshold explicitly):
 - `protocol_id`, `protocol_version: "tte-ccw-v1"`, `source_mode: "synthetic_only"`
 - `grace_period_spec`: `grace_period_days` ($g > 0$), `period_length_days` ($\Delta > 0$), `max_followup_days` ($H_{\max} > g$), `evaluation_horizons_days` (all positive integer multiples of $\Delta$)
 - `covariates`: `baseline_covariates` (`assessed_day_offset <= 0`) and optional `time_varying_covariates` (`offset_from_period_start_days < 0`, strictly before period $k$'s decision start $(k-1)\Delta$)
-- `ipcw_spec`: optional `truncate_quantiles` (`[q_low, q_high]` or `null`) and `include_admin_ipcw` (`bool`, default `false`)
-- `diagnostic_gates`: `min_ess_ratio`, `max_post_grace_smd`, `max_stabilized_weight`, `min_uncensored_subjects_per_clone`
+- `ipcw_spec`: optional `truncate_quantiles` (`[q_low, q_high]` with `0 <= q_low < q_high <= 1`, or `null`) and `include_admin_ipcw` (`bool`, default `false`)
+- `diagnostic_gates`:
+  - Required core gates: `min_ess_ratio`, `max_post_grace_smd` (evaluated across both `baseline_covariates` and grace-window `time_varying_covariates` at $t = g^+$), `max_stabilized_weight` (post-truncation ceiling), `min_uncensored_subjects_per_clone`
+  - Optional truncation & pre-truncation positivity gates (recorded as `effective_*` in `ccw_diagnostics.json`):
+    - `max_pre_truncation_weight` (`>= 1.0`): ceiling on raw pre-truncation stabilized weights (`PRE_TRUNCATION_WEIGHT_EXCEEDED`); defaults directly to `max_stabilized_weight` when omitted
+    - `min_truncation_quantile_span` (`in (0, 1]`): minimum required quantile span `q_high - q_low` when `truncate_quantiles` is enabled (`EXCESSIVE_WEIGHT_TRUNCATION`); defaults to `0.80` when omitted
+    - `max_truncated_weight_fraction` (`in (0, 1]`): maximum allowed fraction of active clone weights altered by clipping (`EXCESSIVE_WEIGHT_TRUNCATION`); when `truncate_quantiles = [q_low, q_high]` is enabled and this field is omitted, defaults to the quantile-aware allowance `min(1.0, q_low + (1.0 - q_high) + 0.05)` (`nominal_tail + 0.05` finite-sample tie/pooling margin; `0.0` when `truncate_quantiles` is `null`)
 
 | Exit Code | Meaning | Artifact Behavior |
 | --- | --- | --- |
@@ -49,8 +54,10 @@ All clinical time windows and diagnostic thresholds are passed explicitly via JS
    - **Strategy 1 (`initiate_within_grace`)**: artificial censoring is identically `0` for $k = 1, \dots, m_g$ ($t \le g$). Entering period $m_g + 1$ ($T_i > g$), subjects with `initiation_day is None` or `initiation_day > g` are artificially censored at $t = g$ (`T_clone = g, event_clone = 0, artificial_censored = 1`).
    - **Strategy 0 (`never_initiate`)**: subjects with $T^{\text{init}}_i \le T_i$ are artificially censored at the start of period $k_{\text{init}} = \max(1, \lceil T^{\text{init}}_i / \Delta \rceil)$ prior to period-$k_{\text{init}}$ outcomes (`T_clone = (k_init - 1) * Δ, event_clone = 0, artificial_censored = 1`).
 2. **Strictly Separated Arm-Specific Stabilized IPCW (No Pooling)**:
-   - **Strategy 1**: $W^{(1)}_{i,k} = 1.0$ for $k \le m_g$; on $T_i > g$, fits unpenalized MLE logistic regression $\hat{P}(\text{Init}_i \le g \mid T_i > g, L_i)$ with pure marginal numerator $\hat{P}(\text{Init}_i \le g \mid T_i > g)$ for $k \ge m_g + 1$.
-   - **Strategy 0**: on Strategy 0 pre-decision uninitiated person-periods, fits unpenalized MLE Pooled Logistic regression (period indicators + $L_{i,k-1}$) for $\hat{P}(A_{i,k}=0 \mid \bar{A}_{i,k-1}=0, T_i > (k-1)\Delta, L_{i,k-1}, k)$ with pure period-specific marginal numerator $\hat{P}(A_{i,k}=0 \mid \bar{A}_{i,k-1}=0, T_i > (k-1)\Delta, k)$, multiplied cumulatively across $j \le k$.
+   - **Strategy 1 (`initiate_within_grace`)**: $W^{(1)}_{i,k} = 1.0$ for $k \le m_g$. For $k \ge m_g + 1$ ($T_i > g$), uses pure marginal numerator $\hat{p}^{(1,\text{num})} = \hat{P}(\text{Init}_i \le g \mid T_i > g)$ and:
+     - **Baseline-covariates-only path (`time_varying_covariates = []`)**: fits unpenalized MLE grace-boundary adherence logistic regression $\hat{p}^{(1)}_i = \hat{P}(\text{Init}_i \le g \mid T_i > g, L_{i,0})$ on $T_i > g$;
+     - **Declared `time_varying_covariates` (`X_tv`) path**: fits unpenalized MLE pooled per-period discrete-time initiation hazard $\hat{\lambda}_{i,k} = \hat{P}(A_{i,k}=1 \mid \bar{A}_{i,k-1}=0, T_i > (k-1)\Delta, k, L_{i,0}, L_{i,k-1})$ across grace periods $k = 1, \dots, m_g$ (setting $\hat{\lambda}_{i,k} \equiv 0$ or $1$ directly on periods with zero or 100% empirical initiations) and combines them via $\hat{p}^{(1)}_i = 1 - \prod_{k=1}^{m_g}\bigl(1 - \hat{\lambda}_{i,k}(L_{i,0}, L_{i,k-1})\bigr)$ under the explicit boundary of no post-initiation treatment–confounder feedback within $(0, g]$.
+   - **Strategy 0 (`never_initiate`)**: on Strategy 0 pre-decision uninitiated person-periods, fits unpenalized MLE Pooled Logistic regression (period indicators + $L_{i,0}, L_{i,k-1}$) for $\hat{P}(A_{i,k}=0 \mid \bar{A}_{i,k-1}=0, T_i > (k-1)\Delta, L_{i,0}, L_{i,k-1}, k)$ with pure period-specific marginal numerator $\hat{P}(A_{i,k}=0 \mid \bar{A}_{i,k-1}=0, T_i > (k-1)\Delta, k)$, multiplied cumulatively across $j \le k$.
 3. **Subject-Cluster Bootstrap (`subject_cluster_bootstrap_with_ipcw_refit`)**:
    - Resamples `subject_id` with replacement **prior to cloning** and refits both arm-specific IPCW models and weighted discrete-time Aalen–Johansen CIFs inside every replicate.
 

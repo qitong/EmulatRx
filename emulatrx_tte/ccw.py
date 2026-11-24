@@ -416,6 +416,7 @@ def validate_ccw_protocol_dict(obj: dict) -> dict:
         ),
         optional=(
             "max_pre_truncation_weight",
+            "min_truncation_quantile_span",
             "max_truncated_weight_fraction",
         ),
         context="diagnostic_gates",
@@ -464,6 +465,15 @@ def validate_ccw_protocol_dict(obj: dict) -> dict:
                 "diagnostic_gates.max_pre_truncation_weight must be a finite number >= 1.0",
             )
         norm_gates["max_pre_truncation_weight"] = float(max_pre_w)
+
+    if "min_truncation_quantile_span" in gates:
+        min_q_span = gates["min_truncation_quantile_span"]
+        if not is_strict_number(min_q_span) or not (0.0 < float(min_q_span) <= 1.0):
+            raise ContractError(
+                "INVALID_DIAGNOSTIC_GATE",
+                "diagnostic_gates.min_truncation_quantile_span must be a finite number in (0.0, 1.0]",
+            )
+        norm_gates["min_truncation_quantile_span"] = float(min_q_span)
 
     if "max_truncated_weight_fraction" in gates:
         max_trunc_f = gates["max_truncated_weight_fraction"]
@@ -2328,11 +2338,16 @@ def _evaluate_ccw_diagnostic_gates(
         )
 
     max_allowed_w = float(gates["max_stabilized_weight"])
-    effective_max_pre_w = float(
-        gates.get("max_pre_truncation_weight", max_allowed_w * 2.0 if trunc_q is not None else max_allowed_w)
-    )
-    effective_max_trunc_frac = float(gates.get("max_truncated_weight_fraction", 0.10))
+    effective_max_pre_w = float(gates.get("max_pre_truncation_weight", max_allowed_w))
+    effective_min_q_span = float(gates.get("min_truncation_quantile_span", 0.80))
     quantile_span = float(trunc_q[1] - trunc_q[0]) if trunc_q is not None else None
+    if "max_truncated_weight_fraction" in gates:
+        effective_max_trunc_frac = float(gates["max_truncated_weight_fraction"])
+    elif trunc_q is not None:
+        nominal_tail = float(trunc_q[0]) + (1.0 - float(trunc_q[1]))
+        effective_max_trunc_frac = min(1.0, nominal_tail + 0.05)
+    else:
+        effective_max_trunc_frac = 0.0
 
     if pre_trunc_max_w > effective_max_pre_w:
         failures.append(
@@ -2348,18 +2363,20 @@ def _evaluate_ccw_diagnostic_gates(
         )
 
     if trunc_q is not None and (
-        (quantile_span is not None and quantile_span < 0.80 - 1e-12) or (max_trunc_frac > effective_max_trunc_frac)
+        (quantile_span is not None and quantile_span < effective_min_q_span - 1e-12)
+        or (max_trunc_frac > effective_max_trunc_frac + 1e-12)
     ):
         failures.append(
             {
                 "code": "EXCESSIVE_WEIGHT_TRUNCATION",
                 "detail": (
                     f"Excessive IPCW quantile clipping detected: truncate_quantiles={trunc_q} "
-                    f"(span={quantile_span:.4f}, min_required_span=0.80), max clone truncated_weight_fraction="
-                    f"{max_trunc_frac:.6f} (max_truncated_weight_fraction={effective_max_trunc_frac:.6f})"
+                    f"(span={quantile_span:.4f}, min_truncation_quantile_span={effective_min_q_span:.4f}), "
+                    f"max clone truncated_weight_fraction={max_trunc_frac:.6f} "
+                    f"(effective_max_truncated_weight_fraction={effective_max_trunc_frac:.6f})"
                 ),
                 "metric_value": round(max_trunc_frac, 8),
-                "threshold": effective_max_trunc_frac,
+                "threshold": round(effective_max_trunc_frac, 8),
             }
         )
 
@@ -2426,8 +2443,9 @@ def _evaluate_ccw_diagnostic_gates(
         "gate_failures": failures,
         "diagnostic_gates": {
             **dict(gates),
-            "effective_max_pre_truncation_weight": effective_max_pre_w,
-            "effective_max_truncated_weight_fraction": effective_max_trunc_frac,
+            "effective_max_pre_truncation_weight": round(effective_max_pre_w, 8),
+            "effective_min_truncation_quantile_span": round(effective_min_q_span, 8),
+            "effective_max_truncated_weight_fraction": round(effective_max_trunc_frac, 8),
         },
         "pre_truncation_max_stabilized_weight": round(pre_trunc_max_w, 8),
         "post_truncation_max_stabilized_weight": round(overall_max_w, 8),
