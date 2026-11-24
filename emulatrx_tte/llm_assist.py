@@ -56,14 +56,25 @@ BILINGUAL_CLINICAL_TERMS: tuple[tuple[tuple[str, ...], str, str, str], ...] = (
     (("达格列净", "dapagliflozin", "sglt2", "sglt2i"), "Dapagliflozin", "intervention", "达格列净 (Dapagliflozin)"),
     (("恩格列净", "empagliflozin"), "Empagliflozin", "intervention", "恩格列净 (Empagliflozin)"),
     (("卡格列净", "canagliflozin"), "Canagliflozin", "intervention", "卡格列净 (Canagliflozin)"),
+    (("埃格列净", "ertugliflozin"), "Ertugliflozin", "intervention", "埃格列净 (Ertugliflozin)"),
     (("西格列汀", "sitagliptin", "dpp-4", "dpp4", "dpp4i"), "Sitagliptin", "comparator", "西格列汀 (Sitagliptin)"),
     (("利格列汀", "linagliptin"), "Linagliptin", "comparator", "利格列汀 (Linagliptin)"),
+    (("沙格列汀", "saxagliptin"), "Saxagliptin", "comparator", "沙格列汀 (Saxagliptin)"),
+    (("维格列汀", "vildagliptin"), "Vildagliptin", "comparator", "维格列汀 (Vildagliptin)"),
+    (("阿格列汀", "alogliptin"), "Alogliptin", "comparator", "阿格列汀 (Alogliptin)"),
     (("司美格鲁肽", "semaglutide", "glp-1", "glp1"), "Semaglutide", "intervention", "司美格鲁肽 (Semaglutide)"),
+    (("利拉鲁肽", "liraglutide"), "Liraglutide", "intervention", "利拉鲁肽 (Liraglutide)"),
+    (("度拉糖肽", "dulaglutide"), "Dulaglutide", "intervention", "度拉糖肽 (Dulaglutide)"),
+    (("二甲双胍", "metformin"), "Metformin", "comparator", "二甲双胍 (Metformin)"),
+    (("格列美脲", "格列齐特", "格列吡嗪", "磺脲", "glimepiride", "gliclazide", "glipizide", "sulfonylurea"), "Sulfonylurea", "comparator", "磺脲类降糖药 (Sulfonylurea)"),
     (("非奈利酮", "finerenone"), "Finerenone", "intervention", "非奈利酮 (Finerenone)"),
     (("帕博利珠单抗", "pembrolizumab", "keytruda", "pd-1", "pd1"), "Pembrolizumab", "intervention", "帕博利珠单抗 (Pembrolizumab)"),
     (("纳武利尤单抗", "nivolumab"), "Nivolumab", "intervention", "纳武利尤单抗 (Nivolumab)"),
     (("阿替利珠单抗", "atezolizumab"), "Atezolizumab", "intervention", "阿替利珠单抗 (Atezolizumab)"),
     (("奥希替尼", "osimertinib"), "Osimertinib", "intervention", "奥希替尼 (Osimertinib)"),
+    (("吉非替尼", "gefitinib"), "Gefitinib", "comparator", "吉非替尼 (Gefitinib)"),
+    (("厄洛替尼", "erlotinib"), "Erlotinib", "comparator", "厄洛替尼 (Erlotinib)"),
+    (("阿法替尼", "afatinib"), "Afatinib", "comparator", "阿法替尼 (Afatinib)"),
     (("含铂", "双药化疗", "platinum", "chemo", "chemotherapy", "pemetrexed", "培美曲塞"), "Platinum Chemotherapy", "comparator", "含铂双药化疗 (Platinum Doublet Chemo)"),
     (("阿哌沙班", "apixaban", "doac", "noac"), "Apixaban", "intervention", "阿哌沙班 (Apixaban)"),
     (("利伐沙班", "rivaroxaban"), "Rivaroxaban", "intervention", "利伐沙班 (Rivaroxaban)"),
@@ -93,10 +104,13 @@ SAFE_CONTROLLED_CLINICAL_WORDS: frozenset[str] = frozenset(
         "active", "control", "comparator", "reference", "placebo", "experimental", "standard", "care", "soc",
         "drug", "regimen", "therapy", "arm", "group", "plus", "doublet", "monotherapy", "combination",
         # Whitelisted drugs / classes
-        "dapagliflozin", "empagliflozin", "canagliflozin", "sglt2", "sglt2i",
-        "sitagliptin", "linagliptin", "dpp4", "dpp4i", "semaglutide", "glp1", "finerenone", "metformin", "insulin",
-        "pembrolizumab", "nivolumab", "atezolizumab", "durvalumab", "osimertinib", "platinum", "chemo", "chemotherapy",
-        "pemetrexed", "carboplatin", "cisplatin", "paclitaxel",
+        "dapagliflozin", "empagliflozin", "canagliflozin", "ertugliflozin", "sotagliflozin", "henagliflozin", "sglt2", "sglt2i",
+        "sitagliptin", "linagliptin", "saxagliptin", "vildagliptin", "alogliptin", "dpp4", "dpp4i",
+        "semaglutide", "liraglutide", "dulaglutide", "exenatide", "tirzepatide", "glp1", "glp1ra",
+        "finerenone", "spironolactone", "eplerenone", "metformin", "insulin", "glimepiride", "gliclazide", "glipizide", "sulfonylurea",
+        "pembrolizumab", "nivolumab", "atezolizumab", "durvalumab", "sintilimab", "tislelizumab",
+        "osimertinib", "gefitinib", "erlotinib", "afatinib", "aumolertinib", "furmonertinib",
+        "platinum", "chemo", "chemotherapy", "pemetrexed", "carboplatin", "cisplatin", "paclitaxel",
         "apixaban", "rivaroxaban", "dabigatran", "edoxaban", "warfarin", "aspirin", "statin", "acei", "arb",
         # Whitelisted outcome & survival status words
         "censor", "censored", "alive", "dead", "death", "survive", "survived", "free",
@@ -447,12 +461,13 @@ def sanitize_study_context_for_llm(context_summary: dict | None) -> dict:
             "query",
             "condition",
             "intervention",
+            "comparator",
             "condition_query_en",
             "intervention_query_en",
+            "comparator_query_en",
             "search_query_en",
             "domain_summary_zh",
             "population",
-            "comparator",
             "primary_outcome",
         )
     )
@@ -741,12 +756,20 @@ def _extract_deterministic_terms(text: str) -> dict:
 
 
 def parse_research_idea_pico(idea_text: str) -> dict:
-    """Parse free-text clinical research idea (no-data simulated mode) into structured PICO + search terms."""
+    """Parse free-text clinical research idea (no-data simulated mode) into structured PICO + dual-arm search terms."""
     clean_idea = (idea_text or "").strip()
     if not clean_idea:
         raise ContractError("EMPTY_IDEA", "请输入临床研究想法或选择上方示例。")
 
     det = _extract_deterministic_terms(clean_idea)
+    det_intr_en = det["interventions_en"][0] if det["interventions_en"] else (det["extra_en"][0] if det["extra_en"] else "")
+    det_comp_en = ""
+    if det["comparators_en"]:
+        det_comp_en = det["comparators_en"][0]
+    elif len(det["interventions_en"]) > 1:
+        det_comp_en = det["interventions_en"][1]
+    comparator_explicit = bool(det_comp_en)
+
     fallback_pico = {
         "population": "、".join(det["conditions_zh"]) if det["conditions_zh"] else f"目标临床人群（源自描述：{clean_idea[:48]}）",
         "intervention": det["interventions_zh"][0] if det["interventions_zh"] else (
@@ -758,9 +781,13 @@ def parse_research_idea_pico(idea_text: str) -> dict:
         "primary_outcome": det["outcomes_zh"][0] if det["outcomes_zh"] else "主要临床终点事件（时间至事件结局）",
         "competing_event": "非目标疾病特异死亡 / 其他原因竞争死亡（编码 2）",
         "condition_query_en": " ".join(det["conditions_en"][:2]),
-        "intervention_query_en": " ".join((det["interventions_en"] + det["comparators_en"])[:2]),
+        "intervention_query_en": det_intr_en,
+        "comparator_query_en": det_comp_en,
+        "comparator_explicit": comparator_explicit,
         "search_query_en": " ".join(
-            dict.fromkeys(det["conditions_en"][:2] + det["interventions_en"][:2] + det["extra_en"][:3])
+            dict.fromkeys(
+                [p for p in (det_intr_en, det_comp_en) if p] + det["conditions_en"][:2] + det["extra_en"][:2]
+            )
         ).strip()
         or "Randomized Controlled Trial",
         "assist_mode": "deterministic_rules",
@@ -773,8 +800,9 @@ def parse_research_idea_pico(idea_text: str) -> dict:
         (
             "You are a clinical epidemiologist specializing in Target Trial Emulation (TTE). "
             "Extract structured PICO in Chinese and concise English search terms for ClinicalTrials.gov API v2. "
+            "If no specific comparator was mentioned by the user, set comparator_query_en to an empty string. "
             "Return JSON with keys: population, intervention, comparator, primary_outcome, competing_event, "
-            "condition_query_en, intervention_query_en, search_query_en."
+            "condition_query_en, intervention_query_en, comparator_query_en, search_query_en."
         ),
         cohort_outbound_context={"idea_text": scrubbed_idea},
     )
@@ -788,19 +816,36 @@ def parse_research_idea_pico(idea_text: str) -> dict:
             "competing_event",
             "condition_query_en",
             "intervention_query_en",
+            "comparator_query_en",
             "search_query_en",
         ):
             val = llm_out.get(k)
             if isinstance(val, str) and val.strip():
                 merged[k] = val.strip()
+        raw_llm_comp = str(llm_out.get("comparator_query_en") or "").strip().lower()
+        if raw_llm_comp in ("", "any", "none", "unspecified", "n/a", "standard comparator") and not det_comp_en:
+            merged["comparator_query_en"] = ""
+            merged["comparator_explicit"] = False
+        else:
+            merged["comparator_explicit"] = bool(merged.get("comparator_query_en"))
         merged["assist_mode"] = "llm_assisted"
         return merged
 
     return fallback_pico
 
 
-def interpret_cohort_profile(profile: dict, user_note: str = "", *, forbidden_values: tuple[str, ...] = ()) -> dict:
-    """Interpret a privacy-safe CohortProfile into clinical domain hints & ClinicalTrials.gov search terms."""
+def interpret_cohort_profile(
+    profile: dict,
+    user_note: str = "",
+    *,
+    forbidden_values: tuple[str, ...] = (),
+    default_mapping: dict | None = None,
+    sample_id: str | None = None,
+) -> dict:
+    """Interpret a privacy-safe CohortProfile into clinical domain hints & dual-arm ClinicalTrials.gov search terms."""
+    from .rct_matcher import normalize_intervention_spec
+    from .sample_cohorts import SAMPLE_COHORT_SPECS
+
     safe_summary = sanitize_profile_for_llm(profile, user_note=user_note)
     combined_forbidden = tuple(dict.fromkeys([*forbidden_values, *extract_untrusted_Note_forbidden_tokens(user_note)]))
 
@@ -812,35 +857,96 @@ def interpret_cohort_profile(profile: dict, user_note: str = "", *, forbidden_va
                 corpus_parts.append(str(cat).replace("_", " "))
     det = _extract_deterministic_terms(" ".join(corpus_parts))
 
+    # Resolve both active (intervention) and comparator arms from sample spec, default_mapping, or candidate_treatment_columns
+    sample_spec = SAMPLE_COHORT_SPECS.get(sample_id or "") if sample_id else None
     trt_candidates = profile.get("candidate_treatment_columns", [])
-    whitelisted_arm_terms: list[str] = []
     local_display_arms: list[str] = []
     if trt_candidates:
         for cat in trt_candidates[0].get("categories", [])[:2]:
             raw_lbl = str(cat.get("value", "")).strip()
-            cnt = int(cat.get("count", 0))
             if raw_lbl:
                 local_display_arms.append(raw_lbl)
-            if is_whitelisted_clinical_category(raw_lbl, cnt):
-                whitelisted_arm_terms.append(raw_lbl.replace("_Plus_", " ").replace("_", " ").strip())
 
+    raw_active = str((default_mapping or {}).get("active_value") or "").strip()
+    raw_comp = str((default_mapping or {}).get("comparator_value") or "").strip()
+    if not raw_active and not raw_comp and len(local_display_arms) >= 2:
+        s0 = normalize_intervention_spec(local_display_arms[0])
+        s1 = normalize_intervention_spec(local_display_arms[1])
+        # Prefer standard comparator / placebo / DPP-4i / chemo as comparator when ordering 2 categories
+        if any(c in s0["drug_classes"] for c in ("placebo_soc", "dpp4i", "platinum_chemo", "vka")):
+            raw_comp, raw_active = local_display_arms[0], local_display_arms[1]
+        else:
+            raw_active, raw_comp = local_display_arms[0], local_display_arms[1]
+
+    act_spec = normalize_intervention_spec(raw_active)
+    comp_spec = normalize_intervention_spec(raw_comp)
+
+    # Handle binary 0/1 treatment columns where drug names live in the column header (e.g. `dapagliflozin_vs_sitagliptin`, `treatment_sglt2i`) or whitelisted note concepts
+    trt_col_name = str((default_mapping or {}).get("treatment_column") or (trt_candidates[0]["column"] if trt_candidates else ""))
+    if not act_spec["has_specific_agent"] and trt_col_name:
+        col_parts = re.split(r"_vs_|_versus_", trt_col_name, maxsplit=1, flags=re.IGNORECASE)
+        if len(col_parts) == 2:
+            act_spec = normalize_intervention_spec(col_parts[0])
+            comp_spec = normalize_intervention_spec(col_parts[1])
+        else:
+            col_spec = normalize_intervention_spec(trt_col_name)
+            if col_spec["has_specific_agent"]:
+                act_spec = col_spec
+
+    det_intr_en = ""
+    det_comp_en = ""
+    if sample_spec:
+        det_intr_en = str(sample_spec.get("active_intervention_en", "")).strip()
+        det_comp_en = str(sample_spec.get("comparator_intervention_en", "")).strip()
+    if not det_intr_en:
+        if act_spec["en_terms"]:
+            # Exclude shared backbone token if comparator already represents that backbone (e.g. Pembrolizumab + Platinum vs Platinum)
+            diff_terms = [t for t in act_spec["en_terms"] if t not in comp_spec["en_terms"]]
+            det_intr_en = (diff_terms or act_spec["en_terms"])[0]
+        elif det["interventions_en"]:
+            det_intr_en = det["interventions_en"][0]
+    if not det_comp_en:
+        if comp_spec["en_terms"]:
+            det_comp_en = comp_spec["en_terms"][0]
+        elif det["comparators_en"]:
+            det_comp_en = det["comparators_en"][0]
+        elif len(det["interventions_en"]) > 1:
+            det_comp_en = det["interventions_en"][1]
+
+    det_cond_en = (
+        str(sample_spec.get("condition_en", "")).strip()
+        if sample_spec and sample_spec.get("condition_en")
+        else " ".join(det["conditions_en"][:2])
+    )
     search_tokens = list(
         dict.fromkeys(
-            det["interventions_en"][:2]
-            + det["conditions_en"][:2]
-            + [t.split()[0] for t in whitelisted_arm_terms if t and t[0].isascii()][:2]
+            [p for p in (det_intr_en, det_comp_en) if p] + (det_cond_en.split()[:4] if det_cond_en else [])
         )
     )
     fallback_query = " ".join(search_tokens).strip() or "Randomized Controlled Trial"
 
+    active_disp = (
+        str(sample_spec.get("active_intervention_zh", ""))
+        if sample_spec and sample_spec.get("active_intervention_zh")
+        else (raw_active or det_intr_en)
+    )
+    comp_disp = (
+        str(sample_spec.get("comparator_intervention_zh", ""))
+        if sample_spec and sample_spec.get("comparator_intervention_zh")
+        else (raw_comp or det_comp_en)
+    )
+
     domain_summary_zh = (
         f"识别到 {'、'.join(det['conditions_zh']) or '临床观察性专病队列'} 特征；"
-        f"候选对比组包含 {' vs '.join(local_display_arms[:2]) if local_display_arms else '待指定暴露分组'}。"
+        f"候选双臂对比为 {active_disp or '试验组'} vs {comp_disp or '对照组'}。"
     )
     fallback_res = {
         "domain_summary_zh": domain_summary_zh,
-        "condition_query_en": " ".join(det["conditions_en"][:2]),
-        "intervention_query_en": " ".join(det["interventions_en"][:2]) or (whitelisted_arm_terms[0] if whitelisted_arm_terms else ""),
+        "condition_query_en": det_cond_en,
+        "intervention_query_en": det_intr_en,
+        "comparator_query_en": det_comp_en,
+        "active_arm_label": raw_active or det_intr_en,
+        "comparator_arm_label": raw_comp or det_comp_en,
         "search_query_en": fallback_query,
         "sanitized_llm_payload": safe_summary,
         "assist_mode": "deterministic_rules",
@@ -851,17 +957,24 @@ def interpret_cohort_profile(profile: dict, user_note: str = "", *, forbidden_va
             "You are a clinical biostatistician assisting Target Trial Emulation (TTE). "
             "Given ONLY whitelisted schema-level summary statistics and anonymous CATEGORY_LEVEL_* placeholders "
             "inside cohort_outbound_context (never patient rows), infer the clinical disease/drug domain in Chinese "
-            "and produce English search keywords for ClinicalTrials.gov API v2. "
-            "Return JSON with keys: domain_summary_zh, condition_query_en, intervention_query_en, search_query_en."
+            "and produce English search keywords (both active intervention and comparator) for ClinicalTrials.gov API v2. "
+            "Return JSON with keys: domain_summary_zh, condition_query_en, intervention_query_en, comparator_query_en, search_query_en."
         ),
         cohort_outbound_context=safe_summary,
         forbidden_values=combined_forbidden,
     )
     if isinstance(llm_out, dict) and llm_out.get("search_query_en"):
-        for k in ("domain_summary_zh", "condition_query_en", "intervention_query_en", "search_query_en"):
+        for k in ("domain_summary_zh", "condition_query_en", "intervention_query_en", "comparator_query_en", "search_query_en"):
             val = llm_out.get(k)
             if isinstance(val, str) and val.strip():
                 fallback_res[k] = val.strip()
+        # Lock deterministically verified cohort active & comparator drugs so LLM never drops the comparator arm
+        if det_intr_en:
+            fallback_res["intervention_query_en"] = det_intr_en
+        if det_comp_en:
+            fallback_res["comparator_query_en"] = det_comp_en
+            if det_comp_en.lower() not in fallback_res["search_query_en"].lower():
+                fallback_res["search_query_en"] = f"{det_intr_en} {det_comp_en} {fallback_res['condition_query_en']}".strip()
         fallback_res["assist_mode"] = "llm_assisted"
 
     return fallback_res
@@ -873,7 +986,7 @@ def rerank_and_explain_rcts(
     *,
     forbidden_values: tuple[str, ...] = (),
 ) -> tuple[list[dict], str]:
-    """Optionally refine candidate RCT ranking and Chinese match rationale via LLM using 3-layer separated context."""
+    """Optionally refine candidate RCT ranking and Chinese match rationale via LLM, strictly clamped by deterministic `arm_alignment_score_cap`."""
     if not candidates:
         return [], get_llm_status()["mode"]
 
@@ -887,6 +1000,7 @@ def rerank_and_explain_rcts(
             "conditions": c.get("conditions", [])[:5],
             "experimental_arms": c.get("experimental_arms", [])[:3],
             "comparator_arms": c.get("comparator_arms", [])[:3],
+            "arm_alignment_status": c.get("arm_alignment_status", "unspecified"),
             "primary_outcomes": c.get("primary_outcomes", [])[:2],
         }
         for c in candidates[:8]
@@ -896,26 +1010,55 @@ def rerank_and_explain_rcts(
             "You are a Target Trial Emulation trialist. Rank the candidate ClinicalTrials.gov RCTs in "
             "public_reference_context against the whitelisted clinical concepts in cohort_outbound_context "
             "and provide a concise Chinese match rationale for each trial. "
-            "Return JSON: {\"rankings\": [{\"nct_id\": \"NCT...\", \"score\": 0-99, \"reason_zh\": \"...\"}]}"
+            "Return JSON: {\"rankings\": [{\"nct_id\": \"NCT...\", \"match_score\": 0.0-0.99, \"reason_zh\": \"...\"}]}"
         ),
         cohort_outbound_context={"study_context": safe_context},
         public_reference_context={"candidates": compact_candidates},
         forbidden_values=forbidden_values,
     )
-    if isinstance(llm_out, dict) and isinstance(llm_out.get("rankings"), list):
-        by_nct = {str(item.get("nct_id")): item for item in llm_out["rankings"] if isinstance(item, dict)}
+    raw_rankings: list[dict] | None = None
+    if isinstance(llm_out, dict):
+        if isinstance(llm_out.get("rankings"), list):
+            raw_rankings = llm_out["rankings"]
+        elif isinstance(llm_out.get("candidates"), list):
+            raw_rankings = llm_out["candidates"]
+        elif isinstance(llm_out.get("nct_id"), str):
+            raw_rankings = [llm_out]
+
+    if raw_rankings:
+        by_nct = {str(item.get("nct_id")): item for item in raw_rankings if isinstance(item, dict) and item.get("nct_id")}
         enriched = []
         for cand in candidates:
             item = dict(cand)
+            status = str(item.get("arm_alignment_status", "unspecified"))
+            cap = float(item.get("arm_alignment_score_cap", 1.0))
             hit = by_nct.get(item["nct_id"])
             if hit:
-                if isinstance(hit.get("score"), (int, float)):
-                    item["match_score"] = max(1, min(99, int(round(float(hit["score"])))))
+                raw_sc = hit.get("match_score") if hit.get("match_score") is not None else hit.get("score")
+                if isinstance(raw_sc, (int, float)):
+                    sc_float = float(raw_sc) / 100.0 if float(raw_sc) > 1.0 else float(raw_sc)
+                    clamped_sc = round(max(0.01, min(sc_float, cap)), 2)
+                    item["match_score"] = clamped_sc
+                    item["match_score_pct"] = int(round(clamped_sc * 100))
                 if isinstance(hit.get("reason_zh"), str) and hit["reason_zh"].strip():
-                    item["match_reasons"] = [hit["reason_zh"].strip(), *item.get("match_reasons", [])[:1]]
+                    # Keep deterministic mismatch warning visible alongside LLM rationale
+                    det_first = item.get("match_reasons", [])[:1]
+                    if status in ("single_arm_or_comparator_mismatch", "class_dual_arm", "unmatched_interventions"):
+                        item["match_reasons"] = [*det_first, hit["reason_zh"].strip()]
+                    else:
+                        item["match_reasons"] = [hit["reason_zh"].strip(), *det_first]
                 item["ranking_mode"] = "llm_assisted"
+            # Deterministic hard lock: LLM can NEVER flip is_recommended=True when dual-arm alignment failed
+            item["is_recommended"] = status in ("exact_dual_arm", "single_intervention_matched", "unspecified")
             enriched.append(item)
-        enriched.sort(key=lambda x: x.get("match_score", 0), reverse=True)
+        enriched.sort(
+            key=lambda x: (
+                int(x.get("arm_alignment_rank", 2)),
+                float(x.get("match_score", 0.0)),
+                int(x.get("enrollment_count") or 0),
+            ),
+            reverse=True,
+        )
         return enriched, "llm_assisted"
 
     return candidates, "deterministic_rules"

@@ -264,6 +264,12 @@
         },
         "primary_outcome_timeframe": {
           "type": "string"
+        },
+        "arm_alignment_status": {
+          "type": "string"
+        },
+        "arm_alignment_warning": {
+          "type": "string"
         }
       }
     }

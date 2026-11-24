@@ -1,4 +1,4 @@
-"""Live ClinicalTrials.gov API v2 target RCT retrieval, relevance scoring, and explicit offline curated fallback."""
+"""Live ClinicalTrials.gov API v2 target RCT retrieval, bilingual drug/class dual-arm alignment auditing, deterministic score capping, and explicit offline curated fallback."""
 
 from __future__ import annotations
 
@@ -37,10 +37,250 @@ STUDY_FIELDS = (
     "hasResults",
 )
 
+# ---------------------------------------------------------------------------
+# Deterministic Bilingual Drug / Mechanism-Class & Condition Lexicon
+# ---------------------------------------------------------------------------
+# Tuple layout: (canonical_id, en_query_term, drug_class, zh_display, is_class_generic, aliases)
+DRUG_CLASS_LEXICON: tuple[tuple[str, str, str, str, bool, tuple[str, ...]], ...] = (
+    # SGLT2 inhibitors
+    ("dapagliflozin", "Dapagliflozin", "sglt2i", "达格列净 (Dapagliflozin)", False, ("dapagliflozin", "farxiga", "forxiga", "bms-512148", "达格列净")),
+    ("empagliflozin", "Empagliflozin", "sglt2i", "恩格列净 (Empagliflozin)", False, ("empagliflozin", "jardiance", "bi 10773", "bi-10773", "恩格列净")),
+    ("canagliflozin", "Canagliflozin", "sglt2i", "卡格列净 (Canagliflozin)", False, ("canagliflozin", "invokana", "卡格列净")),
+    ("ertugliflozin", "Ertugliflozin", "sglt2i", "埃格列净 (Ertugliflozin)", False, ("ertugliflozin", "steglatro", "埃格列净")),
+    ("sotagliflozin", "Sotagliflozin", "sglt2i", "索格列净 (Sotagliflozin)", False, ("sotagliflozin", "索格列净")),
+    ("henagliflozin", "Henagliflozin", "sglt2i", "恒格列净 (Henagliflozin)", False, ("henagliflozin", "恒格列净")),
+    ("sglt2i", "SGLT2 inhibitor", "sglt2i", "SGLT2 抑制剂", True, ("sglt2i", "sglt-2", "sglt2 inhibitor", "sglt2 inhibitors", "sglt2", "列净类")),
+    # DPP-4 inhibitors
+    ("sitagliptin", "Sitagliptin", "dpp4i", "西格列汀 (Sitagliptin)", False, ("sitagliptin", "januvia", "mk-0431", "西格列汀")),
+    ("linagliptin", "Linagliptin", "dpp4i", "利格列汀 (Linagliptin)", False, ("linagliptin", "tradjenta", "trajenta", "利格列汀")),
+    ("saxagliptin", "Saxagliptin", "dpp4i", "沙格列汀 (Saxagliptin)", False, ("saxagliptin", "onglyza", "沙格列汀")),
+    ("vildagliptin", "Vildagliptin", "dpp4i", "维格列汀 (Vildagliptin)", False, ("vildagliptin", "galvus", "维格列汀")),
+    ("alogliptin", "Alogliptin", "dpp4i", "阿格列汀 (Alogliptin)", False, ("alogliptin", "nesina", "阿格列汀")),
+    ("dpp4i", "DPP-4 inhibitor", "dpp4i", "DPP-4 抑制剂", True, ("dpp4i", "dpp-4i", "dpp4 inhibitor", "dpp-4 inhibitor", "dpp-4", "dpp4", "列汀类")),
+    # GLP-1 receptor agonists
+    ("semaglutide", "Semaglutide", "glp1ra", "司美格鲁肽 (Semaglutide)", False, ("semaglutide", "ozempic", "wegovy", "rybelsus", "司美格鲁肽", "索马鲁肽")),
+    ("liraglutide", "Liraglutide", "glp1ra", "利拉鲁肽 (Liraglutide)", False, ("liraglutide", "victoza", "利拉鲁肽")),
+    ("dulaglutide", "Dulaglutide", "glp1ra", "度拉糖肽 (Dulaglutide)", False, ("dulaglutide", "trulicity", "度拉糖肽")),
+    ("exenatide", "Exenatide", "glp1ra", "艾塞那肽 (Exenatide)", False, ("exenatide", "byetta", "艾塞那肽")),
+    ("tirzepatide", "Tirzepatide", "glp1ra", "替尔泊肽 (Tirzepatide)", False, ("tirzepatide", "mounjaro", "替尔泊肽")),
+    ("glp1ra", "GLP-1 receptor agonist", "glp1ra", "GLP-1 受体激动剂", True, ("glp1ra", "glp-1ra", "glp-1 receptor agonist", "glp-1", "glp1")),
+    # Biguanides, Insulins, Sulfonylureas, MRAs
+    ("metformin", "Metformin", "biguanide", "二甲双胍 (Metformin)", False, ("metformin", "glucophage", "二甲双胍", "双胍")),
+    ("insulin", "Insulin", "insulin", "胰岛素 (Insulin)", False, ("insulin", "glargine", "degludec", "胰岛素", "甘精胰岛素", "德谷胰岛素")),
+    ("glimepiride", "Glimepiride", "sulfonylurea", "格列美脲 (Glimepiride)", False, ("glimepiride", "格列美脲")),
+    ("gliclazide", "Gliclazide", "sulfonylurea", "格列齐特 (Gliclazide)", False, ("gliclazide", "格列齐特")),
+    ("glipizide", "Glipizide", "sulfonylurea", "格列吡嗪 (Glipizide)", False, ("glipizide", "格列吡嗪")),
+    ("sulfonylurea", "Sulfonylurea", "sulfonylurea", "磺脲类 (Sulfonylurea)", True, ("sulfonylurea", "sulfonylureas", "磺脲", "磺酰脲")),
+    ("finerenone", "Finerenone", "mra", "非奈利酮 (Finerenone)", False, ("finerenone", "kerendia", "非奈利酮")),
+    ("spironolactone", "Spironolactone", "mra", "螺内酯 (Spironolactone)", False, ("spironolactone", "螺内酯")),
+    ("eplerenone", "Eplerenone", "mra", "依普利酮 (Eplerenone)", False, ("eplerenone", "依普利酮")),
+    # Anticoagulants (DOAC vs VKA)
+    ("apixaban", "Apixaban", "doac", "阿哌沙班 (Apixaban)", False, ("apixaban", "eliquis", "阿哌沙班")),
+    ("rivaroxaban", "Rivaroxaban", "doac", "利伐沙班 (Rivaroxaban)", False, ("rivaroxaban", "xarelto", "利伐沙班")),
+    ("dabigatran", "Dabigatran", "doac", "达比加群 (Dabigatran)", False, ("dabigatran", "pradaxa", "达比加群")),
+    ("edoxaban", "Edoxaban", "doac", "艾多沙班 (Edoxaban)", False, ("edoxaban", "savaysa", "艾多沙班")),
+    ("warfarin", "Warfarin", "vka", "华法林 (Warfarin)", False, ("warfarin", "coumadin", "vitamin k antagonist", "华法林")),
+    # Oncology EGFR-TKIs
+    ("osimertinib", "Osimertinib", "egfr_tki", "奥希替尼 (Osimertinib)", False, ("osimertinib", "tagrisso", "azd9291", "奥希替尼")),
+    ("gefitinib", "Gefitinib", "egfr_tki", "吉非替尼 (Gefitinib)", False, ("gefitinib", "iressa", "吉非替尼")),
+    ("erlotinib", "Erlotinib", "egfr_tki", "厄洛替尼 (Erlotinib)", False, ("erlotinib", "tarceva", "厄洛替尼")),
+    ("afatinib", "Afatinib", "egfr_tki", "阿法替尼 (Afatinib)", False, ("afatinib", "gilotrif", "阿法替尼")),
+    ("aumolertinib", "Aumolertinib", "egfr_tki", "阿美替尼 (Aumolertinib)", False, ("aumolertinib", "almonertinib", "阿美替尼")),
+    ("furmonertinib", "Furmonertinib", "egfr_tki", "伏美替尼 (Furmonertinib)", False, ("furmonertinib", "伏美替尼")),
+    # Oncology PD-1 / PD-L1 immune checkpoint inhibitors
+    ("pembrolizumab", "Pembrolizumab", "pd1_pdl1", "帕博利珠单抗 (Pembrolizumab)", False, ("pembrolizumab", "keytruda", "mk-3475", "帕博利珠单抗")),
+    ("nivolumab", "Nivolumab", "pd1_pdl1", "纳武利尤单抗 (Nivolumab)", False, ("nivolumab", "opdivo", "纳武利尤单抗")),
+    ("atezolizumab", "Atezolizumab", "pd1_pdl1", "阿替利珠单抗 (Atezolizumab)", False, ("atezolizumab", "tecentriq", "阿替利珠单抗")),
+    ("durvalumab", "Durvalumab", "pd1_pdl1", "度伐利尤单抗 (Durvalumab)", False, ("durvalumab", "imfinzi", "度伐利尤单抗")),
+    ("sintilimab", "Sintilimab", "pd1_pdl1", "信迪利单抗 (Sintilimab)", False, ("sintilimab", "信迪利单抗")),
+    ("tislelizumab", "Tislelizumab", "pd1_pdl1", "替雷利珠单抗 (Tislelizumab)", False, ("tislelizumab", "替雷利珠单抗")),
+    # Cytotoxic chemotherapy
+    (
+        "platinum_chemo",
+        "Platinum Chemotherapy",
+        "platinum_chemo",
+        "含铂化疗 (Platinum Chemotherapy)",
+        False,
+        (
+            "platinum",
+            "carboplatin",
+            "cisplatin",
+            "pemetrexed",
+            "paclitaxel",
+            "nab-paclitaxel",
+            "chemotherapy",
+            "chemo",
+            "doublet",
+            "含铂",
+            "双药化疗",
+            "含铂双药",
+            "铂类",
+            "卡铂",
+            "顺铂",
+            "培美曲塞",
+            "紫杉醇",
+            "化疗",
+        ),
+    ),
+    # Placebo / Standard of Care
+    (
+        "placebo_soc",
+        "Placebo",
+        "placebo_soc",
+        "安慰剂 / 标准治疗 (Placebo / SoC)",
+        False,
+        (
+            "placebo",
+            "standard of care",
+            "standard care",
+            "usual care",
+            "matching placebo",
+            "saline placebo",
+            "安慰剂",
+            "标准治疗",
+            "常规治疗",
+        ),
+    ),
+)
+
+CONDITION_BILINGUAL_MAP: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("2型糖尿病", "二型糖尿病", "糖尿病", "type 2 diabetes", "t2dm", "diabetes"), "Type 2 Diabetes"),
+    (("心力衰竭", "心衰", "heart failure", "hfref", "hfpef"), "Heart Failure"),
+    (("慢性肾脏病", "慢性肾病", "糖尿病肾病", "chronic kidney disease", "diabetic kidney", "ckd"), "Chronic Kidney Disease"),
+    (("非小细胞肺癌", "肺癌", "non-small cell lung cancer", "nsclc", "lung cancer"), "Non-Small Cell Lung Cancer"),
+    (("乳腺癌", "breast cancer"), "Breast Cancer"),
+    (("心房颤动", "房颤", "atrial fibrillation", "afib"), "Atrial Fibrillation"),
+    (("脓毒症", "重症感染", "sepsis"), "Sepsis"),
+    (("脑卒中", "卒中", "stroke"), "Stroke"),
+)
+
+GENERIC_ARM_PLACEHOLDERS = frozenset(
+    {
+        "",
+        "0",
+        "1",
+        "yes",
+        "no",
+        "true",
+        "false",
+        "active",
+        "control",
+        "comparator",
+        "reference",
+        "experimental",
+        "any",
+        "unspecified",
+        "none",
+        "arm_0",
+        "arm_1",
+        "arm_comparator",
+        "arm_active",
+        "试验组",
+        "对照组",
+        "试验暴露策略（active arm）",
+        "阳性对照或标准治疗（comparator arm）",
+    }
+)
+
+GENERIC_DRUG_STOPWORDS = frozenset(
+    {
+        "drug",
+        "biological",
+        "active",
+        "comparator",
+        "experimental",
+        "control",
+        "reference",
+        "arm",
+        "group",
+        "plus",
+        "with",
+        "without",
+        "once",
+        "twice",
+        "daily",
+        "oral",
+        "dose",
+        "adjusted",
+        "matching",
+        "saline",
+        "therapy",
+        "treatment",
+        "regimen",
+        "initiated",
+        "first",
+        "line",
+        "tablet",
+        "tablets",
+        "injection",
+        "infusion",
+        "participants",
+        "patients",
+        "subjects",
+        "study",
+        "trial",
+        "randomized",
+        "inhibitor",
+        "inhibitors",
+        "agonist",
+        "versus",
+        "target",
+    }
+)
+
+ALIGNMENT_SCORE_CAPS: dict[str, float] = {
+    "exact_dual_arm": 1.0,
+    "single_intervention_matched": 1.0,
+    "class_dual_arm": 0.72,
+    "single_arm_or_comparator_mismatch": 0.45,
+    "unmatched_interventions": 0.25,
+    "unspecified": 1.0,
+}
+
+ALIGNMENT_RANKS: dict[str, int] = {
+    "exact_dual_arm": 4,
+    "single_intervention_matched": 4,
+    "class_dual_arm": 3,
+    "single_arm_or_comparator_mismatch": 2,
+    "unmatched_interventions": 1,
+    "unspecified": 2,
+}
+
 
 # Representative public RCT metadata catalog used ONLY when ClinicalTrials.gov is unreachable/offline.
 # Every entry returned from this catalog is explicitly labeled source="offline_curated_catalog_fallback".
 OFFLINE_CURATED_RCTS: tuple[dict, ...] = (
+    {
+        "nct_id": "NCT01095653",
+        "brief_title": "Efficacy and Safety of Dapagliflozin Added to Metformin Compared With Sitagliptin Added to Metformin in Patients With Type 2 Diabetes Mellitus",
+        "official_title": "A 24-Week With a 24-Week Extension, Multicenter, Randomized, Double-Blind, Active-Controlled Phase III Study to Evaluate Dapagliflozin Versus Sitagliptin in Type 2 Diabetes",
+        "phases": ["PHASE3"],
+        "overall_status": "COMPLETED",
+        "enrollment_count": 1450,
+        "allocation": "RANDOMIZED",
+        "conditions": ["Type 2 Diabetes Mellitus", "Cardiorenal Metabolic Risk"],
+        "experimental_arms": ["Dapagliflozin 10 mg once daily (+ background Metformin)"],
+        "comparator_arms": ["Sitagliptin 100 mg once daily (+ background Metformin)"],
+        "interventions": ["Drug: Dapagliflozin", "Drug: Sitagliptin"],
+        "eligibility_summary": {
+            "min_age": "18 Years",
+            "max_age": "N/A",
+            "sex": "ALL",
+            "highlights": [
+                "确诊 2 型糖尿病成人患者（年龄 ≥ 18 岁）",
+                "头对头随机双盲比较达格列净（SGLT2i）对比西格列汀（DPP-4i）主动阳性对照",
+                "排除基线重度肾功能衰竭或 1 型糖尿病患者",
+            ],
+        },
+        "primary_outcomes": [
+            {
+                "measure": "Glycemic & Cardiorenal Metabolic Composite Progression Over Active-Controlled Follow-up",
+                "timeFrame": "Up to 48 weeks (approximately 12 months)",
+            }
+        ],
+        "parsed_horizon_days": [90.0, 180.0, 365.0],
+        "parsed_admin_end_day": 540.0,
+    },
     {
         "nct_id": "NCT03036124",
         "brief_title": "Study to Evaluate the Effect of Dapagliflozin on the Incidence of Worsening Heart Failure or Cardiovascular Death in Patients With Chronic Heart Failure (DAPA-HF)",
@@ -82,7 +322,7 @@ OFFLINE_CURATED_RCTS: tuple[dict, ...] = (
         "allocation": "RANDOMIZED",
         "conditions": ["Type 2 Diabetes", "Cardiovascular Risk", "Heart Failure"],
         "experimental_arms": ["Dapagliflozin 10 mg daily"],
-        "comparator_arms": ["Comparator Glucose-Lowering Therapy (incl. DPP-4i / Standard Care)"],
+        "comparator_arms": ["Matching Placebo + Standard Care"],
         "interventions": ["Drug: Dapagliflozin", "Drug: Placebo"],
         "eligibility_summary": {
             "min_age": "40 Years",
@@ -262,6 +502,403 @@ def urlopen_ctgov(request: Request, timeout: float):
     return _std_urlopen(request, timeout=timeout)
 
 
+def normalize_intervention_spec(raw_text: str) -> dict:
+    """Normalize an English/Chinese drug or regimen label into canonical drug IDs, classes, and English search terms."""
+    cleaned = (raw_text or "").strip()
+    if not cleaned or cleaned.lower() in GENERIC_ARM_PLACEHOLDERS:
+        return {
+            "raw": cleaned,
+            "has_specific_agent": False,
+            "drug_ids": set(),
+            "class_only_ids": set(),
+            "drug_classes": set(),
+            "en_terms": [],
+            "display_label": cleaned or "未指定",
+        }
+
+    norm_space = re.sub(r"[_/+]+", " ", cleaned.lower())
+    matched_drugs: set[str] = set()
+    matched_class_only: set[str] = set()
+    matched_classes: set[str] = set()
+    en_terms: list[str] = []
+    zh_displays: list[str] = []
+
+    for cid, en_q, dclass, zh_disp, is_cls_generic, aliases in DRUG_CLASS_LEXICON:
+        hit = False
+        for alias in aliases:
+            al = alias.lower()
+            if al.isascii() and al.replace("-", "").replace(" ", "").isalpha() and len(al) <= 5:
+                if re.search(rf"(?<![a-z0-9]){re.escape(al)}(?![a-z0-9])", norm_space):
+                    hit = True
+                    break
+            elif al in norm_space or al in cleaned.lower():
+                hit = True
+                break
+        if hit:
+            if is_cls_generic:
+                matched_class_only.add(cid)
+            else:
+                matched_drugs.add(cid)
+            matched_classes.add(dclass)
+            if en_q not in en_terms:
+                en_terms.append(en_q)
+            if zh_disp not in zh_displays:
+                zh_displays.append(zh_disp)
+
+    # Remove generic class-only marker if a specific drug in that same class was already matched
+    if matched_drugs:
+        specific_classes = {
+            dclass for cid, _, dclass, _, is_gen, _ in DRUG_CLASS_LEXICON if not is_cls_generic_id(cid) and cid in matched_drugs
+        }
+        matched_class_only = {c for c in matched_class_only if c not in specific_classes}
+
+    # Generic fallback token extraction for unlisted drugs (e.g., 'sacubitril', 'trastuzumab', 'lapatinib')
+    known_alias_words = {
+        w
+        for _, _, _, _, _, aliases in DRUG_CLASS_LEXICON
+        for a in aliases
+        for w in re.findall(r"[a-z0-9]{3,}", a.lower())
+    }
+    for tok in re.findall(r"[A-Za-z][A-Za-z0-9]{3,24}", norm_space):
+        tl = tok.lower()
+        if tl in GENERIC_DRUG_STOPWORDS or tl in GENERIC_ARM_PLACEHOLDERS or tl in known_alias_words:
+            continue
+        if re.fullmatch(r"\d+(?:mg|mcg|ug|ml|kg|hr|day|wk|mo)", tl):
+            continue
+        matched_drugs.add(f"token:{tl}")
+        matched_classes.add(f"token_class:{tl}")
+        if tok not in en_terms:
+            en_terms.append(tok)
+
+    has_agent = bool(matched_drugs or matched_class_only)
+    display = zh_displays[0] if len(zh_displays) == 1 else (cleaned[:60] if cleaned else "未指定")
+    return {
+        "raw": cleaned,
+        "has_specific_agent": has_agent,
+        "drug_ids": matched_drugs,
+        "class_only_ids": matched_class_only,
+        "drug_classes": matched_classes,
+        "en_terms": en_terms,
+        "display_label": display,
+    }
+
+
+def is_cls_generic_id(cid: str) -> bool:
+    for item_cid, _, _, _, is_gen, _ in DRUG_CLASS_LEXICON:
+        if item_cid == cid:
+            return is_gen
+    return False
+
+
+def translate_condition_to_english(raw_cond: str) -> str:
+    """Translate Chinese/mixed condition descriptions into concise English ClinicalTrials.gov query terms."""
+    text = (raw_cond or "").strip()
+    if not text:
+        return ""
+    lower = text.lower()
+    out_en: list[str] = []
+    for triggers, en_cond in CONDITION_BILINGUAL_MAP:
+        if any(t in lower for t in triggers) and en_cond not in out_en:
+            out_en.append(en_cond)
+    for ascii_phrase in re.findall(r"[A-Za-z][A-Za-z0-9\s-]{2,40}", text):
+        cl = ascii_phrase.strip()
+        if cl and cl.lower() not in {x.lower() for x in out_en}:
+            out_en.append(cl)
+    return " ".join(out_en[:2]).strip()
+
+
+def translate_query_to_english(raw_query: str) -> str:
+    """Ensure Chinese drug/condition keywords in free-text queries are translated to English for ClinicalTrials.gov API v2."""
+    text = (raw_query or "").strip()
+    if not text:
+        return ""
+    intr_spec = normalize_intervention_spec(text)
+    cond_en = translate_condition_to_english(text)
+    ascii_words = [
+        w
+        for w in re.findall(r"[A-Za-z0-9][A-Za-z0-9-]{2,24}", text)
+        if w.lower() not in {"and", "the", "for", "with", "versus"}
+    ]
+    parts: list[str] = []
+    for item in [*intr_spec["en_terms"], *(cond_en.split() if cond_en else []), *ascii_words]:
+        if item and item.lower() not in {p.lower() for p in parts}:
+            parts.append(item)
+    return " ".join(parts[:8]).strip()
+
+
+def _extract_study_arm_specs(study: dict) -> tuple[list[dict], str]:
+    """Build per-arm normalized drug/class specs from `arm_groups_detail`, `experimental_arms`, `comparator_arms`, or `interventions`."""
+    arm_texts: list[str] = []
+    arm_labels: list[str] = []
+    details = study.get("arm_groups_detail")
+    if isinstance(details, list) and len(details) >= 2:
+        for d in details:
+            if isinstance(d, dict):
+                lbl = str(d.get("label", "")).strip()
+                inames = " ".join(str(x) for x in (d.get("intervention_names") or []))
+                desc = str(d.get("description", "")).strip()
+                combined = " ".join(p for p in (lbl, inames, desc) if p)
+                if combined:
+                    arm_texts.append(combined)
+                    arm_labels.append(lbl or inames or "Arm")
+    else:
+        for lbl in study.get("experimental_arms") or []:
+            if str(lbl).strip():
+                arm_texts.append(str(lbl).strip())
+                arm_labels.append(str(lbl).strip())
+        for lbl in study.get("comparator_arms") or []:
+            if str(lbl).strip():
+                arm_texts.append(str(lbl).strip())
+                arm_labels.append(str(lbl).strip())
+
+    # Sparse record fallback: if fewer than 2 distinct arm texts, check study-level interventions list
+    if len(arm_texts) < 2:
+        for intr in study.get("interventions") or []:
+            clean_intr = str(intr).split(": ", 1)[-1].strip()
+            if clean_intr and clean_intr not in arm_texts:
+                arm_texts.append(clean_intr)
+                arm_labels.append(clean_intr)
+
+    specs = [normalize_intervention_spec(t) for t in arm_texts]
+    exp_disp = " / ".join((study.get("experimental_arms") or arm_labels[:1] or ["未注明"])[:2])
+    comp_disp = " / ".join((study.get("comparator_arms") or arm_labels[1:2] or ["未注明"])[:2])
+    summary_str = f"{exp_disp} vs {comp_disp}"
+    return specs, summary_str
+
+
+def _arm_matches_exact_target(arm_spec: dict, target_drugs: set[str], target_class_only: set[str], target_classes: set[str]) -> bool:
+    if target_drugs:
+        return bool(arm_spec["drug_ids"] & target_drugs)
+    if target_class_only:
+        return bool(arm_spec["drug_classes"] & target_classes)
+    return False
+
+
+def audit_study_arm_alignment(
+    study: dict,
+    *,
+    intervention: str = "",
+    comparator: str = "",
+) -> dict:
+    """Deterministically verify whether a candidate RCT's distinct arms match target `intervention` and `comparator`."""
+    t_spec = normalize_intervention_spec(intervention)
+    c_spec = normalize_intervention_spec(comparator)
+    arm_specs, trial_arms_summary = _extract_study_arm_specs(study)
+
+    pooled_drugs: set[str] = set()
+    pooled_classes: set[str] = set()
+    for a in arm_specs:
+        pooled_drugs |= a["drug_ids"]
+        pooled_classes |= a["drug_classes"]
+    for intr_raw in study.get("interventions") or []:
+        ispec = normalize_intervention_spec(str(intr_raw).split(": ", 1)[-1])
+        pooled_drugs |= ispec["drug_ids"]
+        pooled_classes |= ispec["drug_classes"]
+
+    # Case A: Neither intervention nor comparator specifies a concrete drug/class
+    if not t_spec["has_specific_agent"] and not c_spec["has_specific_agent"]:
+        return {
+            "arm_alignment_status": "unspecified",
+            "arm_alignment_rank": ALIGNMENT_RANKS["unspecified"],
+            "arm_alignment_score_cap": 1.0,
+            "arm_alignment_label": "未限定双臂药物 · 参考框架",
+            "arm_alignment_detail": f"该试验分组为「{trial_arms_summary}」。",
+            "expected_arms_summary": "未指定特定药物",
+            "trial_arms_summary": trial_arms_summary,
+            "requires_mismatch_confirmation": False,
+            "is_recommended": True,
+        }
+
+    # Case B: Single-intervention mode (idea mode without explicit comparator)
+    if t_spec["has_specific_agent"] and not c_spec["has_specific_agent"]:
+        exact_or_class_hit = any(
+            _arm_matches_exact_target(a, t_spec["drug_ids"], t_spec["class_only_ids"], t_spec["drug_classes"])
+            for a in arm_specs
+        ) or bool((t_spec["drug_ids"] & pooled_drugs) or (t_spec["class_only_ids"] and (t_spec["drug_classes"] & pooled_classes)))
+        if exact_or_class_hit:
+            return {
+                "arm_alignment_status": "single_intervention_matched",
+                "arm_alignment_rank": ALIGNMENT_RANKS["single_intervention_matched"],
+                "arm_alignment_score_cap": ALIGNMENT_SCORE_CAPS["single_intervention_matched"],
+                "arm_alignment_label": "单臂干预匹配 · 推荐参考",
+                "arm_alignment_detail": f"已匹配目标干预「{t_spec['display_label']}」；试验实际分组：{trial_arms_summary}。",
+                "expected_arms_summary": f"{t_spec['display_label']}（未限定对照）",
+                "trial_arms_summary": trial_arms_summary,
+                "requires_mismatch_confirmation": False,
+                "is_recommended": True,
+            }
+        return {
+            "arm_alignment_status": "unmatched_interventions",
+            "arm_alignment_rank": ALIGNMENT_RANKS["unmatched_interventions"],
+            "arm_alignment_score_cap": ALIGNMENT_SCORE_CAPS["unmatched_interventions"],
+            "arm_alignment_label": "对照不一致 · 仅供参考",
+            "arm_alignment_detail": f"当前研究目标干预为「{t_spec['display_label']}」，而该试验分组为「{trial_arms_summary}」，未匹配目标干预。",
+            "expected_arms_summary": t_spec["display_label"],
+            "trial_arms_summary": trial_arms_summary,
+            "requires_mismatch_confirmation": True,
+            "is_recommended": False,
+        }
+
+    # Case C: Dual-arm contrast specified (both `intervention` and `comparator` known)
+    expected_summary = f"{t_spec['display_label']} vs {c_spec['display_label']}"
+    # Handle add-on regimens like 'Pembrolizumab + Platinum Chemo' vs 'Platinum Chemo'
+    t_core_drugs = (t_spec["drug_ids"] - c_spec["drug_ids"]) or set(t_spec["drug_ids"])
+    c_core_drugs = (c_spec["drug_ids"] - t_core_drugs) or set(c_spec["drug_ids"])
+    t_core_classes = (t_spec["drug_classes"] - c_spec["drug_classes"]) or set(t_spec["drug_classes"])
+    c_core_classes = (c_spec["drug_classes"] - t_core_classes) or set(c_spec["drug_classes"])
+
+    # 1. Check `exact_dual_arm` across distinct arms (i != j)
+    exact_dual = False
+    for i, arm_i in enumerate(arm_specs):
+        if not _arm_matches_exact_target(arm_i, t_core_drugs, t_spec["class_only_ids"], t_core_classes):
+            continue
+        for j, arm_j in enumerate(arm_specs):
+            if i == j:
+                continue
+            # Distinct comparator arm must match comparator AND must not carry the distinguishing active drug
+            if _arm_matches_exact_target(arm_j, c_core_drugs, c_spec["class_only_ids"], c_core_classes):
+                if not (t_core_drugs and (arm_j["drug_ids"] & t_core_drugs) and not (c_spec["drug_ids"] & t_core_drugs)):
+                    exact_dual = True
+                    break
+        if exact_dual:
+            break
+
+    if exact_dual:
+        return {
+            "arm_alignment_status": "exact_dual_arm",
+            "arm_alignment_rank": ALIGNMENT_RANKS["exact_dual_arm"],
+            "arm_alignment_score_cap": ALIGNMENT_SCORE_CAPS["exact_dual_arm"],
+            "arm_alignment_label": "双臂干预一致 · 推荐对标",
+            "arm_alignment_detail": f"双臂干预严格对齐：当前研究「{expected_summary}」与该试验分组「{trial_arms_summary}」一致。",
+            "expected_arms_summary": expected_summary,
+            "trial_arms_summary": trial_arms_summary,
+            "requires_mismatch_confirmation": False,
+            "is_recommended": True,
+        }
+
+    # 2. Check `class_dual_arm`: two DISTINCT drug classes matched across two DISTINCT arms (never SGLT2i vs SGLT2i for SGLT2i vs DPP-4i!)
+    distinct_target_classes = bool(t_spec["drug_classes"] and c_spec["drug_classes"] and (t_spec["drug_classes"] != c_spec["drug_classes"]))
+    class_dual = False
+    if distinct_target_classes:
+        t_only_cls = t_spec["drug_classes"] - c_spec["drug_classes"]
+        c_only_cls = c_spec["drug_classes"] - t_spec["drug_classes"]
+        if t_only_cls and c_only_cls:
+            for i, arm_i in enumerate(arm_specs):
+                if not (arm_i["drug_classes"] & t_only_cls):
+                    continue
+                for j, arm_j in enumerate(arm_specs):
+                    if i == j:
+                        continue
+                    if (arm_j["drug_classes"] & c_only_cls) and not (arm_j["drug_classes"] & t_only_cls):
+                        class_dual = True
+                        break
+                if class_dual:
+                    break
+
+    if class_dual:
+        return {
+            "arm_alignment_status": "class_dual_arm",
+            "arm_alignment_rank": ALIGNMENT_RANKS["class_dual_arm"],
+            "arm_alignment_score_cap": ALIGNMENT_SCORE_CAPS["class_dual_arm"],
+            "arm_alignment_label": "同机制类别参考 · 需确认",
+            "arm_alignment_detail": (
+                f"当前研究对比「{expected_summary}」，该试验分组为「{trial_arms_summary}」："
+                "两臂同属对应药理机制类别但具体通用名不同，选为参考方案前需显式确认。"
+            ),
+            "expected_arms_summary": expected_summary,
+            "trial_arms_summary": trial_arms_summary,
+            "requires_mismatch_confirmation": True,
+            "is_recommended": False,
+        }
+
+    # 3. Check `single_arm_or_comparator_mismatch` vs `unmatched_interventions`
+    any_drug_or_class_overlap = bool(
+        (t_spec["drug_ids"] & pooled_drugs)
+        or (c_spec["drug_ids"] & pooled_drugs)
+        or (t_spec["drug_classes"] & pooled_classes)
+        or (c_spec["drug_classes"] & pooled_classes)
+    )
+    if any_drug_or_class_overlap:
+        return {
+            "arm_alignment_status": "single_arm_or_comparator_mismatch",
+            "arm_alignment_rank": ALIGNMENT_RANKS["single_arm_or_comparator_mismatch"],
+            "arm_alignment_score_cap": ALIGNMENT_SCORE_CAPS["single_arm_or_comparator_mismatch"],
+            "arm_alignment_label": "对照不一致 · 仅供参考",
+            "arm_alignment_detail": (
+                f"当前研究对比「{expected_summary}」，而该注册试验实际分组为「{trial_arms_summary}」"
+                "（缺少目标对照臂或系同类药内部互比，绝不可作为直接双臂疗效对标，仅可借用纳排标准与随访时间窗框架）。"
+            ),
+            "expected_arms_summary": expected_summary,
+            "trial_arms_summary": trial_arms_summary,
+            "requires_mismatch_confirmation": True,
+            "is_recommended": False,
+        }
+
+    return {
+        "arm_alignment_status": "unmatched_interventions",
+        "arm_alignment_rank": ALIGNMENT_RANKS["unmatched_interventions"],
+        "arm_alignment_score_cap": ALIGNMENT_SCORE_CAPS["unmatched_interventions"],
+        "arm_alignment_label": "对照不一致 · 仅供参考",
+        "arm_alignment_detail": (
+            f"当前研究对比「{expected_summary}」，而该注册试验实际分组为「{trial_arms_summary}」，两臂干预均不一致。"
+        ),
+        "expected_arms_summary": expected_summary,
+        "trial_arms_summary": trial_arms_summary,
+        "requires_mismatch_confirmation": True,
+        "is_recommended": False,
+    }
+
+
+def verify_and_enrich_target_rct(
+    target_rct: dict | None,
+    *,
+    intervention: str = "",
+    comparator: str = "",
+    confirm_arm_mismatch: bool = False,
+) -> dict | None:
+    """Fail-closed server-side alignment gate before drafting or launching a TTE run against `target_rct`.
+
+    Raises `ContractError("ARM_MISMATCH_CONFIRMATION_REQUIRED", ...)` (mapped to HTTP 422) whenever both
+    `intervention` and `comparator` are known, `arm_alignment_status != "exact_dual_arm"`, and
+    `confirm_arm_mismatch` is not explicitly True.
+    """
+    if not target_rct or not isinstance(target_rct, dict) or not target_rct.get("nct_id"):
+        return target_rct
+
+    audit = audit_study_arm_alignment(target_rct, intervention=intervention, comparator=comparator)
+    status = audit["arm_alignment_status"]
+    enriched = {
+        **target_rct,
+        **audit,
+    }
+    if "match_score" in enriched and isinstance(enriched["match_score"], (int, float)):
+        raw_sc = float(enriched["match_score"])
+        norm_sc = raw_sc / 100.0 if raw_sc > 1.0 else raw_sc
+        enriched["match_score"] = round(min(norm_sc, audit["arm_alignment_score_cap"]), 2)
+        enriched["match_score_pct"] = int(round(enriched["match_score"] * 100))
+
+    if audit["requires_mismatch_confirmation"]:
+        if not bool(confirm_arm_mismatch):
+            raise ContractError(
+                "ARM_MISMATCH_CONFIRMATION_REQUIRED",
+                (
+                    f"目标 RCT（{target_rct['nct_id']}）分组与当前研究双臂不一致（status={status}）："
+                    f"当前研究对比 [{audit['expected_arms_summary']}]，而 {target_rct['nct_id']} 实际分组为 "
+                    f"[{audit['trial_arms_summary']}]。Target RCT arms do not match study treatment vs comparator; "
+                    "pass confirm_arm_mismatch=true only if intentionally borrowing eligibility/follow-up structure."
+                ),
+            )
+        enriched["arm_alignment_warning"] = (
+            f"对照臂不一致参考声明（研究者已显式确认 confirm_arm_mismatch=true）：当前研究对比「{audit['expected_arms_summary']}」，"
+            f"所引用的注册试验 {target_rct['nct_id']} 实际分组为「{audit['trial_arms_summary']}」"
+            f"（arm_alignment_status={status}），仅借用其基线纳排与终点随访时间窗作为方案框架，不代表两项研究干预对照相同。"
+        )
+    else:
+        enriched["arm_alignment_warning"] = ""
+
+    return enriched
+
+
 def parse_timeframe_to_horizons(timeframe_text: str) -> tuple[list[float], float]:
     """Convert ClinicalTrials.gov primary outcome TimeFrame string into (horizon_days, admin_end_day)."""
     text = (timeframe_text or "").lower()
@@ -338,19 +975,37 @@ def _normalize_api_study(study: dict, *, source: str = "clinicaltrials_gov_api_v
     exp_arms: list[str] = []
     comp_arms: list[str] = []
     other_arms: list[str] = []
+    arm_groups_detail: list[dict] = []
     for arm in arms_mod.get("armGroups") or []:
         if not isinstance(arm, dict):
             continue
         label = str(arm.get("label", "")).strip()
         atype = str(arm.get("type", "")).upper()
-        if not label:
+        desc = str(arm.get("description", "")).strip()
+        inames = [str(x).strip() for x in (arm.get("interventionNames") or []) if str(x).strip()]
+        if not label and not inames:
             continue
+        disp = label
+        if inames:
+            clean_inames = ", ".join(x.split(": ", 1)[-1] for x in inames)
+            if not disp:
+                disp = clean_inames
+            elif clean_inames.lower() not in disp.lower():
+                disp = f"{disp} ({clean_inames})"
+        arm_groups_detail.append(
+            {
+                "label": disp,
+                "type": atype,
+                "description": desc[:240],
+                "intervention_names": inames,
+            }
+        )
         if "EXPERIMENTAL" in atype:
-            exp_arms.append(label)
+            exp_arms.append(disp)
         elif any(k in atype for k in ("ACTIVE_COMPARATOR", "PLACEBO_COMPARATOR", "SHAM_COMPARATOR", "NO_INTERVENTION")):
-            comp_arms.append(label)
+            comp_arms.append(disp)
         else:
-            other_arms.append(label)
+            other_arms.append(disp)
 
     interventions = []
     for intr in arms_mod.get("interventions") or []:
@@ -362,6 +1017,10 @@ def _normalize_api_study(study: dict, *, source: str = "clinicaltrials_gov_api_v
         exp_arms.append(other_arms[0])
     if not comp_arms and len(other_arms) >= 2:
         comp_arms.append(other_arms[1])
+    elif not exp_arms and len(comp_arms) >= 2:
+        # Handle two ACTIVE_COMPARATOR arms (e.g. head-to-head active comparator trials like NCT06642272!)
+        exp_arms = [comp_arms[0]]
+        comp_arms = comp_arms[1:]
     if not exp_arms and interventions:
         exp_arms.append(interventions[0].split(": ", 1)[-1])
     if not comp_arms:
@@ -395,6 +1054,7 @@ def _normalize_api_study(study: dict, *, source: str = "clinicaltrials_gov_api_v
         "conditions": conditions,
         "experimental_arms": exp_arms,
         "comparator_arms": comp_arms,
+        "arm_groups_detail": arm_groups_detail,
         "interventions": interventions,
         "eligibility_summary": {
             "min_age": str(elig_mod.get("minimumAge", "18 Years")),
@@ -411,9 +1071,18 @@ def _normalize_api_study(study: dict, *, source: str = "clinicaltrials_gov_api_v
     }
 
 
-def _score_study_deterministic(study: dict, query_tokens: list[str]) -> tuple[int, list[str]]:
+def _score_and_audit_study(
+    study: dict,
+    query_tokens: list[str],
+    *,
+    intervention: str = "",
+    comparator: str = "",
+) -> dict:
+    """Compute deterministic relevance score in [0.01, 0.99], audit dual-arm alignment, and apply hard score cap."""
     haystack_title = f"{study['brief_title']} {study['official_title']}".lower()
-    haystack_arms = " ".join(study.get("experimental_arms", []) + study.get("comparator_arms", []) + study.get("interventions", [])).lower()
+    haystack_arms = " ".join(
+        study.get("experimental_arms", []) + study.get("comparator_arms", []) + study.get("interventions", [])
+    ).lower()
     haystack_cond = " ".join(study.get("conditions", [])).lower()
     haystack_out = " ".join(po.get("measure", "") for po in study.get("primary_outcomes", [])).lower()
 
@@ -447,17 +1116,59 @@ def _score_study_deterministic(study: dict, query_tokens: list[str]) -> tuple[in
     if "RANDOMIZED" in str(study.get("allocation", "")).upper():
         raw_pts += 5
 
-    score = max(35, min(98, 42 + int(round(raw_pts * 0.52))))
-    reasons: list[str] = []
+    audit = audit_study_arm_alignment(study, intervention=intervention, comparator=comparator)
+    if audit["arm_alignment_status"] == "exact_dual_arm":
+        raw_pts += 22
+    elif audit["arm_alignment_status"] == "class_dual_arm":
+        raw_pts += 6
+
+    uncapped_score = min(0.98, max(0.20, (42 + raw_pts * 0.52) / 100.0))
+    capped_score = round(min(uncapped_score, float(audit["arm_alignment_score_cap"])), 2)
+
+    reasons: list[str] = [audit["arm_alignment_detail"]]
     if matched_arms:
-        reasons.append(f"试验干预/对照臂直接命中关键词（{', '.join(dict.fromkeys(matched_arms[:3]))}）")
+        reasons.append(f"试验干预/对照文本命中关键词（{', '.join(dict.fromkeys(matched_arms[:3]))}）")
     if matched_conds:
         reasons.append(f"目标适应证/疾病人群匹配（{', '.join(dict.fromkeys(matched_conds[:3]))}）")
-    exp_preview = study["experimental_arms"][0] if study.get("experimental_arms") else "试验组"
-    comp_preview = study["comparator_arms"][0] if study.get("comparator_arms") else "对照组"
     tf_preview = study["primary_outcomes"][0]["timeFrame"] if study.get("primary_outcomes") else "未注明"
-    reasons.append(f"随机双臂对照结构清晰（{exp_preview} vs {comp_preview}），主要终点随访窗：{tf_preview}")
-    return score, reasons
+    reasons.append(f"主要终点随访窗：{tf_preview}")
+
+    return {
+        **study,
+        **audit,
+        "match_score": capped_score,
+        "match_score_pct": int(round(capped_score * 100)),
+        "match_reasons": reasons,
+        "ranking_mode": "deterministic_rules",
+    }
+
+
+def _enforce_alignment_caps_and_sort(candidates: list[dict]) -> list[dict]:
+    """Post-LLM deterministic guardrail: clamp `match_score <= arm_alignment_score_cap`, lock `is_recommended`, and sort by alignment rank first."""
+    out: list[dict] = []
+    for cand in candidates:
+        item = dict(cand)
+        status = str(item.get("arm_alignment_status", "unspecified"))
+        cap = float(item.get("arm_alignment_score_cap", ALIGNMENT_SCORE_CAPS.get(status, 1.0)))
+        raw_sc = float(item.get("match_score", 0.5))
+        norm_sc = raw_sc / 100.0 if raw_sc > 1.0 else raw_sc
+        clamped = round(max(0.01, min(norm_sc, cap)), 2)
+        item["match_score"] = clamped
+        item["match_score_pct"] = int(round(clamped * 100))
+        item["arm_alignment_score_cap"] = cap
+        item["arm_alignment_rank"] = int(item.get("arm_alignment_rank", ALIGNMENT_RANKS.get(status, 2)))
+        item["is_recommended"] = status in ("exact_dual_arm", "single_intervention_matched", "unspecified")
+        out.append(item)
+
+    out.sort(
+        key=lambda c: (
+            int(c.get("arm_alignment_rank", 0)),
+            float(c.get("match_score", 0.0)),
+            int(c.get("enrollment_count") or 0),
+        ),
+        reverse=True,
+    )
+    return out
 
 
 def fetch_rct_by_nct(nct_id: str, *, timeout: float = DEFAULT_CT_TIMEOUT) -> dict:
@@ -476,7 +1187,9 @@ def fetch_rct_by_nct(nct_id: str, *, timeout: float = DEFAULT_CT_TIMEOUT) -> dic
                 data = json.loads(raw.decode("utf-8"))
                 if isinstance(data, dict) and "protocolSection" in data:
                     card = _normalize_api_study(data, source="clinicaltrials_gov_api_v2", raw_bytes=raw)
-                    card["match_score"] = 99
+                    card["match_score"] = 0.99
+                    card["match_score_pct"] = 99
+                    card["is_recommended"] = True
                     card["match_reasons"] = [f"按用户指定的登记号 {cleaned} 精确拉取 ClinicalTrials.gov 官方记录"]
                     card["ranking_mode"] = "exact_nct_lookup"
                     return card
@@ -496,7 +1209,9 @@ def fetch_rct_by_nct(nct_id: str, *, timeout: float = DEFAULT_CT_TIMEOUT) -> dic
                 "fallback_reason": "clinicaltrials_gov_unreachable_or_offline_mode",
                 "retrieved_at_utc": datetime.now(timezone.utc).isoformat(),
                 "receipt_sha256": hashlib.sha256(raw_fb).hexdigest(),
-                "match_score": 99,
+                "match_score": 0.99,
+                "match_score_pct": 99,
+                "is_recommended": True,
                 "match_reasons": [f"离线公开精选目录精确匹配 {cleaned}（当前外网不可达）"],
                 "ranking_mode": "exact_nct_lookup",
             }
@@ -508,21 +1223,79 @@ def fetch_rct_by_nct(nct_id: str, *, timeout: float = DEFAULT_CT_TIMEOUT) -> dic
     )
 
 
+def _resolve_effective_arms(
+    query: str,
+    intervention: str,
+    comparator: str,
+    context_summary: dict | None,
+) -> tuple[str, str]:
+    ctx = context_summary if isinstance(context_summary, dict) else {}
+    eff_intr = (
+        intervention.strip()
+        or str(ctx.get("active_arm_label", "")).strip()
+        or str(ctx.get("intervention_query_en", "")).strip()
+        or str(ctx.get("intervention", "")).strip()
+    )
+    eff_comp = (
+        comparator.strip()
+        or str(ctx.get("comparator_arm_label", "")).strip()
+        or str(ctx.get("comparator_query_en", "")).strip()
+    )
+    if not eff_comp and ctx.get("comparator_explicit") is True:
+        eff_comp = str(ctx.get("comparator", "")).strip()
+
+    # If caller passed a query containing two drugs (e.g. 'Dapagliflozin Sitagliptin Heart Failure' or '达格列净 vs 西格列汀')
+    if query and not eff_comp and ctx.get("comparator_explicit") is not False:
+        vs_split = re.split(r"\b(?:vs\.?|versus)\b|对比|对照", query, maxsplit=1, flags=re.IGNORECASE)
+        if len(vs_split) == 2:
+            if not eff_intr:
+                eff_intr = vs_split[0].strip()
+            eff_comp = vs_split[1].strip()
+        else:
+            # Extract known lexicon drugs from query so random condition nouns aren't mistaken for drugs
+            known_in_q: list[str] = []
+            q_low = query.lower()
+            for cid, en_q, _, _, is_gen, aliases in DRUG_CLASS_LEXICON:
+                if is_gen:
+                    continue
+                if any(a.lower() in q_low for a in aliases) and en_q not in known_in_q:
+                    known_in_q.append(en_q)
+            if not eff_intr and len(known_in_q) == 1:
+                eff_intr = known_in_q[0]
+            elif len(known_in_q) >= 2:
+                if not eff_intr:
+                    eff_intr = known_in_q[0]
+                other_drugs = [d for d in known_in_q if d.lower() != eff_intr.lower()]
+                if other_drugs:
+                    eff_comp = other_drugs[0]
+            elif not eff_intr:
+                q_spec = normalize_intervention_spec(query)
+                if q_spec["en_terms"]:
+                    eff_intr = q_spec["en_terms"][0]
+    return eff_intr, eff_comp
+
+
 def search_candidate_rcts(
     query: str,
     *,
     condition: str = "",
     intervention: str = "",
+    comparator: str = "",
     context_summary: dict | None = None,
     forbidden_values: tuple[str, ...] = (),
     max_results: int = 6,
     timeout: float = DEFAULT_CT_TIMEOUT,
 ) -> dict:
-    """Search ClinicalTrials.gov API v2 for randomized interventional target trials with offline catalog fallback."""
+    """Search ClinicalTrials.gov API v2 with bilingual normalization, dual-arm head-to-head priority, and hard alignment score caps."""
     clean_query = (query or "").strip()
+    eff_intr, eff_comp = _resolve_effective_arms(clean_query, intervention, comparator, context_summary)
+
     nct_hit = NCT_RE.search(clean_query)
     if nct_hit and len(clean_query) <= 20:
         single = fetch_rct_by_nct(nct_hit.group(1), timeout=timeout)
+        if eff_intr or eff_comp:
+            audit = audit_study_arm_alignment(single, intervention=eff_intr, comparator=eff_comp)
+            single = _enforce_alignment_caps_and_sort([{**single, **audit}])[0]
         return {
             "source": single["source"],
             "query_used": nct_hit.group(1).upper(),
@@ -530,10 +1303,17 @@ def search_candidate_rcts(
             "candidates": [single],
         }
 
+    intr_spec = normalize_intervention_spec(eff_intr)
+    comp_spec = normalize_intervention_spec(eff_comp)
+    intr_en = intr_spec["en_terms"][0] if intr_spec["en_terms"] else translate_query_to_english(eff_intr)
+    comp_en = comp_spec["en_terms"][0] if comp_spec["en_terms"] else translate_query_to_english(eff_comp)
+    cond_en = translate_condition_to_english(condition or str((context_summary or {}).get("condition_query_en", ""))) or translate_condition_to_english(clean_query)
+    en_query = translate_query_to_english(clean_query)
+
     raw_tokens = [
         tok
-        for tok in re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]{2,}", f"{clean_query} {condition} {intervention}")
-        if tok.lower() not in {"and", "the", "for", "with", "versus", "randomized", "controlled", "trial"}
+        for tok in re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]{2,}", f"{en_query} {cond_en} {intr_en} {comp_en}")
+        if tok.lower() not in {"and", "the", "for", "with", "versus", "randomized", "controlled", "trial", "inhibitor"}
     ]
     seen_tok_lower: set[str] = set()
     tokens: list[str] = []
@@ -542,33 +1322,45 @@ def search_candidate_rcts(
             seen_tok_lower.add(tok.lower())
             tokens.append(tok)
 
-    live_candidates: list[dict] = []
+    live_by_nct: dict[str, dict] = {}
     live_error: str | None = None
+    query_used_display = en_query or " ".join(p for p in (cond_en, intr_en, comp_en) if p).strip()
 
     if os.environ.get("EMULATRX_OFFLINE_RCT_CATALOG") != "1":
-        # Try targeted query first; if 0 studies returned, broaden to main query.term
-        search_attempts = []
-        if condition.strip() or intervention.strip():
-            p1: dict[str, str | int] = {
-                "filter.advanced": "AREA[StudyType]INTERVENTIONAL AND AREA[DesignAllocation]RANDOMIZED",
-                "fields": ",".join(STUDY_FIELDS),
-                "pageSize": 15,
-            }
-            if condition.strip():
-                p1["query.cond"] = condition.strip()
-            if intervention.strip():
-                p1["query.intr"] = intervention.strip()
-            elif clean_query:
-                p1["query.term"] = clean_query
-            search_attempts.append(p1)
-
-        p2: dict[str, str | int] = {
-            "query.term": clean_query or f"{condition} {intervention}".strip() or "randomized phase 3",
+        base_filter = {
             "filter.advanced": "AREA[StudyType]INTERVENTIONAL AND AREA[DesignAllocation]RANDOMIZED",
             "fields": ",".join(STUDY_FIELDS),
             "pageSize": 15,
         }
-        search_attempts.append(p2)
+        search_attempts: list[dict[str, str | int]] = []
+        # 1. Dual-arm head-to-head query FIRST (`intervention AND comparator`) so exact dual-arm trials surface at top
+        if intr_en and comp_en and intr_en.lower() != comp_en.lower():
+            dual_intr_expr = f"{intr_en} AND {comp_en}"
+            query_used_display = f"{dual_intr_expr}" + (f" | {cond_en}" if cond_en else "")
+            if cond_en:
+                search_attempts.append({**base_filter, "query.cond": cond_en, "query.intr": dual_intr_expr})
+            search_attempts.append({**base_filter, "query.intr": dual_intr_expr})
+
+        # 2. Single-intervention + condition backfill if dual-arm returned fewer than max_results studies
+        if cond_en or intr_en:
+            p_single: dict[str, str | int] = dict(base_filter)
+            if cond_en:
+                p_single["query.cond"] = cond_en
+            if intr_en:
+                p_single["query.intr"] = intr_en
+            elif en_query:
+                p_single["query.term"] = en_query
+            search_attempts.append(p_single)
+
+        # 3. Broad English term fallback
+        search_attempts.append(
+            {
+                **base_filter,
+                "query.term": " ".join(p for p in (intr_en, comp_en, cond_en) if p).strip()
+                or en_query
+                or "randomized phase 3",
+            }
+        )
 
         for params in search_attempts:
             url = f"{API_ROOT}/studies?{urlencode(params)}"
@@ -587,33 +1379,51 @@ def search_candidate_rcts(
                             continue
                         st_bytes = json.dumps(st, sort_keys=True).encode("utf-8")
                         norm = _normalize_api_study(st, source="clinicaltrials_gov_api_v2", raw_bytes=st_bytes)
-                        if not norm["nct_id"]:
+                        if not norm["nct_id"] or norm["nct_id"] in live_by_nct:
                             continue
-                        sc, reasons = _score_study_deterministic(norm, tokens)
-                        norm["match_score"] = sc
-                        norm["match_reasons"] = reasons
-                        norm["ranking_mode"] = "deterministic_rules"
-                        live_candidates.append(norm)
-                    if live_candidates:
+                        scored = _score_and_audit_study(
+                            norm,
+                            tokens,
+                            intervention=eff_intr,
+                            comparator=eff_comp,
+                        )
+                        live_by_nct[norm["nct_id"]] = scored
+                    # Stop early once we have enough exact dual-arm matches (or enough total matches when no comparator)
+                    exact_cnt = sum(
+                        1
+                        for v in live_by_nct.values()
+                        if v["arm_alignment_status"] in ("exact_dual_arm", "single_intervention_matched")
+                    )
+                    if exact_cnt >= max_results or (not comp_en and len(live_by_nct) >= max_results):
                         break
             except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
                 live_error = type(exc).__name__
                 break
 
-    if live_candidates:
-        live_candidates.sort(key=lambda c: (c["match_score"], c.get("enrollment_count") or 0), reverse=True)
-        top = live_candidates[:max_results]
+    ctx_for_llm = dict(context_summary or {})
+    ctx_for_llm.setdefault("query", en_query)
+    ctx_for_llm.setdefault("condition", cond_en)
+    ctx_for_llm.setdefault("intervention", intr_en)
+    if comp_en:
+        ctx_for_llm.setdefault("comparator", comp_en)
+
+    if live_by_nct:
+        ordered_live = _enforce_alignment_caps_and_sort(list(live_by_nct.values()))
+        top = ordered_live[: max(max_results, 8)]
         reranked, rank_mode = rerank_and_explain_rcts(
             top,
-            context_summary or {"query": clean_query, "condition": condition, "intervention": intervention},
+            ctx_for_llm,
             forbidden_values=forbidden_values,
         )
+        final_live = _enforce_alignment_caps_and_sort(reranked)[:max_results]
         return {
             "source": "clinicaltrials_gov_api_v2",
             "source_label_zh": "实时联网检索 ClinicalTrials.gov API v2",
-            "query_used": clean_query or f"{condition} {intervention}".strip(),
+            "query_used": query_used_display or clean_query,
+            "effective_intervention": eff_intr,
+            "effective_comparator": eff_comp,
             "ranking_mode": rank_mode,
-            "candidates": reranked[:max_results],
+            "candidates": final_live,
         }
 
     # Explicit offline fallback catalog (never disguised as live response)
@@ -628,26 +1438,32 @@ def search_candidate_rcts(
             "retrieved_at_utc": datetime.now(timezone.utc).isoformat(),
             "receipt_sha256": hashlib.sha256(raw_fb).hexdigest(),
         }
-        sc, reasons = _score_study_deterministic(entry, tokens)
-        entry["match_score"] = sc
-        entry["match_reasons"] = [
-            *reasons,
+        scored_fb = _score_and_audit_study(
+            entry,
+            tokens,
+            intervention=eff_intr,
+            comparator=eff_comp,
+        )
+        scored_fb["match_reasons"] = [
+            *scored_fb["match_reasons"],
             "注：当前来自内置公开 RCT 离线精选目录兜底（source=offline_curated_catalog_fallback）",
         ]
-        entry["ranking_mode"] = "deterministic_rules"
-        fallback_list.append(entry)
+        fallback_list.append(scored_fb)
 
-    fallback_list.sort(key=lambda c: (c["match_score"], c.get("enrollment_count") or 0), reverse=True)
+    ordered_fb = _enforce_alignment_caps_and_sort(fallback_list)
     reranked_fb, rank_mode_fb = rerank_and_explain_rcts(
-        fallback_list[:max_results],
-        context_summary or {"query": clean_query, "condition": condition, "intervention": intervention},
+        ordered_fb[: max(max_results, 8)],
+        ctx_for_llm,
         forbidden_values=forbidden_values,
     )
+    final_fb = _enforce_alignment_caps_and_sort(reranked_fb)[:max_results]
     return {
         "source": "offline_curated_catalog_fallback",
         "source_label_zh": "内置代表性公开 RCT 目录兜底（offline_curated_catalog_fallback）",
         "fallback_reason": live_error or "offline_or_no_live_results",
-        "query_used": clean_query or f"{condition} {intervention}".strip(),
+        "query_used": query_used_display or clean_query,
+        "effective_intervention": eff_intr,
+        "effective_comparator": eff_comp,
         "ranking_mode": rank_mode_fb,
-        "candidates": reranked_fb[:max_results],
+        "candidates": final_fb,
     }

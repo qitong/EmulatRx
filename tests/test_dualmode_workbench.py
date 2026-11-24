@@ -214,7 +214,8 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                 self.assertEqual(srch.status_code, 200, srch.text)
                 rct_card = srch.json()["candidates"][0]
                 self.assertEqual(rct_card["nct_id"], "NCT03036124")
-                self.assertEqual(rct_card["match_score"], 96)
+                self.assertEqual(rct_card["arm_alignment_status"], "exact_dual_arm")
+                self.assertEqual(rct_card["match_score"], 0.96)
 
                 # 4. Draft ColumnMappingSpec aligned to NCT03036124
                 draft = self.client.post(
@@ -760,6 +761,199 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
             "Adult patients in claims study",
             json.dumps(captured_user_envelopes[2]["public_reference_context"]),
         )
+
+    def test_nct06642272_sample_cohort_demotion_and_fail_closed_422_arm_mismatch_gate(self):
+        """E2E Product QA regression: built-in cardio-renal sample cohort vs NCT06642272 (Empagliflozin vs Dapagliflozin) enforces <=0.45 cap and HTTP 422 gate."""
+        nct06642272_and_exact_payload = {
+            "studies": [
+                {
+                    "protocolSection": {
+                        "identificationModule": {
+                            "nctId": "NCT06642272",
+                            "briefTitle": "Empagliflozin Versus Dapagliflozin in Type 2 Diabetes and Cardiorenal Risk",
+                            "officialTitle": "Randomized Trial Comparing Empagliflozin and Dapagliflozin",
+                        },
+                        "statusModule": {"overallStatus": "RECRUITING"},
+                        "designModule": {
+                            "studyType": "INTERVENTIONAL",
+                            "phases": ["PHASE4"],
+                            "enrollmentInfo": {"count": 800},
+                            "designInfo": {"allocation": "RANDOMIZED"},
+                        },
+                        "conditionsModule": {"conditions": ["Type 2 Diabetes", "Heart Failure"]},
+                        "armsInterventionsModule": {
+                            "armGroups": [
+                                {"label": "Empagliflozin 10 mg", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Empagliflozin"]},
+                                {"label": "Dapagliflozin 10 mg", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Dapagliflozin"]},
+                            ],
+                            "interventions": [
+                                {"name": "Empagliflozin", "type": "DRUG"},
+                                {"name": "Dapagliflozin", "type": "DRUG"},
+                            ],
+                        },
+                        "eligibilityModule": {"minimumAge": "18 Years", "maximumAge": "N/A", "sex": "ALL", "eligibilityCriteria": "* Adults >= 45 years"},
+                        "outcomesModule": {"primaryOutcomes": [{"measure": "HF Hospitalization or CV Death", "timeFrame": "Up to 18 months"}]},
+                    },
+                    "hasResults": False,
+                },
+                {
+                    "protocolSection": {
+                        "identificationModule": {
+                            "nctId": "NCT01095653",
+                            "briefTitle": "Dapagliflozin Compared With Sitagliptin in Patients With Type 2 Diabetes",
+                            "officialTitle": "Active-Controlled Randomized Trial of Dapagliflozin Versus Sitagliptin",
+                        },
+                        "statusModule": {"overallStatus": "COMPLETED"},
+                        "designModule": {
+                            "studyType": "INTERVENTIONAL",
+                            "phases": ["PHASE3"],
+                            "enrollmentInfo": {"count": 1450},
+                            "designInfo": {"allocation": "RANDOMIZED"},
+                        },
+                        "conditionsModule": {"conditions": ["Type 2 Diabetes"]},
+                        "armsInterventionsModule": {
+                            "armGroups": [
+                                {"label": "Dapagliflozin 10 mg", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Dapagliflozin"]},
+                                {"label": "Sitagliptin 100 mg", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Sitagliptin"]},
+                            ],
+                            "interventions": [
+                                {"name": "Dapagliflozin", "type": "DRUG"},
+                                {"name": "Sitagliptin", "type": "DRUG"},
+                            ],
+                        },
+                        "eligibilityModule": {"minimumAge": "18 Years", "maximumAge": "N/A", "sex": "ALL", "eligibilityCriteria": "* Adults >= 45 years"},
+                        "outcomesModule": {"primaryOutcomes": [{"measure": "Cardiorenal Composite", "timeFrame": "Up to 12 months"}]},
+                    },
+                    "hasResults": True,
+                },
+            ]
+        }
+
+        def fake_deepseek(req, timeout):
+            body_txt = req.data.decode("utf-8")
+            if "public_reference_context" in body_txt:
+                # Simulate DeepSeek returning 0.88 & recommended=true for NCT06642272!
+                ans = {
+                    "rankings": [
+                        {"nct_id": "NCT06642272", "match_score": 0.88, "recommended": True, "reason_zh": "虽对照臂为恩格列净但含达格列净"},
+                        {"nct_id": "NCT01095653", "match_score": 0.94, "recommended": True, "reason_zh": "达格列净对比西格列汀双臂严格一致"},
+                    ]
+                }
+            else:
+                # Even if DeepSeek omitted Sitagliptin in its own text, deterministic cohort lock preserves comparator_query_en='Sitagliptin'!
+                ans = {
+                    "domain_summary_zh": "2型糖尿病合并心肾风险队列",
+                    "condition_query_en": "Type 2 Diabetes Heart Failure",
+                    "intervention_query_en": "Dapagliflozin",
+                    "search_query_en": "Dapagliflozin Type 2 Diabetes",
+                }
+            return _FakeHTTPResp(json.dumps({"choices": [{"message": {"content": json.dumps(ans, ensure_ascii=False)}}]}).encode("utf-8"))
+
+        def fake_ctgov(req, timeout):
+            return _FakeHTTPResp(json.dumps(nct06642272_and_exact_payload).encode("utf-8"))
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "EMULATRX_LLM_API_KEY_FILE": str(self.base / "absent_secret"),
+                "EMULATRX_LLM_API_KEY": "sk-deepseek-live-qa",
+                "EMULATRX_OFFLINE_RCT_CATALOG": "0",
+            },
+            clear=False,
+        ):
+            with mock.patch.object(llm_assist, "urlopen_llm", side_effect=fake_deepseek), mock.patch.object(
+                rct_matcher, "urlopen_ctgov", side_effect=fake_ctgov
+            ):
+                # 1. Load built-in cardio-renal sample cohort -> must extract BOTH Dapagliflozin AND Sitagliptin
+                up = self.client.post(
+                    "/api/sessions/upload",
+                    headers=self.web_auth,
+                    json={"sample_id": "cardiorenal_sglt2i"},
+                )
+                self.assertEqual(up.status_code, 200, up.text)
+                sid = up.json()["session_id"]
+                interp = up.json()["interpretation"]
+                self.assertEqual(interp["intervention_query_en"], "Dapagliflozin")
+                self.assertEqual(interp["comparator_query_en"], "Sitagliptin")
+                self.assertIn("Sitagliptin", interp["search_query_en"])
+
+                # 2. Search candidate RCTs -> NCT01095653 ranks #1; NCT06642272 is capped <=0.45 & is_recommended=False
+                srch = self.client.post(
+                    "/api/rcts/search",
+                    headers=self.web_auth,
+                    json={
+                        "session_id": sid,
+                        "project_mode": "user_cohort",
+                        "query": interp["search_query_en"],
+                        "condition": interp["condition_query_en"],
+                        "intervention": interp["intervention_query_en"],
+                        "comparator": interp["comparator_query_en"],
+                        "context_summary": interp,
+                    },
+                )
+                self.assertEqual(srch.status_code, 200, srch.text)
+                cands = srch.json()["candidates"]
+                self.assertEqual(cands[0]["nct_id"], "NCT01095653")
+                self.assertEqual(cands[0]["arm_alignment_status"], "exact_dual_arm")
+                self.assertTrue(cands[0]["is_recommended"])
+
+                nct066 = next(c for c in cands if c["nct_id"] == "NCT06642272")
+                self.assertEqual(nct066["arm_alignment_status"], "single_arm_or_comparator_mismatch")
+                self.assertLessEqual(nct066["match_score"], 0.45)
+                self.assertFalse(nct066["is_recommended"])
+
+                # 3. Fail-Closed 422 Gate: submitting NCT06642272 WITHOUT confirm_arm_mismatch=True MUST return HTTP 422
+                draft_422 = self.client.post(
+                    "/api/rcts/draft",
+                    headers=self.web_auth,
+                    json={"project_mode": "user_cohort", "session_id": sid, "target_rct": nct066},
+                )
+                self.assertEqual(draft_422.status_code, 422, draft_422.text)
+                self.assertEqual(draft_422.json()["error_code"], "ARM_MISMATCH_CONFIRMATION_REQUIRED")
+
+                mapping = up.json()["default_mapping"]
+                mapping["bootstrap_iterations"] = 20
+                run_422 = self.client.post(
+                    "/api/v1/projects/user-cohort/runs",
+                    headers=self.web_auth,
+                    json={"session_id": sid, "mapping": mapping, "target_rct": nct066},
+                )
+                self.assertEqual(run_422.status_code, 422, run_422.text)
+                self.assertEqual(run_422.json()["error_code"], "ARM_MISMATCH_CONFIRMATION_REQUIRED")
+
+                # 4. Submitting WITH confirm_arm_mismatch=True succeeds and persists arm_alignment_warning in JSON, Markdown & HTML
+                draft_ok = self.client.post(
+                    "/api/rcts/draft",
+                    headers=self.web_auth,
+                    json={
+                        "project_mode": "user_cohort",
+                        "session_id": sid,
+                        "target_rct": nct066,
+                        "confirm_arm_mismatch": True,
+                    },
+                )
+                self.assertEqual(draft_ok.status_code, 200, draft_ok.text)
+                self.assertTrue(draft_ok.json()["target_rct"]["arm_alignment_warning"])
+
+                run_ok = self.client.post(
+                    "/api/v1/projects/user-cohort/runs",
+                    headers=self.web_auth,
+                    json={
+                        "session_id": sid,
+                        "mapping": mapping,
+                        "target_rct": nct066,
+                        "confirm_arm_mismatch": True,
+                    },
+                )
+                self.assertEqual(run_ok.status_code, 202, run_ok.text)
+                final = self.wait_dual_run(run_ok.json()["run_id"])
+                self.assertEqual(final["state"], "completed", final)
+                trct_est = final["estimates"]["target_rct"]
+                self.assertEqual(trct_est["arm_alignment_status"], "single_arm_or_comparator_mismatch")
+                self.assertIn("NCT06642272", trct_est["arm_alignment_warning"])
+                self.assertIn("arm-mismatch-callout", final["rendered_html"])
+                self.assertIn("对照不一致参考声明", final["rendered_html"])
+                self.assertIn("arm_alignment_warning", final["audit_report_markdown"])
 
 
 if __name__ == "__main__":

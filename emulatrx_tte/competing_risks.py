@@ -1234,6 +1234,10 @@ def _render_audit_report_md(estimates: dict) -> str:
             f"- **Target RCT Benchmark**: `{trct.get('nct_id', '')}` — {trct.get('brief_title', '')} "
             f"(`source={trct.get('source', 'n/a')}`)"
         )
+        if trct.get("arm_alignment_status"):
+            lines.append(f"- **Target RCT Arm Alignment (`arm_alignment_status`)**: `{trct['arm_alignment_status']}`")
+        if trct.get("arm_alignment_warning"):
+            lines.append(f"- **⚠️ Target RCT Arm Alignment Warning (`arm_alignment_warning`)**: {trct['arm_alignment_warning']}")
     if smode == SOURCE_MODE_USER_COHORT and isinstance(estimates.get("ingest_lineage"), dict):
         lin = estimates["ingest_lineage"]
         lines.append(

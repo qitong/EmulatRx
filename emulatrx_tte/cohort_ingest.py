@@ -25,8 +25,9 @@ from ._common import (
     sha256_file,
     utc_now_iso,
 )
-from .llm_assist import ID_COL_RE, ID_VALUE_RE
+from .llm_assist import ID_COL_RE, ID_VALUE_RE, PERSON_NAME_RE
 from .protocol import validate_protocol_dict
+from .rct_matcher import normalize_intervention_spec
 
 
 TIME_UNIT_FACTORS = {
@@ -303,8 +304,20 @@ def profile_cohort_dataframe(df: pd.DataFrame, *, filename: str = "cohort.csv", 
 
                 if 2 <= len(cats) <= 4:
                     arm_score = 20 + (55 if any(h in col_lower for h in TREATMENT_NAME_HINTS) else 0)
+                    if any(w in col_lower for w in ("drug", "regimen", "therapy", "initiated", "trt", "treat", "exposure")):
+                        arm_score += 20
+                    if any(w in col_lower for w in ("site", "center", "centre", "hosp", "origin", "source", "age", "stage", "nyha", "ecog", "sex", "smoke", "smoking")):
+                        arm_score -= 40
                     if any(h in col_lower for h in OUTCOME_NAME_HINTS):
                         arm_score -= 35
+                    if all(PERSON_NAME_RE.search(c["value"]) for c in cats[:2]):
+                        arm_score -= 45
+                    elif sum(
+                        1
+                        for c in cats[:2]
+                        if any(not d.startswith("token:") for d in normalize_intervention_spec(c["value"])["drug_ids"])
+                    ) >= 1:
+                        arm_score += 30
                     if len(cats) == 2:
                         arm_score += 12
                     if arm_score > 0:
@@ -898,7 +911,7 @@ def ingest_user_cohort(
     }
     if target_rct and isinstance(target_rct, dict) and re.fullmatch(r"NCT[0-9]{8}", str(target_rct.get("nct_id", ""))):
         po_list = target_rct.get("primary_outcomes") or [{}]
-        protocol_dict["target_rct"] = {
+        trct_entry: dict = {
             "nct_id": str(target_rct["nct_id"]),
             "brief_title": str(target_rct.get("brief_title", target_rct["nct_id"])),
             "record_url": str(target_rct.get("record_url", f"https://clinicaltrials.gov/study/{target_rct['nct_id']}")),
@@ -907,6 +920,11 @@ def ingest_user_cohort(
             "primary_outcome_measure": str(po_list[0].get("measure", "")),
             "primary_outcome_timeframe": str(po_list[0].get("timeFrame", "")),
         }
+        if target_rct.get("arm_alignment_status"):
+            trct_entry["arm_alignment_status"] = str(target_rct["arm_alignment_status"])
+        if target_rct.get("arm_alignment_warning"):
+            trct_entry["arm_alignment_warning"] = str(target_rct["arm_alignment_warning"])
+        protocol_dict["target_rct"] = trct_entry
 
     normalized_protocol = validate_protocol_dict(protocol_dict)
 

@@ -389,7 +389,7 @@ def build_simulated_protocol_and_dgp(
     }
     if nct_id and rct_title:
         po = (trct.get("primary_outcomes") or [{}])[0]
-        protocol_obj["target_rct"] = {
+        trct_entry: dict = {
             "nct_id": nct_id,
             "brief_title": rct_title,
             "record_url": str(trct.get("record_url", f"https://clinicaltrials.gov/study/{nct_id}")),
@@ -398,6 +398,11 @@ def build_simulated_protocol_and_dgp(
             "primary_outcome_measure": str(po.get("measure", "")),
             "primary_outcome_timeframe": str(po.get("timeFrame", "")),
         }
+        if trct.get("arm_alignment_status"):
+            trct_entry["arm_alignment_status"] = str(trct["arm_alignment_status"])
+        if trct.get("arm_alignment_warning"):
+            trct_entry["arm_alignment_warning"] = str(trct["arm_alignment_warning"])
+        protocol_obj["target_rct"] = trct_entry
 
     normalized = validate_protocol_dict(protocol_obj)
 

@@ -52,9 +52,14 @@ from .protocol import (
     validate_protocol_dict,
 )
 from .rct_matcher import (
+    audit_study_arm_alignment,
     fetch_rct_by_nct,
+    normalize_intervention_spec,
     parse_timeframe_to_horizons,
     search_candidate_rcts,
+    translate_condition_to_english,
+    translate_query_to_english,
+    verify_and_enrich_target_rct,
 )
 from .sample_cohorts import (
     CLINICAL_IDEA_PRESETS,
@@ -81,6 +86,7 @@ __all__ = [
     "SOURCE_MODE_USER_COHORT",
     "USER_COHORT_CAUSAL_CLAIMS",
     "assert_llm_payload_privacy_safe",
+    "audit_study_arm_alignment",
     "build_simulated_protocol_and_dgp",
     "compute_evalue",
     "compute_reverse_km_left_limit",
@@ -98,6 +104,7 @@ __all__ = [
     "interpret_cohort_profile",
     "kish_ess",
     "load_and_validate_protocol",
+    "normalize_intervention_spec",
     "parse_research_idea_pico",
     "parse_timeframe_to_horizons",
     "profile_cohort_dataframe",
@@ -108,7 +115,10 @@ __all__ = [
     "run_user_cohort_pipeline",
     "sanitize_profile_for_llm",
     "search_candidate_rcts",
+    "translate_condition_to_english",
+    "translate_query_to_english",
     "validate_protocol_command",
     "validate_protocol_dict",
+    "verify_and_enrich_target_rct",
     "weighted_aalen_johansen_cif",
 ]

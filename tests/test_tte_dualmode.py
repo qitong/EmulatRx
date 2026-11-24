@@ -478,6 +478,170 @@ class RCTMatcherTests(unittest.TestCase):
                 self.assertEqual(offline_res["candidates"][0]["source"], "offline_curated_catalog_fallback")
                 self.assertEqual(offline_res["candidates"][0]["nct_id"], "NCT02578680")
 
+    def test_nct06642272_dual_arm_alignment_score_cap_and_bilingual_query_translation(self):
+        """Live QA regression: NCT06642272 (Empagliflozin vs Dapagliflozin) against Dapagliflozin vs Sitagliptin is capped <=0.45 and never recommended."""
+        live_studies_payload = {
+            "studies": [
+                {
+                    "protocolSection": {
+                        "identificationModule": {
+                            "nctId": "NCT06642272",
+                            "briefTitle": "Head-to-Head Comparison of Empagliflozin vs Dapagliflozin in Type 2 Diabetes and Heart Failure",
+                            "officialTitle": "Randomized Active-Controlled Trial of Empagliflozin Versus Dapagliflozin",
+                        },
+                        "statusModule": {"overallStatus": "RECRUITING"},
+                        "designModule": {
+                            "studyType": "INTERVENTIONAL",
+                            "phases": ["PHASE4"],
+                            "enrollmentInfo": {"count": 1200},
+                            "designInfo": {"allocation": "RANDOMIZED"},
+                        },
+                        "conditionsModule": {"conditions": ["Type 2 Diabetes", "Heart Failure"]},
+                        "armsInterventionsModule": {
+                            "armGroups": [
+                                {"label": "Empagliflozin 10 mg", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Empagliflozin"]},
+                                {"label": "Dapagliflozin 10 mg", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Dapagliflozin"]},
+                            ],
+                            "interventions": [
+                                {"name": "Empagliflozin", "type": "DRUG"},
+                                {"name": "Dapagliflozin", "type": "DRUG"},
+                            ],
+                        },
+                        "eligibilityModule": {"minimumAge": "18 Years", "maximumAge": "N/A", "sex": "ALL", "eligibilityCriteria": "* T2DM"},
+                        "outcomesModule": {"primaryOutcomes": [{"measure": "HF Hospitalization or CV Death", "timeFrame": "12 months"}]},
+                    },
+                    "hasResults": False,
+                },
+                {
+                    "protocolSection": {
+                        "identificationModule": {
+                            "nctId": "NCT02471404",
+                            "briefTitle": "Class Comparison of Empagliflozin Versus Linagliptin in Type 2 Diabetes",
+                            "officialTitle": "Randomized Study of Empagliflozin vs Linagliptin",
+                        },
+                        "statusModule": {"overallStatus": "COMPLETED"},
+                        "designModule": {
+                            "studyType": "INTERVENTIONAL",
+                            "phases": ["PHASE3"],
+                            "enrollmentInfo": {"count": 900},
+                            "designInfo": {"allocation": "RANDOMIZED"},
+                        },
+                        "conditionsModule": {"conditions": ["Type 2 Diabetes"]},
+                        "armsInterventionsModule": {
+                            "armGroups": [
+                                {"label": "Empagliflozin 10 mg", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Empagliflozin"]},
+                                {"label": "Linagliptin 5 mg", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Linagliptin"]},
+                            ],
+                            "interventions": [
+                                {"name": "Empagliflozin", "type": "DRUG"},
+                                {"name": "Linagliptin", "type": "DRUG"},
+                            ],
+                        },
+                        "eligibilityModule": {"minimumAge": "18 Years", "maximumAge": "N/A", "sex": "ALL", "eligibilityCriteria": "* T2DM"},
+                        "outcomesModule": {"primaryOutcomes": [{"measure": "Cardiorenal Composite", "timeFrame": "12 months"}]},
+                    },
+                    "hasResults": True,
+                },
+                {
+                    "protocolSection": {
+                        "identificationModule": {
+                            "nctId": "NCT01095653",
+                            "briefTitle": "Dapagliflozin Compared With Sitagliptin in Patients With Type 2 Diabetes",
+                            "officialTitle": "Randomized Double-Blind Active-Controlled Phase 3 Study of Dapagliflozin vs Sitagliptin",
+                        },
+                        "statusModule": {"overallStatus": "COMPLETED"},
+                        "designModule": {
+                            "studyType": "INTERVENTIONAL",
+                            "phases": ["PHASE3"],
+                            "enrollmentInfo": {"count": 1450},
+                            "designInfo": {"allocation": "RANDOMIZED"},
+                        },
+                        "conditionsModule": {"conditions": ["Type 2 Diabetes"]},
+                        "armsInterventionsModule": {
+                            "armGroups": [
+                                {"label": "Dapagliflozin 10 mg", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Dapagliflozin"]},
+                                {"label": "Sitagliptin 100 mg", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Sitagliptin"]},
+                            ],
+                            "interventions": [
+                                {"name": "Dapagliflozin", "type": "DRUG"},
+                                {"name": "Sitagliptin", "type": "DRUG"},
+                            ],
+                        },
+                        "eligibilityModule": {"minimumAge": "18 Years", "maximumAge": "N/A", "sex": "ALL", "eligibilityCriteria": "* T2DM"},
+                        "outcomesModule": {"primaryOutcomes": [{"measure": "Glycemic & Cardiorenal Outcome", "timeFrame": "48 weeks"}]},
+                    },
+                    "hasResults": True,
+                },
+            ]
+        }
+
+        seen_ctgov_urls: list[str] = []
+
+        def fake_ctgov(req, timeout):
+            seen_ctgov_urls.append(req.full_url)
+            return _FakeHTTPResponse(json.dumps(live_studies_payload).encode("utf-8"))
+
+        # Mock DeepSeek intentionally trying to boost NCT06642272 to match_score=0.88 & recommended=True!
+        def fake_deepseek_overrate(req, timeout):
+            bad_llm_ranking = {
+                "rankings": [
+                    {"nct_id": "NCT06642272", "match_score": 0.88, "recommended": True, "reason_zh": "含达格列净但在对照臂与恩格列净互比"},
+                    {"nct_id": "NCT02471404", "match_score": 0.90, "recommended": True, "reason_zh": "SGLT2i 对比 DPP-4i 同机制参考"},
+                    {"nct_id": "NCT01095653", "match_score": 0.92, "recommended": True, "reason_zh": "达格列净头对头对比西格列汀完全一致"},
+                ]
+            }
+            return _FakeHTTPResponse(
+                json.dumps({"choices": [{"message": {"content": json.dumps(bad_llm_ranking, ensure_ascii=False)}}]}).encode("utf-8")
+            )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "EMULATRX_LLM_API_KEY_FILE": str(Path(tempfile.gettempdir()) / "absent-key"),
+                "EMULATRX_LLM_API_KEY": "sk-deepseek-qa-test",
+                "EMULATRX_OFFLINE_RCT_CATALOG": "0",
+            },
+            clear=False,
+        ):
+            with mock.patch.object(rct_matcher, "urlopen_ctgov", side_effect=fake_ctgov), mock.patch.object(
+                llm_assist, "urlopen_llm", side_effect=fake_deepseek_overrate
+            ):
+                # Pass Chinese condition/intervention/comparator to also verify bilingual English translation on ClinicalTrials.gov URL!
+                res = search_candidate_rcts(
+                    "达格列净 对比 西格列汀 2型糖尿病",
+                    condition="2型糖尿病",
+                    intervention="达格列净",
+                    comparator="西格列汀",
+                )
+
+        # 1. Verify bilingual translation produced English `Dapagliflozin` + `Sitagliptin` + `Type+2+Diabetes` on CT.gov URL
+        self.assertGreaterEqual(len(seen_ctgov_urls), 1)
+        first_url_lower = seen_ctgov_urls[0].lower()
+        self.assertIn("dapagliflozin", first_url_lower)
+        self.assertIn("sitagliptin", first_url_lower)
+        self.assertIn("diabetes", first_url_lower)
+
+        # 2. Verify strict ordering: exact_dual_arm (#1) > class_dual_arm (#2, <=0.72) > single_arm_or_comparator_mismatch (#3, <=0.45)
+        cands = res["candidates"]
+        self.assertEqual([c["nct_id"] for c in cands[:3]], ["NCT01095653", "NCT02471404", "NCT06642272"])
+
+        exact_c = cands[0]
+        self.assertEqual(exact_c["arm_alignment_status"], "exact_dual_arm")
+        self.assertTrue(exact_c["is_recommended"])
+        self.assertGreaterEqual(exact_c["match_score"], 0.85)
+
+        class_c = cands[1]
+        self.assertEqual(class_c["arm_alignment_status"], "class_dual_arm")
+        self.assertLessEqual(class_c["match_score"], 0.72)
+        self.assertFalse(class_c["is_recommended"])
+
+        mismatch_c = cands[2]
+        self.assertEqual(mismatch_c["nct_id"], "NCT06642272")
+        self.assertEqual(mismatch_c["arm_alignment_status"], "single_arm_or_comparator_mismatch")
+        self.assertLessEqual(mismatch_c["match_score"], 0.45)
+        self.assertFalse(mismatch_c["is_recommended"])
+        self.assertEqual(mismatch_c["arm_alignment_label"], "对照不一致 · 仅供参考")
+
 
 class CohortIngestAndDualModePipelineTests(unittest.TestCase):
     def setUp(self):

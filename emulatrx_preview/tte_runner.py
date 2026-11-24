@@ -26,6 +26,7 @@ from emulatrx_tte import (
     run_simulated_cohort_pipeline,
     run_user_cohort_pipeline,
     validate_protocol_dict,
+    verify_and_enrich_target_rct,
 )
 from emulatrx_tte._common import (
     ContractError,
@@ -271,13 +272,15 @@ class TTERunner:
         profile = profile_cohort_dataframe(df, filename=filename, input_sha256=input_sha)
         forbidden_list = _collect_cohort_forbidden_values(df, profile, user_note=user_note)
         forbidden_tokens = tuple(forbidden_list)
+        default_mapping = recommend_column_mapping(profile)
 
         interpretation = interpret_cohort_profile(
             profile,
             user_note=user_note,
             forbidden_values=forbidden_tokens,
+            default_mapping=default_mapping,
+            sample_id=sample_id,
         )
-        default_mapping = recommend_column_mapping(profile)
 
         self.cleanup()
         if session_id and SESSION_ID.fullmatch(session_id) and (self.sessions_root / session_id).is_dir():
@@ -374,6 +377,8 @@ class TTERunner:
             sess["profile"],
             user_note=user_note,
             forbidden_values=tuple(existing_forbidden),
+            default_mapping=sess["default_mapping"],
+            sample_id=sess["meta"].get("sample_id"),
         )
         meta = dict(
             sess["meta"],
@@ -539,12 +544,24 @@ class TTERunner:
     # New Dual-Mode Run Starters (`simulated_cohort` & `user_cohort`)
     # ------------------------------------------------------------------
 
+    def resolve_user_cohort_arms(self, sess: dict, mapping: dict) -> tuple[str, str]:
+        """Resolve effective (active_arm, comparator_arm) strings for dual-arm RCT alignment verification."""
+        act_raw = str(mapping.get("active_value") or "").strip()
+        comp_raw = str(mapping.get("comparator_value") or "").strip()
+        interp = sess.get("interpretation") or {}
+        if act_raw in ("", "0", "1", "yes", "no", "true", "false"):
+            act_raw = str(interp.get("intervention_query_en") or interp.get("active_arm_label") or act_raw).strip()
+        if comp_raw in ("", "0", "1", "yes", "no", "true", "false"):
+            comp_raw = str(interp.get("comparator_query_en") or interp.get("comparator_arm_label") or comp_raw).strip()
+        return act_raw, comp_raw
+
     def start_simulated_cohort(
         self,
         *,
         target_rct: dict | None = None,
         pico: dict | None = None,
         sim_config: dict | None = None,
+        confirm_arm_mismatch: bool = False,
     ) -> dict:
         cfg = dict(sim_config or {})
         cases = int(cfg.get("cases", 1200))
@@ -561,6 +578,18 @@ class TTERunner:
         if weight_method not in ("overlap", "stabilized_iptw", "iptw"):
             raise ContractError("INVALID_WEIGHT_METHOD", f"不支持的加权方式：{weight_method}")
 
+        if target_rct and isinstance(pico, dict):
+            sim_intr = str(pico.get("intervention_query_en") or pico.get("intervention") or "").strip()
+            sim_comp = str(pico.get("comparator_query_en") or "").strip()
+            if not sim_comp and pico.get("comparator_explicit") is True:
+                sim_comp = str(pico.get("comparator") or "").strip()
+            target_rct = verify_and_enrich_target_rct(
+                target_rct,
+                intervention=sim_intr,
+                comparator=sim_comp,
+                confirm_arm_mismatch=confirm_arm_mismatch,
+            )
+
         normalized_proto, dgp_params = build_simulated_protocol_and_dgp(
             target_rct=target_rct,
             pico=pico,
@@ -573,12 +602,12 @@ class TTERunner:
             run_id = uuid.uuid4().hex
             path = self.root / run_id
             path.mkdir(mode=0o700)
-            (path / "protocol.json").write_bytes(_bytes(normalized_proto))
-            (path / "dgp_params.json").write_bytes(_bytes(dgp_params))
+            _atomic_write_bytes(path / "protocol.json", _bytes(normalized_proto))
+            _atomic_write_bytes(path / "dgp_params.json", _bytes(dgp_params))
             if target_rct:
-                (path / "target_rct.json").write_bytes(_bytes(target_rct))
+                _atomic_write_bytes(path / "target_rct.json", _bytes(target_rct))
             if pico:
-                (path / "pico.json").write_bytes(_bytes(pico))
+                _atomic_write_bytes(path / "pico.json", _bytes(pico))
             status = {
                 "run_id": run_id,
                 "state": "queued",
@@ -609,6 +638,7 @@ class TTERunner:
         seed: int = 42,
         bootstrap_iterations: int = 80,
         weight_method: str | None = None,
+        confirm_arm_mismatch: bool = False,
     ) -> dict:
         sess = self.get_session(session_id)
         cohort_path = sess["cohort_path"]
@@ -622,6 +652,15 @@ class TTERunner:
         boot_i = int(mapping.get("bootstrap_iterations", bootstrap_iterations))
         if not 20 <= boot_i <= MAX_BOOTSTRAP:
             raise ContractError("INVALID_BOOTSTRAP_ITERATIONS", f"Bootstrap 次数须在 20 至 {MAX_BOOTSTRAP} 之间。")
+
+        if target_rct:
+            eff_act, eff_comp = self.resolve_user_cohort_arms(sess, mapping)
+            target_rct = verify_and_enrich_target_rct(
+                target_rct,
+                intervention=eff_act,
+                comparator=eff_comp,
+                confirm_arm_mismatch=confirm_arm_mismatch,
+            )
 
         if not self._slot.acquire(blocking=False):
             raise ContractError("BUSY", "当前已有另一个 TTE 分析任务正在运行，请稍候。")

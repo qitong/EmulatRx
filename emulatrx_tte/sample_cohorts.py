@@ -23,6 +23,11 @@ SAMPLE_COHORT_SPECS = {
         "title_zh": "样表 1 · 心肾代谢住院/门诊专病队列（Dapagliflozin vs Sitagliptin，1,500 例）",
         "subtitle_zh": "真实医院导出列名风格（deid_patient_id = Hosp-2023-0001..），随访以「月」为单位，含年龄/eGFR 纳排空间、多分类心功能分级与非心血管竞争死亡",
         "domain_hint_zh": "2型糖尿病合并心肾高危/心衰人群，比较达格列净（Dapagliflozin）对比西格列汀（Sitagliptin）对心衰住院或心血管事件（主要结局）及非心血管竞争死亡的影响",
+        "active_intervention_zh": "达格列净 (Dapagliflozin)",
+        "active_intervention_en": "Dapagliflozin",
+        "comparator_intervention_zh": "西格列汀 (Sitagliptin)",
+        "comparator_intervention_en": "Sitagliptin",
+        "condition_en": "Type 2 Diabetes Heart Failure",
         "row_count": 1500,
         "recommended_eligibility": [
             {"id": "inc_age_45", "kind": "inclusion", "variable": "age_years", "operator": ">=", "value": 45, "description": "纳入年龄 ≥ 45 岁成人患者"},
@@ -35,6 +40,11 @@ SAMPLE_COHORT_SPECS = {
         "title_zh": "样表 2 · 晚期非小细胞肺癌一线免疫联合队列（Pembrolizumab+Chemo vs 含铂双药，1,200 例）",
         "subtitle_zh": "真实肿瘤专病登记列名风格（case_no = ONC-880001..），随访以「天」为单位，含 ECOG / PD-L1 / 吸烟史多分类协变量与非肿瘤治疗无关竞争死亡",
         "domain_hint_zh": "晚期非小细胞肺癌（NSCLC）一线治疗，比较帕博利珠单抗联合含铂化疗（Pembrolizumab_Plus_Chemo）对比单纯含铂双药化疗（Platinum_Doublet_Chemo）的疾病进展/肿瘤死亡与非肿瘤竞争死亡",
+        "active_intervention_zh": "帕博利珠单抗联合含铂化疗 (Pembrolizumab + Chemo)",
+        "active_intervention_en": "Pembrolizumab",
+        "comparator_intervention_zh": "含铂双药化疗 (Platinum Doublet Chemo)",
+        "comparator_intervention_en": "Platinum Chemotherapy",
+        "condition_en": "Non-Small Cell Lung Cancer",
         "row_count": 1200,
         "recommended_eligibility": [
             {"id": "inc_age_18", "kind": "inclusion", "variable": "age", "operator": ">=", "value": 40, "description": "纳入年龄 ≥ 40 岁患者"},

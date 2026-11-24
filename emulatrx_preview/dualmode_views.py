@@ -246,11 +246,20 @@ def render_dualmode_run_view(result: dict, root: Path, *, standalone_report: boo
         f"<p>{subtitle}</p>",
     ]
     if trct.get("nct_id"):
+        rct_role_label = "参考框架 RCT（仅借用纳排与随访窗）" if trct.get("arm_alignment_warning") else "对标目标 RCT"
         parts.append(
-            f"<p><strong>对标目标 RCT：</strong><a href='{esc(trct.get('record_url', 'https://clinicaltrials.gov/study/' + trct['nct_id']))}' target='_blank' rel='noopener'>"
+            f"<p><strong>{rct_role_label}：</strong><a href='{esc(trct.get('record_url', 'https://clinicaltrials.gov/study/' + trct['nct_id']))}' target='_blank' rel='noopener'>"
             f"{esc(trct['nct_id'])}</a> — {esc(trct.get('brief_title', ''))} "
-            f"（来源标识：<code>{esc(trct.get('source', 'clinicaltrials_gov_api_v2'))}</code>）</p>"
+            f"（来源标识：<code>{esc(trct.get('source', 'clinicaltrials_gov_api_v2'))}</code>"
+            + (f"，分组对齐状态：<code>{esc(trct['arm_alignment_status'])}</code>" if trct.get("arm_alignment_status") else "")
+            + "）</p>"
         )
+        if trct.get("arm_alignment_warning"):
+            parts.append(
+                "<div class='notice arm-mismatch-callout' style='background:#fffbeb;border-left:5px solid #d97706;color:#92400e'>"
+                f"<strong>⚠️ 对照不一致参考声明：</strong>{esc(trct['arm_alignment_warning'])}"
+                "</div>"
+            )
     parts.append(
         "<div class='actions print-hide'>"
         f"<a class='primary-link' href='/runs/{esc(run_id)}/report?download=1'>下载独立 HTML 报告</a>"
@@ -418,7 +427,13 @@ def workbench_home_view() -> str:
 .rct-meta{{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;font-size:.83rem}}
 .tag{{background:#f1f5f9;color:#334155;padding:2px 8px;border-radius:4px;font-weight:600}}
 .tag-score{{background:#dcfce7;color:#166534;font-weight:700}}
+.tag-score-warn{{background:#fef3c7;color:#92400e;font-weight:700}}
+.tag-score-mismatch{{background:#fee2e2;color:#991b1b;font-weight:700}}
+.tag-align-exact{{background:#dcfce7;color:#166534;border:1px solid #86efac;font-weight:700}}
+.tag-align-class{{background:#fef3c7;color:#92400e;border:1px solid #fcd34d;font-weight:700}}
+.tag-align-mismatch{{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;font-weight:700}}
 .tag-fallback{{background:#ffedd5;color:#9a3412}}
+.mismatch-confirm-box{{background:#fffbeb;border:1.5px solid #f59e0b;border-radius:6px;padding:12px 16px;margin:12px 0;color:#78350f}}
 .mode-banner{{padding:20px 24px;border-radius:8px;margin:16px 0}}
 .mode-banner.user-mode{{background:#ecfdf5;border-left:6px solid #0f766e}}
 .mode-banner.sim-mode{{background:#f5f3ff;border-left:6px solid #6d28d9}}
@@ -532,6 +547,16 @@ def workbench_home_view() -> str:
     </div>
     <div id="rct-source-banner" style="margin-top:12px"></div>
     <div id="rct-cards-list" class="rct-grid"></div>
+    <div id="rct-mismatch-confirm-box" class="mismatch-confirm-box hidden">
+      <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;font-weight:700">
+        <input type="checkbox" id="confirm-arm-mismatch-checkbox" name="confirm_arm_mismatch" value="true" style="width:auto;margin-top:4px" onchange="onToggleMismatchConfirm(this.checked)">
+        <span>我已知晓该 RCT 的干预/对照臂与本研究不一致，仅借用其纳排与随访时间窗作为参考框架</span>
+      </label>
+      <p id="rct-mismatch-detail-text" style="margin:6px 0 0 26px;font-size:.86rem;color:#92400e"></p>
+    </div>
+    <div class="actions" id="rct-step2-actions">
+      <button type="button" id="btn-confirm-selected-rct" onclick="confirmSelectedTargetRCT()">使用所选目标 RCT 进入第 3 步（方案与字段对齐） →</button>
+    </div>
   </fieldset>
 </section>
 
@@ -679,7 +704,9 @@ const STATE = {{
   defaultMapping: null,
   pico: null,
   rctCandidates: [],
+  selectedRctIdx: -1,
   selectedRct: null,
+  confirmArmMismatch: false,
   outcomeCategoryCache: {{}},
   currentRunId: null,
 }};
@@ -869,7 +896,11 @@ async function searchRCTsFromProfile() {{
   }}
   document.getElementById('rct-query-input').value = STATE.interpretation.search_query_en;
   goStep(2);
-  await executeRCTSearch(STATE.interpretation.condition_query_en, STATE.interpretation.intervention_query_en);
+  await executeRCTSearch(
+    STATE.interpretation.condition_query_en || '',
+    STATE.interpretation.intervention_query_en || '',
+    STATE.interpretation.comparator_query_en || ''
+  );
 }}
 
 async function parseIdeaAndSearchRCTs() {{
@@ -899,29 +930,71 @@ async function parseIdeaAndSearchRCTs() {{
   `;
   document.getElementById('rct-query-input').value = STATE.pico.search_query_en;
   goStep(2);
-  await executeRCTSearch(STATE.pico.condition_query_en, STATE.pico.intervention_query_en);
+  await executeRCTSearch(
+    STATE.pico.condition_query_en || '',
+    STATE.pico.intervention_query_en || '',
+    STATE.pico.comparator_query_en || ''
+  );
 }}
 
-async function executeRCTSearch(cond='', intr='') {{
+function onSelectRCTRadio(idx) {{
+  STATE.selectedRctIdx = idx;
+  STATE.confirmArmMismatch = false;
+  const cb = document.getElementById('confirm-arm-mismatch-checkbox');
+  if (cb) cb.checked = false;
+  document.querySelectorAll('#rct-cards-list .rct-card').forEach((el, i) => {{
+    el.classList.toggle('selected', i === idx);
+  }});
+  const cand = STATE.rctCandidates[idx];
+  const box = document.getElementById('rct-mismatch-confirm-box');
+  const detailEl = document.getElementById('rct-mismatch-detail-text');
+  if (cand && cand.requires_mismatch_confirmation) {{
+    box.classList.remove('hidden');
+    detailEl.textContent = `当前研究对照：${{cand.expected_arms_summary || '—'}} ｜ 该试验实际分组：${{cand.trial_arms_summary || '—'}}`;
+  }} else {{
+    box.classList.add('hidden');
+    detailEl.textContent = '';
+  }}
+}}
+
+function onToggleMismatchConfirm(checked) {{
+  STATE.confirmArmMismatch = Boolean(checked);
+}}
+
+async function executeRCTSearch(cond='', intr='', comp='') {{
   showError('');
   const q = document.getElementById('rct-query-input').value;
+  const ctx = STATE.mode === 'user_cohort' ? (STATE.interpretation || {{}}) : (STATE.pico || {{}});
+  const effIntr = intr || ctx.intervention_query_en || '';
+  const effComp = comp || ctx.comparator_query_en || '';
+  const effCond = cond || ctx.condition_query_en || '';
   const listEl = document.getElementById('rct-cards-list');
-  listEl.innerHTML = '<p>正在检索 ClinicalTrials.gov 公开注册随机对照试验并评估匹配度…</p>';
+  listEl.innerHTML = '<p>正在检索 ClinicalTrials.gov 公开注册随机对照试验并核验双臂干预对齐度…</p>';
   const resp = await fetch('/api/rcts/search', {{
     method: 'POST',
     headers: {{ 'Content-Type': 'application/json' }},
     body: JSON.stringify({{
       query: q,
-      condition: cond,
-      intervention: intr,
+      condition: effCond,
+      intervention: effIntr,
+      comparator: effComp,
       session_id: STATE.sessionId || '',
       project_mode: STATE.mode,
-      context_summary: STATE.mode === 'user_cohort' ? (STATE.interpretation || {{}}) : (STATE.pico || {{}})
+      context_summary: ctx
     }})
   }});
   const data = await resp.json();
   if (!resp.ok) {{ listEl.innerHTML = ''; showError(data.error || '检索失败'); return; }}
   STATE.rctCandidates = data.candidates || [];
+  STATE.confirmArmMismatch = false;
+  const cb = document.getElementById('confirm-arm-mismatch-checkbox');
+  if (cb) cb.checked = false;
+  document.getElementById('rct-mismatch-confirm-box').classList.add('hidden');
+
+  // Auto-preselect #1 ONLY when it is exact_dual_arm or single_intervention_matched (NEVER preselect a mismatched trial!)
+  const firstStatus = STATE.rctCandidates[0] && STATE.rctCandidates[0].arm_alignment_status;
+  STATE.selectedRctIdx = ['exact_dual_arm', 'single_intervention_matched', 'unspecified'].includes(firstStatus) ? 0 : -1;
+
   const isFallback = data.source === 'offline_curated_catalog_fallback';
   document.getElementById('rct-source-banner').innerHTML = `
     <span class="tag ${{isFallback ? 'tag-fallback' : 'tag-score'}}">${{escHtml(data.source_label_zh || data.source)}}</span>
@@ -931,30 +1004,75 @@ async function executeRCTSearch(cond='', intr='') {{
     const po = (c.primary_outcomes && c.primary_outcomes[0]) || {{ measure: '—', timeFrame: '—' }};
     const reasons = (c.match_reasons || []).map(r => `<li>${{escHtml(r)}}</li>`).join('');
     const elig = ((c.eligibility_summary && c.eligibility_summary.highlights) || []).slice(0, 3).map(h => `<li>${{escHtml(h)}}</li>`).join('');
+    const st = c.arm_alignment_status || 'unspecified';
+    const rawSc = typeof c.match_score === 'number' ? c.match_score : 0.5;
+    const pct = c.match_score_pct != null ? c.match_score_pct : Math.round(rawSc <= 1 ? rawSc * 100 : rawSc);
+
+    let alignCls = 'tag-align-exact';
+    let scoreCls = 'tag-score';
+    let alignText = c.arm_alignment_label || '双臂干预一致 · 推荐对标';
+    if (st === 'class_dual_arm') {{
+      alignCls = 'tag-align-class';
+      scoreCls = 'tag-score-warn';
+      alignText = c.arm_alignment_label || '同机制类别参考 · 需确认';
+    }} else if (st === 'single_arm_or_comparator_mismatch' || st === 'unmatched_interventions') {{
+      alignCls = 'tag-align-mismatch';
+      scoreCls = 'tag-score-mismatch';
+      alignText = c.arm_alignment_label || '对照不一致 · 仅供参考';
+    }}
+    const isChecked = idx === STATE.selectedRctIdx;
+    const mismatchBanner = (st === 'single_arm_or_comparator_mismatch' || st === 'unmatched_interventions' || st === 'class_dual_arm')
+      ? `<div style="background:#fffbeb;border-left:4px solid #d97706;padding:8px 12px;margin:8px 0;font-size:.86rem;color:#92400e">
+           <strong>当前研究对照：</strong>${{escHtml(c.expected_arms_summary || '—')}} &nbsp;|&nbsp;
+           <strong>该试验分组：</strong>${{escHtml(c.trial_arms_summary || '—')}}<br>
+           <span>${{escHtml(c.arm_alignment_detail || '')}}</span>
+         </div>`
+      : '';
+
     return `
-      <div class="rct-card">
+      <div class="rct-card ${{isChecked ? 'selected' : ''}}">
         <div class="rct-meta">
+          <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-weight:700">
+            <input type="radio" name="target_rct_choice" value="${{idx}}" ${{isChecked ? 'checked' : ''}} style="width:auto" onchange="onSelectRCTRadio(${{idx}})">
+            <span>选择</span>
+          </label>
           <a href="${{escHtml(c.record_url)}}" target="_blank" rel="noopener"><strong>${{escHtml(c.nct_id)}} ↗</strong></a>
-          <span class="tag tag-score">匹配度 ${{c.match_score || 85}}%</span>
+          <span class="tag ${{alignCls}}">${{escHtml(alignText)}}</span>
+          <span class="tag ${{scoreCls}}">匹配度 ${{pct}}%</span>
           <span class="tag">${{escHtml((c.phases || []).join('/'))}}</span>
           <span class="tag">${{escHtml(c.overall_status)}}</span>
           ${{c.enrollment_count ? `<span class="tag">入组规模 N=${{c.enrollment_count}}</span>` : ''}}
         </div>
         <h3 style="margin:6px 0 8px">${{escHtml(c.brief_title)}}</h3>
         <p style="margin:4px 0;font-size:.9rem"><strong>试验组 (Active)：</strong>${{escHtml((c.experimental_arms||[]).join('；'))}} &nbsp;|&nbsp; <strong>对照组 (Comparator)：</strong>${{escHtml((c.comparator_arms||[]).join('；'))}}</p>
+        ${{mismatchBanner}}
         <p style="margin:4px 0;font-size:.9rem"><strong>主要终点与随访期：</strong>${{escHtml(po.measure)}}（随访窗：<code>${{escHtml(po.timeFrame)}}</code> → 建议评估天数：<code>${{(c.parsed_horizon_days||[]).join(', ')}}</code> 天）</p>
         ${{elig ? `<details style="margin:8px 0;padding:6px 10px"><summary style="font-size:.86rem">查看核心纳排标准要点</summary><ul style="font-size:.85rem;margin:6px 0">${{elig}}</ul></details>` : ''}}
-        <div style="background:#f8fafc;padding:8px 12px;border-radius:5px;margin:8px 0;font-size:.86rem"><strong>与当前研究的匹配理由：</strong><ul style="margin:4px 0">${{reasons}}</ul></div>
-        <button type="button" onclick="chooseTargetRCT(${{idx}})">选定 ${{escHtml(c.nct_id)}} 作为对标目标试验 →</button>
+        <div style="background:#f8fafc;padding:8px 12px;border-radius:5px;margin:8px 0;font-size:.86rem"><strong>与当前研究的匹配核验：</strong><ul style="margin:4px 0">${{reasons}}</ul></div>
+        <button type="button" class="${{c.requires_mismatch_confirmation ? 'secondary' : ''}}" onclick="chooseTargetRCT(${{idx}})">${{c.requires_mismatch_confirmation ? '设为参考框架（需勾选下方不一致确认）' : `选定 ${{escHtml(c.nct_id)}} 作为对标目标试验 →`}}</button>
       </div>
     `;
   }}).join('');
 }}
 
+async function confirmSelectedTargetRCT() {{
+  if (STATE.selectedRctIdx < 0 || !STATE.rctCandidates[STATE.selectedRctIdx]) {{
+    showError('请先在上方候选列表中勾选一项随机对照试验（若候选均为「对照不一致」，需手动点选并勾选下方不一致知情确认框）。');
+    return;
+  }}
+  await chooseTargetRCT(STATE.selectedRctIdx);
+}}
+
 async function chooseTargetRCT(idx) {{
   const rct = STATE.rctCandidates[idx];
   if (!rct) return;
-  STATE.selectedRct = rct;
+  if (STATE.selectedRctIdx !== idx) {{
+    onSelectRCTRadio(idx);
+  }}
+  if (rct.requires_mismatch_confirmation && !STATE.confirmArmMismatch) {{
+    showError(`所选试验 ${{rct.nct_id}} 的干预/对照臂与本研究不一致（${{rct.arm_alignment_label || rct.arm_alignment_status}}）。若仅借用其纳排与随访时间窗，请先勾选列表下方的「我已知晓该 RCT 的干预/对照臂与本研究不一致…」确认框后再继续。`);
+    return;
+  }}
   const resp = await fetch('/api/rcts/draft', {{
     method: 'POST',
     headers: {{ 'Content-Type': 'application/json' }},
@@ -962,16 +1080,23 @@ async function chooseTargetRCT(idx) {{
       project_mode: STATE.mode,
       session_id: STATE.sessionId,
       target_rct: rct,
-      pico: STATE.pico
+      pico: STATE.pico,
+      confirm_arm_mismatch: STATE.confirmArmMismatch
     }})
   }});
   const data = await resp.json();
   if (!resp.ok) {{ showError(data.error || '生成方案草稿失败'); return; }}
+  STATE.selectedRct = data.target_rct || rct;
 
+  const activeRct = STATE.selectedRct;
+  const warnHtml = activeRct.arm_alignment_warning
+    ? `<div class="notice arm-mismatch-callout" style="background:#fffbeb;border-left-color:#d97706;color:#92400e"><strong>⚠️ 对照不一致参考声明：</strong>${{escHtml(activeRct.arm_alignment_warning)}}</div>`
+    : '';
   document.getElementById('selected-rct-summary').innerHTML = `
     <div class="notice" style="background:#eef6f4;border-left-color:var(--accent)">
-      <strong>当前对标目标 RCT：</strong><a href="${{escHtml(rct.record_url)}}" target="_blank" rel="noopener">${{escHtml(rct.nct_id)}} ↗</a> — ${{escHtml(rct.brief_title)}}
+      <strong>${{activeRct.arm_alignment_warning ? '当前参考框架 RCT（仅借用纳排与随访窗）：' : '当前对标目标 RCT：'}}</strong><a href="${{escHtml(activeRct.record_url)}}" target="_blank" rel="noopener">${{escHtml(activeRct.nct_id)}} ↗</a> — ${{escHtml(activeRct.brief_title)}}
     </div>
+    ${{warnHtml}}
   `;
 
   if (STATE.mode === 'user_cohort') {{
@@ -1176,7 +1301,8 @@ async function launchUserCohortRun() {{
       project_mode: 'user_cohort',
       session_id: STATE.sessionId,
       mapping: mapping,
-      target_rct: STATE.selectedRct
+      target_rct: STATE.selectedRct,
+      confirm_arm_mismatch: STATE.confirmArmMismatch
     }})
   }});
   const data = await resp.json();
@@ -1206,7 +1332,8 @@ async function launchSimulatedRun() {{
       project_mode: 'simulated_cohort',
       target_rct: STATE.selectedRct,
       pico: STATE.pico,
-      sim_config: simConfig
+      sim_config: simConfig,
+      confirm_arm_mismatch: STATE.confirmArmMismatch
     }})
   }});
   const data = await resp.json();
