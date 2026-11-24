@@ -1,0 +1,55 @@
+{
+  "protocol_id": "ccw_synthetic_grace60_v1",
+  "protocol_version": "tte-ccw-v1",
+  "source_mode": "synthetic_only",
+  "study_title": "Synthetic Bilateral Grace-Period CCW Benchmark for Immortal-Time Bias Correction",
+  "simulation_or_data_label": "完全合成宽限期 CCW 教学与方法学基准，非真实患者数据、非临床疗效证据",
+  "grace_period_spec": {
+    "grace_period_days": 60,
+    "period_length_days": 10,
+    "max_followup_days": 180,
+    "evaluation_horizons_days": [60, 120, 180]
+  },
+  "covariates": {
+    "baseline_covariates": [
+      {
+        "name": "x_age_std",
+        "type": "continuous",
+        "assessed_day_offset": 0,
+        "description": "Synthetic baseline standardized age index measured at t0=0"
+      },
+      {
+        "name": "x_biomarker_std",
+        "type": "continuous",
+        "assessed_day_offset": 0,
+        "description": "Synthetic baseline standardized severity biomarker measured at t0=0"
+      },
+      {
+        "name": "x_comorbidity_bin",
+        "type": "binary",
+        "assessed_day_offset": 0,
+        "description": "Synthetic baseline binary comorbidity indicator measured at t0=0"
+      },
+      {
+        "name": "x_high_risk_bin",
+        "type": "binary",
+        "assessed_day_offset": 0,
+        "description": "Synthetic baseline binary high-risk stratum indicator measured at t0=0"
+      }
+    ],
+    "time_varying_covariates": []
+  },
+  "ipcw_spec": {
+    "truncate_quantiles": null,
+    "include_admin_ipcw": false
+  },
+  "diagnostic_gates": {
+    "min_ess_ratio": 0.35,
+    "max_post_grace_smd": 0.15,
+    "max_stabilized_weight": 15.0,
+    "max_pre_truncation_weight": 25.0,
+    "min_truncation_quantile_span": 0.8,
+    "max_truncated_weight_fraction": 0.15,
+    "min_uncensored_subjects_per_clone": 30
+  }
+}

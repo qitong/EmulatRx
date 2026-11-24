@@ -8,6 +8,11 @@ from pathlib import Path
 import sys
 
 from ._common import ContractError, GateBlockedError
+from .ccw import (
+    generate_synthetic_ccw_cohort,
+    run_ccw_synthetic_pipeline,
+    validate_ccw_protocol,
+)
 from .competing_risks import ALLOWED_CENSORING_IPCW, estimate_competing_risks
 from .diagnostics import diagnose_cohort
 from .pipeline import run_synthetic_pipeline
@@ -101,6 +106,35 @@ def main(argv: list[str] | None = None) -> int:
     rs.add_argument("--ci-level", type=float, default=0.95)
     rs.add_argument("--out", type=Path, required=True)
 
+    vc = subparsers.add_parser(
+        "validate-ccw",
+        help="Validate a tte-ccw-v1 grace-period CCW protocol JSON and anti-time-travel rules",
+    )
+    vc.add_argument("--protocol", type=Path, required=True)
+    vc.add_argument("--out", type=Path, required=True)
+
+    sc = subparsers.add_parser(
+        "synth-ccw",
+        help="Generate a seeded synthetic delayed-initiation competing-risks cohort and counterfactual truth",
+    )
+    sc.add_argument("--protocol", type=Path, required=True)
+    sc.add_argument("--seed", type=_parse_strict_cli_int, required=True)
+    sc.add_argument("--cases", type=_parse_strict_cli_int, required=True)
+    sc.add_argument("--dgp-params", type=Path, default=None)
+    sc.add_argument("--out", type=Path, required=True)
+
+    rc = subparsers.add_parser(
+        "run-ccw-synthetic",
+        help="Run end-to-end synthetic bilateral grace-period CCW benchmark with HTML comparison report",
+    )
+    rc.add_argument("--protocol", type=Path, required=True)
+    rc.add_argument("--seed", type=_parse_strict_cli_int, required=True)
+    rc.add_argument("--cases", type=_parse_strict_cli_int, required=True)
+    rc.add_argument("--bootstrap-iterations", type=_parse_strict_cli_int, default=200)
+    rc.add_argument("--dgp-params", type=Path, default=None)
+    rc.add_argument("--ci-level", type=float, default=0.95)
+    rc.add_argument("--out", type=Path, required=True)
+
     args = parser.parse_args(argv)
 
     try:
@@ -138,6 +172,28 @@ def main(argv: list[str] | None = None) -> int:
                 ci_level=args.ci_level,
             )
             exit_code = 0
+        elif args.command == "validate-ccw":
+            result = validate_ccw_protocol(args.protocol, args.out)
+            exit_code = 0
+        elif args.command == "synth-ccw":
+            result = generate_synthetic_ccw_cohort(
+                args.protocol,
+                seed=args.seed,
+                n_cases=args.cases,
+                dgp_params=args.dgp_params,
+                out_dir=args.out,
+            )
+            exit_code = 0
+        elif args.command == "run-ccw-synthetic":
+            result, exit_code = run_ccw_synthetic_pipeline(
+                args.protocol,
+                seed=args.seed,
+                n_cases=args.cases,
+                bootstrap_iterations=args.bootstrap_iterations,
+                dgp_params=args.dgp_params,
+                ci_level=args.ci_level,
+                out_dir=args.out,
+            )
         else:
             result, exit_code = run_synthetic_pipeline(
                 args.protocol,
