@@ -83,6 +83,18 @@ def parse_truncate_quantiles(spec: str | tuple[float, float] | None) -> tuple[fl
     return (q_low, q_high)
 
 
+def _standardize_design_matrix(X: np.ndarray) -> np.ndarray:
+    """Center and scale non-constant columns for numerical stability while preserving exact column span."""
+    X_f = np.asarray(X, dtype=np.float64)
+    if X_f.ndim != 2 or X_f.shape[1] == 0 or X_f.shape[0] <= 1:
+        return X_f.copy()
+    mean = np.mean(X_f, axis=0)
+    sd = np.std(X_f, axis=0)
+    safe_sd = np.where(sd > 1e-12, sd, 1.0)
+    centered = np.where(sd > 1e-12, (X_f - mean[None, :]) / safe_sd[None, :], 0.0)
+    return centered
+
+
 def fit_binary_logistic_mle(X: np.ndarray, y: np.ndarray, *, max_iter: int = 100, tol: float = 1e-13) -> np.ndarray:
     """Fit unpenalized binary logistic regression via damped IRLS / Newton-Raphson.
 
@@ -91,8 +103,9 @@ def fit_binary_logistic_mle(X: np.ndarray, y: np.ndarray, *, max_iter: int = 100
     while clamping linear predictors in [-35, 35] so separated cohorts yield finite (0, 1) probabilities
     that cleanly trigger positivity gates without NaN/overflow.
     """
-    n, p = X.shape
-    X_aug = np.column_stack([np.ones(n, dtype=np.float64), X.astype(np.float64)])
+    X_std = _standardize_design_matrix(X)
+    n, p = X_std.shape
+    X_aug = np.column_stack([np.ones(n, dtype=np.float64), X_std])
     y_f = y.astype(np.float64)
     beta = np.zeros(p + 1, dtype=np.float64)
 
@@ -145,8 +158,9 @@ def fit_multinomial_logistic_mle(X: np.ndarray, arm_idx: np.ndarray, num_arms: i
         p1 = fit_binary_logistic_mle(X, (arm_idx == 1).astype(np.float64))
         return np.column_stack([1.0 - p1, p1])
 
-    n, p = X.shape
-    X_aug = np.column_stack([np.ones(n, dtype=np.float64), X.astype(np.float64)])
+    X_std = _standardize_design_matrix(X)
+    n, p = X_std.shape
+    X_aug = np.column_stack([np.ones(n, dtype=np.float64), X_std])
     d = p + 1
     Y = np.eye(num_arms, dtype=np.float64)[arm_idx]  # (n, K)
 

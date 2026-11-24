@@ -12,16 +12,21 @@ import pandas as pd
 from scipy.stats import norm
 
 from ._common import (
+    ALLOWED_SOURCE_MODES,
     ContractError,
     GateBlockedError,
     MAX_BOOTSTRAP_ITERATIONS,
     MAX_SEED,
     METHODOLOGICAL_DISCLAIMER,
+    OBSERVATIONAL_CAUSAL_ASSUMPTIONS,
     PROHIBITED_CLAIMS,
     PROTOCOL_VERSION,
+    SOURCE_MODE_SIMULATED_COHORT,
     SOURCE_MODE_SYNTHETIC_ONLY,
+    SOURCE_MODE_USER_COHORT,
     atomic_publish,
     check_destination,
+    claims_for_source_mode,
     code_provenance,
     dependency_versions,
     is_strict_int,
@@ -856,8 +861,8 @@ def _bootstrap_arm_cif_horizons(
                 w_e2_u = np.add.reduceat(wb * is_e2, start_idx)
                 y_u = np.cumsum(w_tot_u[::-1])[::-1]
 
-                dh1 = np.where(y_u > 0.0, w_e1_u / y_u, 0.0)
-                dh2 = np.where(y_u > 0.0, w_e2_u / y_u, 0.0)
+                dh1 = np.divide(w_e1_u, y_u, out=np.zeros_like(w_e1_u), where=y_u > 0.0)
+                dh2 = np.divide(w_e2_u, y_u, out=np.zeros_like(w_e2_u), where=y_u > 0.0)
                 dh_tot = np.clip(dh1 + dh2, 0.0, 1.0)
                 surv_after = np.cumprod(1.0 - dh_tot)
                 s_prev = np.empty_like(surv_after)
@@ -965,7 +970,10 @@ def _verify_upstream_diagnostics_gate(
     protocol: dict,
     diagnostics_dir: Path,
     weighted_cohort_path: Path,
-) -> tuple[dict, dict, bytes, pd.DataFrame]:
+    *,
+    source_mode: str = SOURCE_MODE_SYNTHETIC_ONLY,
+    ingest_manifest_path: Path | None = None,
+) -> tuple[dict, dict, bytes, pd.DataFrame, dict | None]:
     """Fail-closed verification of upstream diagnose gate, manifest SHA-256s, and protocol alignment."""
     if not diagnostics_dir.is_dir():
         raise GateBlockedError(
@@ -1084,17 +1092,63 @@ def _verify_upstream_diagnostics_gate(
             f"weighted_cohort.csv row count ({len(wdf)}) mismatches diagnostics retained_n ({diag_summary.get('retained_n')}).",
         )
 
-    if "synthetic_case_id" not in wdf.columns:
-        raise ContractError(
-            "NON_SYNTHETIC_COHORT_REJECTED",
-            "weighted_cohort.csv must contain 'synthetic_case_id' with 'SYN-...' identifiers under source_mode='synthetic_only'.",
-        )
-    case_ids = wdf["synthetic_case_id"].astype(str)
-    if not bool(case_ids.str.match(r"^SYN-[0-9]+$").all()):
-        raise ContractError(
-            "NON_SYNTHETIC_COHORT_REJECTED",
-            "All synthetic_case_id entries must match '^SYN-[0-9]+$' under source_mode='synthetic_only'.",
-        )
+    ingest_manifest: dict | None = None
+    if source_mode == SOURCE_MODE_SYNTHETIC_ONLY:
+        if "synthetic_case_id" not in wdf.columns:
+            raise ContractError(
+                "NON_SYNTHETIC_COHORT_REJECTED",
+                "weighted_cohort.csv must contain 'synthetic_case_id' with 'SYN-...' identifiers under source_mode='synthetic_only'.",
+            )
+        case_ids = wdf["synthetic_case_id"].astype(str)
+        if not bool(case_ids.str.match(r"^SYN-[0-9]+$").all()):
+            raise ContractError(
+                "NON_SYNTHETIC_COHORT_REJECTED",
+                "All synthetic_case_id entries must match '^SYN-[0-9]+$' under source_mode='synthetic_only'.",
+            )
+    elif source_mode == SOURCE_MODE_SIMULATED_COHORT:
+        id_col_sim = "synthetic_case_id" if "synthetic_case_id" in wdf.columns else ("subject_id" if "subject_id" in wdf.columns else None)
+        if id_col_sim is None:
+            raise ContractError(
+                "INVALID_SIMULATED_COHORT",
+                "weighted_cohort.csv must contain 'synthetic_case_id' or 'subject_id' under source_mode='simulated_cohort'.",
+            )
+        case_ids = wdf[id_col_sim].astype(str)
+        if not bool(case_ids.str.match(r"^(?:SIM|SYN)-[0-9]+$").all()):
+            raise ContractError(
+                "INVALID_SIMULATED_COHORT",
+                "All identifiers must match '^(SIM|SYN)-[0-9]+$' under source_mode='simulated_cohort'.",
+            )
+    elif source_mode == SOURCE_MODE_USER_COHORT:
+        if "subject_id" not in wdf.columns and "synthetic_case_id" not in wdf.columns:
+            raise ContractError("INVALID_COHORT_SCHEMA", "weighted_cohort.csv must include 'subject_id' under source_mode='user_cohort'.")
+        cand_paths = [
+            p
+            for p in (
+                ingest_manifest_path,
+                diagnostics_dir / "ingest_manifest.json",
+                diagnostics_dir.parent / "ingest" / "ingest_manifest.json",
+                diagnostics_dir.parent / "01_ingest" / "ingest_manifest.json",
+            )
+            if p is not None
+        ]
+        found_manifest_path = next((p for p in cand_paths if p.is_file()), None)
+        if found_manifest_path is None:
+            raise ContractError(
+                "MISSING_USER_COHORT_INGEST_MANIFEST",
+                "source_mode='user_cohort' requires a verified cohort_ingest ingest_manifest.json.",
+            )
+        _, ingest_manifest = read_strict_json(found_manifest_path, max_bytes=512 * 1024, io_error_code="INGEST_MANIFEST_IO_ERROR")
+        if ingest_manifest.get("source_mode") != SOURCE_MODE_USER_COHORT:
+            raise ContractError("INVALID_INGEST_MANIFEST", "ingest_manifest.json must declare source_mode='user_cohort'.")
+        input_sha = ingest_manifest.get("input_sha256", "")
+        std_sha = ingest_manifest.get("standardized_cohort_sha256", "")
+        if not isinstance(input_sha, str) or len(input_sha) != 64:
+            raise ContractError("INVALID_INGEST_MANIFEST", "ingest_manifest.json missing valid 64-hex input_sha256.")
+        if std_sha != diag_manifest.get("cohort_sha256"):
+            raise GateBlockedError(
+                "INGEST_LINEAGE_MISMATCH",
+                "standardized_cohort_sha256 in ingest_manifest.json does not match diagnostics cohort_sha256.",
+            )
 
     for col in ("treatment_arm", "duration_day", "event_code"):
         if col not in wdf.columns:
@@ -1106,7 +1160,7 @@ def _verify_upstream_diagnostics_gate(
             "weighted_cohort.csv does not contain observations in every protocol treatment arm.",
         )
 
-    return diag_summary, diag_manifest, raw_diag_manifest, wdf
+    return diag_summary, diag_manifest, raw_diag_manifest, wdf, ingest_manifest
 
 
 def _write_curve_csv(path: Path, arm_id: str, curve: dict, *, pair_id: str | None = None) -> None:
@@ -1151,12 +1205,18 @@ def _fmt_est_ci(point: float | None, lo: float | None, hi: float | None, digits:
 
 
 def _render_audit_report_md(estimates: dict) -> str:
+    smode = estimates["source_mode"]
+    if smode == SOURCE_MODE_USER_COHORT:
+        heading = "# 🟢 真实队列目标试验模拟（真项目）分析报告\n\n## 1. 项目模式、来源留痕与观察性因果识别前提 (User Cohort Provenance & Causal Assumptions)"
+    elif smode == SOURCE_MODE_SIMULATED_COHORT:
+        heading = "# 🟣 目标试验模拟（无数据模拟预演项目）可行性报告\n\n## 1. 模拟预演声明与对标试验边界 (Simulation Rehearsal Mode & Prohibited Claims)"
+    else:
+        heading = "# EmulatRx TTE Competing-Risks Survival Audit Report\n\n## 1. 数据来源与禁用声明锁 (Source Mode & Prohibited Claims)"
+
     lines = [
-        "# EmulatRx TTE Competing-Risks Survival Audit Report",
+        heading,
         "",
-        "## 1. 数据来源与禁用声明锁 (Source Mode & Prohibited Claims)",
-        "",
-        f"- **Source Mode (`source_mode`)**: `{estimates['source_mode']}`",
+        f"- **Source Mode (`source_mode`)**: `{smode}`",
         f"- **Study Title**: {estimates['study_title']}",
         f"- **Data / Simulation Label**: {estimates['simulation_or_data_label']}",
         f"- **Reference Strategy (`treatment_strategies[0]`)**: `{estimates['reference_arm']['id']}` ({estimates['reference_arm']['label']})",
@@ -1167,10 +1227,28 @@ def _render_audit_report_md(estimates: dict) -> str:
         f"`ci_level={estimates['bootstrap_config']['ci_level']}`, "
         f"`baseline_propensity_weights={estimates['bootstrap_config']['baseline_propensity_weights']}`, "
         f"`censoring_ipcw_reestimated_in_bootstrap={estimates['bootstrap_config']['censoring_ipcw_reestimated_in_bootstrap']}`",
-        "- **Prohibited Claims (`prohibited_claims`)**:",
     ]
+    if "target_rct" in estimates and isinstance(estimates["target_rct"], dict):
+        trct = estimates["target_rct"]
+        lines.append(
+            f"- **Target RCT Benchmark**: `{trct.get('nct_id', '')}` — {trct.get('brief_title', '')} "
+            f"(`source={trct.get('source', 'n/a')}`)"
+        )
+    if smode == SOURCE_MODE_USER_COHORT and isinstance(estimates.get("ingest_lineage"), dict):
+        lin = estimates["ingest_lineage"]
+        lines.append(
+            f"- **Uploaded Input File & SHA-256**: `{lin.get('input_filename', 'cohort.csv')}` "
+            f"(`sha256={lin.get('input_sha256', '')}`)"
+        )
+        if lin.get("zero_competing_events_notice"):
+            lines.append(f"- **Competing Event Status**: {lin['zero_competing_events_notice']}")
+    lines.append("- **Prohibited Claims / Boundary Statements (`prohibited_claims`)**:")
     for claim in estimates["prohibited_claims"]:
         lines.append(f"  - {claim}")
+    if smode == SOURCE_MODE_USER_COHORT and estimates.get("causal_assumptions"):
+        lines.append("- **观察性因果推断四大核心前提 (`causal_assumptions`)**:")
+        for assumption in estimates["causal_assumptions"]:
+            lines.append(f"  - {assumption}")
 
     lines.extend(
         [
@@ -1235,6 +1313,7 @@ def estimate_competing_risks(
     censoring_ipcw: str = "none",
     ci_level: float = 0.95,
     source_mode: str = SOURCE_MODE_SYNTHETIC_ONLY,
+    ingest_manifest_path: Path | None = None,
 ) -> dict:
     """Validate upstream diagnostics gate and run weighted competing-risks survival analysis.
 
@@ -1244,10 +1323,10 @@ def estimate_competing_risks(
     """
     check_destination(out_dir)
 
-    if source_mode != SOURCE_MODE_SYNTHETIC_ONLY:
+    if not isinstance(source_mode, str) or source_mode not in ALLOWED_SOURCE_MODES:
         raise ContractError(
             "UNSUPPORTED_SOURCE_MODE",
-            f"Only source_mode='{SOURCE_MODE_SYNTHETIC_ONLY}' is permitted in Phase 2 workbench.",
+            f"source_mode must be one of {sorted(ALLOWED_SOURCE_MODES)} (got '{source_mode}').",
         )
     if not is_strict_int(seed) or not (0 <= seed <= MAX_SEED):
         raise ContractError("INVALID_SEED", f"seed must be an integer in 0..{MAX_SEED}")
@@ -1310,10 +1389,12 @@ def estimate_competing_risks(
         resolved_diag_dir = weighted_cohort_path.parent
 
     # Fail-closed upstream gate & SHA-256 verification (raises GateBlockedError -> exit code 3)
-    diag_summary, diag_manifest, raw_diag_manifest, wdf = _verify_upstream_diagnostics_gate(
+    diag_summary, diag_manifest, raw_diag_manifest, wdf, ingest_manifest = _verify_upstream_diagnostics_gate(
         protocol,
         resolved_diag_dir,
         resolved_wc_path,
+        source_mode=source_mode,
+        ingest_manifest_path=ingest_manifest_path,
     )
 
     strategies = protocol["treatment_strategies"]
@@ -1914,9 +1995,10 @@ def estimate_competing_risks(
         )
     )
 
+    active_claims = list(claims_for_source_mode(source_mode))
     estimates_payload = {
-        "source_mode": SOURCE_MODE_SYNTHETIC_ONLY,
-        "prohibited_claims": list(PROHIBITED_CLAIMS),
+        "source_mode": source_mode,
+        "prohibited_claims": active_claims,
         "protocol_version": PROTOCOL_VERSION,
         "study_title": protocol["study_title"],
         "simulation_or_data_label": protocol["simulation_or_data_label"],
@@ -1990,6 +2072,27 @@ def estimate_competing_risks(
         "contrasts": contrasts_dict,
     }
 
+    if source_mode == SOURCE_MODE_USER_COHORT:
+        estimates_payload["report_badge"] = "🟢 真实队列目标试验模拟（真项目）分析报告"
+        estimates_payload["causal_assumptions"] = list(OBSERVATIONAL_CAUSAL_ASSUMPTIONS)
+        if ingest_manifest is not None:
+            estimates_payload["ingest_lineage"] = {
+                "input_filename": ingest_manifest.get("input_filename"),
+                "input_sha256": ingest_manifest.get("input_sha256"),
+                "standardized_cohort_sha256": ingest_manifest.get("standardized_cohort_sha256"),
+                "raw_row_count": ingest_manifest.get("raw_row_count"),
+                "eligible_row_count": ingest_manifest.get("eligible_row_count"),
+                "column_mapping": ingest_manifest.get("column_mapping"),
+                "covariate_display_labels": ingest_manifest.get("covariate_display_labels"),
+                "dropped_constant_or_collinear_covariates": ingest_manifest.get("dropped_constant_or_collinear_covariates"),
+                "zero_competing_events_notice": ingest_manifest.get("zero_competing_events_notice"),
+            }
+    elif source_mode == SOURCE_MODE_SIMULATED_COHORT:
+        estimates_payload["report_badge"] = "🟣 目标试验模拟（无数据模拟预演项目）可行性报告"
+
+    if "target_rct" in protocol:
+        estimates_payload["target_rct"] = protocol["target_rct"]
+
     audit_md_bytes = _render_audit_report_md(estimates_payload).encode("utf-8")
     estimates_bytes = json_bytes(estimates_payload)
 
@@ -2009,8 +2112,8 @@ def estimate_competing_risks(
         manifest = {
             "status": "tte_competing_risks_estimated",
             "activity": "tte_weighted_competing_risks_estimation",
-            "source_mode": SOURCE_MODE_SYNTHETIC_ONLY,
-            "prohibited_claims": list(PROHIBITED_CLAIMS),
+            "source_mode": source_mode,
+            "prohibited_claims": active_claims,
             "protocol_version": PROTOCOL_VERSION,
             "simulation_or_data_label": protocol["simulation_or_data_label"],
             "methodological_disclaimer": METHODOLOGICAL_DISCLAIMER,
@@ -2031,12 +2134,14 @@ def estimate_competing_risks(
             "output_sha256": {p: sha256_file(stage / p) for p in output_paths},
             "run_at_utc": utc_now_iso(),
         }
+        if source_mode == SOURCE_MODE_USER_COHORT and ingest_manifest is not None:
+            manifest["input_sha256"] = ingest_manifest.get("input_sha256")
         (stage / "run_manifest.json").write_bytes(json_bytes(manifest))
 
     atomic_publish(out_dir, _populate)
     return {
         "status": "tte_competing_risks_estimated",
-        "source_mode": SOURCE_MODE_SYNTHETIC_ONLY,
+        "source_mode": source_mode,
         "simulation_or_data_label": protocol["simulation_or_data_label"],
         "weight_method": weight_method,
         "censoring_ipcw": censoring_ipcw,

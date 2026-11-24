@@ -235,11 +235,14 @@ def generate_synthetic_cohort(
     cases: int,
     out_dir: Path,
     dgp_params_path: Path | None = None,
+    id_prefix: str = "SYN",
 ) -> dict:
     if not is_strict_int(seed) or not (0 <= seed <= MAX_SEED):
         raise ContractError("INVALID_SEED", f"seed must be an integer in 0..{MAX_SEED}")
     if not is_strict_int(cases) or not (1 <= cases <= MAX_SYNTH_CASES):
         raise ContractError("INVALID_CASE_COUNT", f"cases must be an integer in 1..{MAX_SYNTH_CASES}")
+    if not isinstance(id_prefix, str) or id_prefix not in ("SYN", "SIM"):
+        raise ContractError("INVALID_ID_PREFIX", "id_prefix must be 'SYN' or 'SIM'")
 
     raw_proto, protocol = load_and_validate_protocol(protocol_path)
     raw_dgp: bytes | None = None
@@ -396,7 +399,7 @@ def generate_synthetic_cohort(
                 ]
                 writer.writerow(
                     [
-                        f"SYN-{i + 1:06d}",
+                        f"{id_prefix}-{i + 1:06d}",
                         label,
                         arm_ids[int(arm_idx[i])],
                         int(arm_idx[i]),

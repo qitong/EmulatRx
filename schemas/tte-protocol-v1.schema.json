@@ -232,6 +232,40 @@
     },
     "methodological_disclaimer": {
       "type": "string"
+    },
+    "project_mode": {
+      "type": "string",
+      "enum": ["synthetic_only", "simulated_cohort", "user_cohort"]
+    },
+    "target_rct": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nct_id", "brief_title"],
+      "properties": {
+        "nct_id": {
+          "type": "string",
+          "pattern": "^NCT[0-9]{8}$"
+        },
+        "brief_title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "record_url": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "receipt_sha256": {
+          "type": "string"
+        },
+        "primary_outcome_measure": {
+          "type": "string"
+        },
+        "primary_outcome_timeframe": {
+          "type": "string"
+        }
+      }
     }
   },
   "allOf": [

@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 
 from ._common import (
+    ALLOWED_SOURCE_MODES,
     ContractError,
     METHODOLOGICAL_DISCLAIMER,
     PROTOCOL_VERSION,
@@ -34,7 +35,7 @@ REQUIRED_ROOT_FIELDS = (
     "outcomes",
     "estimand",
 )
-OPTIONAL_ROOT_FIELDS = ("covariates", "methodological_disclaimer")
+OPTIONAL_ROOT_FIELDS = ("covariates", "methodological_disclaimer", "project_mode", "target_rct")
 ALLOWED_OPERATORS = frozenset(("==", "!=", "<", "<=", ">", ">=", "in", "not_in"))
 REFERENCE_ROLES = frozenset(("control", "reference", "comparator"))
 INVESTIGATIONAL_ROLES = frozenset(("active", "experimental"))
@@ -534,6 +535,49 @@ def validate_protocol_dict(obj: dict) -> dict:
                 norm_c["description"] = cov["description"]
             norm_covs.append(norm_c)
         normalized["covariates"] = norm_covs
+
+    if "project_mode" in obj:
+        pmode = obj["project_mode"]
+        if not isinstance(pmode, str) or pmode not in ALLOWED_SOURCE_MODES:
+            raise ContractError(
+                "UNSUPPORTED_SOURCE_MODE",
+                f"project_mode must be one of {sorted(ALLOWED_SOURCE_MODES)}",
+            )
+        normalized["project_mode"] = pmode
+
+    if "target_rct" in obj:
+        trct = obj["target_rct"]
+        if not isinstance(trct, dict):
+            raise ContractError("INVALID_TYPE", "target_rct must be an object")
+        _check_exact_keys(
+            trct,
+            required=("nct_id", "brief_title"),
+            optional=(
+                "record_url",
+                "source",
+                "receipt_sha256",
+                "primary_outcome_measure",
+                "primary_outcome_timeframe",
+            ),
+            context="target_rct",
+        )
+        nct_id = _require_nonempty_str(trct["nct_id"], "target_rct.nct_id")
+        if not re.fullmatch(r"NCT[0-9]{8}", nct_id):
+            raise ContractError("INVALID_NCT_ID", f"target_rct.nct_id '{nct_id}' must match NCT########")
+        btitle = _require_nonempty_str(trct["brief_title"], "target_rct.brief_title")
+        norm_rct: dict = {"nct_id": nct_id, "brief_title": btitle}
+        for opt_k in (
+            "record_url",
+            "source",
+            "receipt_sha256",
+            "primary_outcome_measure",
+            "primary_outcome_timeframe",
+        ):
+            if opt_k in trct:
+                if not isinstance(trct[opt_k], str):
+                    raise ContractError("INVALID_TYPE", f"target_rct.{opt_k} must be a string")
+                norm_rct[opt_k] = trct[opt_k]
+        normalized["target_rct"] = norm_rct
 
     if "methodological_disclaimer" in obj and not isinstance(obj["methodological_disclaimer"], str):
         raise ContractError("INVALID_TYPE", "methodological_disclaimer must be a string")

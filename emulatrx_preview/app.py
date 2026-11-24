@@ -1,4 +1,6 @@
-"""Private browser and MCP entry points for the pinned synthetic TTE pipeline."""
+"""Private browser, REST API, and MCP entry points for the Dual-Mode TTE Workbench & legacy synthetic benchmark."""
+
+from __future__ import annotations
 
 import base64
 from contextlib import asynccontextmanager
@@ -12,17 +14,36 @@ from urllib.parse import parse_qs, urlsplit
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
-from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Mount, Route
 
-from emulatrx_tte._common import ContractError
+from emulatrx_tte import (
+    CLINICAL_IDEA_PRESETS,
+    SAMPLE_COHORT_SPECS,
+    SOURCE_MODE_SIMULATED_COHORT,
+    SOURCE_MODE_USER_COHORT,
+    build_simulated_protocol_and_dgp,
+    fetch_rct_by_nct,
+    generate_sample_cohort_csv_bytes,
+    get_llm_status,
+    parse_research_idea_pico,
+    recommend_column_mapping,
+    search_candidate_rcts,
+)
+from emulatrx_tte._common import ContractError, MAX_USER_COHORT_BYTES
+from .dualmode_views import render_dualmode_run_view, workbench_home_view
 from .tte_runner import TTERunner
-from .tte_views import cohort_view, form, home_view, report_view, result_view, review_view
+from .tte_views import cohort_view, form, report_view, result_view, review_view
 from .web_protocol import FIELD_NAMES, FormError, protocol_from_fields
 
 
-NOTICE = "完全合成 TTE 方法学预览；非真实患者、非临床疗效证据、非因果实证证明。禁止上传患者数据。"
-DEFAULT_PROTOCOL = json.loads((Path(__file__).resolve().parents[1] / "examples" / "tte_preview_v1.json").read_text(encoding="utf-8"))
+NOTICE = (
+    "双轨数据与证据边界：🟢 自有队列真项目（user_cohort）按会话私网隔离并支持一键物理清除，发往外部大模型的请求仅含表级汇总统计、严禁外发任何个体患者行记录，结果受观察性因果识别四大前提约束；"
+    "🟣 无数据模拟预演（simulated_cohort）与合成基准（synthetic_only）均为非真实患者数据、非临床疗效证据。"
+)
+DEFAULT_PROTOCOL = json.loads(
+    (Path(__file__).resolve().parents[1] / "examples" / "tte_preview_v1.json").read_text(encoding="utf-8")
+)
 DEPENDENCY_COMMIT = os.environ.get("EMULATRX_TTE_DEPENDENCY_COMMIT", "development checkout")
 runner = TTERunner(os.environ.get("EMULATRX_RUNS_DIR", "/tmp/emulatrx-tte-preview-runs"))
 
@@ -42,19 +63,41 @@ MCP_TOKEN = _read_secret("EMULATRX_MCP_TOKEN_FILE")
 if secrets.compare_digest(WEB_PASSWORD, MCP_TOKEN):
     raise RuntimeError("web and MCP credentials must differ")
 
-allowed_hosts = [item.strip() for item in os.environ.get("EMULATRX_ALLOWED_HOSTS", "localhost:8000").split(",") if item.strip()]
+allowed_hosts = [
+    item.strip()
+    for item in os.environ.get("EMULATRX_ALLOWED_HOSTS", "localhost:8000").split(",")
+    if item.strip()
+]
 if not allowed_hosts:
     raise RuntimeError("EMULATRX_ALLOWED_HOSTS must not be empty")
-mcp = FastMCP("EmulatRx synthetic TTE preview", instructions=NOTICE,
-              stateless_http=True, json_response=True, max_request_body_size=20 * 1024,
-              transport_security=TransportSecuritySettings(allowed_hosts=allowed_hosts,
-                  allowed_origins=[f"https://{host}" for host in allowed_hosts] + [f"http://{host}" for host in allowed_hosts]))
+
+mcp = FastMCP(
+    "EmulatRx Dual-Mode TTE Workbench",
+    instructions=NOTICE,
+    stateless_http=True,
+    json_response=True,
+    max_request_body_size=2 * 1024 * 1024,
+    transport_security=TransportSecuritySettings(
+        allowed_hosts=allowed_hosts,
+        allowed_origins=[f"https://{host}" for host in allowed_hosts]
+        + [f"http://{host}" for host in allowed_hosts],
+    ),
+)
+
+
+# ----------------------------------------------------------------------
+# MCP Tools (Legacy Synthetic + New Dual-Mode RCT Matching & Execution)
+# ----------------------------------------------------------------------
 
 
 @mcp.tool(description="Validate and normalize a seven-element synthetic TTE protocol. No patient data is accepted.")
 def validate_tte_protocol(protocol: dict) -> dict:
-    return {"status": "valid", "source_mode": "synthetic_only", "normalized_protocol": runner.validate(protocol),
-            "analysis_dependency_commit": DEPENDENCY_COMMIT}
+    return {
+        "status": "valid",
+        "source_mode": "synthetic_only",
+        "normalized_protocol": runner.validate(protocol),
+        "analysis_dependency_commit": DEPENDENCY_COMMIT,
+    }
 
 
 @mcp.tool(description="Start an asynchronous, fully synthetic TTE protocol → cohort → diagnostics → estimates → report run. The default is 2,000 synthetic rows.")
@@ -62,52 +105,223 @@ def start_synthetic_tte(protocol: dict, cases: int = 2000, seed: int = 42, boots
     return runner.start(protocol, cases=cases, seed=seed, bootstrap_iterations=bootstrap_iterations)
 
 
-@mcp.tool(description="Read the status and bounded summary of a synthetic TTE run. Estimates are omitted when the diagnostic gate blocks.")
+@mcp.tool(description="Search ClinicalTrials.gov API v2 (with explicit offline curated fallback) for target RCTs matching a clinical research idea or condition/intervention keywords.")
+def search_target_rcts(
+    query: str = "",
+    condition: str = "",
+    intervention: str = "",
+    idea_text: str = "",
+    max_results: int = 5,
+) -> dict:
+    pico = None
+    if idea_text.strip():
+        pico = parse_research_idea_pico(idea_text)
+        query = query or pico["search_query_en"]
+        condition = condition or pico["condition_query_en"]
+        intervention = intervention or pico["intervention_query_en"]
+    res = search_candidate_rcts(
+        query,
+        condition=condition,
+        intervention=intervention,
+        context_summary=pico,
+        max_results=max(1, min(int(max_results), 8)),
+    )
+    return {"pico": pico, "llm_status": get_llm_status(), **res}
+
+
+@mcp.tool(description="Start a no-data simulated target-RCT feasibility rehearsal TTE run (source_mode='simulated_cohort').")
+def start_simulated_rct_tte(
+    nct_id: str = "",
+    idea_text: str = "",
+    cases: int = 1200,
+    confounding_strength: str = "medium",
+    effect_direction: str = "protective_moderate",
+    competing_rate_level: str = "medium",
+    weight_method: str = "overlap",
+    seed: int = 42,
+    bootstrap_iterations: int = 80,
+) -> dict:
+    pico = parse_research_idea_pico(idea_text) if idea_text.strip() else None
+    target_rct = None
+    if nct_id.strip():
+        target_rct = fetch_rct_by_nct(nct_id.strip())
+    elif pico:
+        found = search_candidate_rcts(
+            pico["search_query_en"],
+            condition=pico["condition_query_en"],
+            intervention=pico["intervention_query_en"],
+            context_summary=pico,
+            max_results=1,
+        )
+        if found["candidates"]:
+            target_rct = found["candidates"][0]
+    return runner.start_simulated_cohort(
+        target_rct=target_rct,
+        pico=pico,
+        sim_config={
+            "cases": cases,
+            "confounding_strength": confounding_strength,
+            "effect_direction": effect_direction,
+            "competing_rate_level": competing_rate_level,
+            "weight_method": weight_method,
+            "seed": seed,
+            "bootstrap_iterations": bootstrap_iterations,
+        },
+    )
+
+
+@mcp.tool(description="Create an isolated user-cohort session from a built-in demo sample ('cardiorenal_sglt2i' or 'oncology_io_nsclc') or base64 CSV/TSV bytes, returning a privacy-safe CohortProfile and default ColumnMappingSpec.")
+def profile_cohort_session(
+    sample_id: str = "",
+    csv_base64: str = "",
+    filename: str = "cohort.csv",
+    user_note: str = "",
+) -> dict:
+    if sample_id.strip():
+        fname, raw = generate_sample_cohort_csv_bytes(sample_id.strip())
+    elif csv_base64.strip():
+        raw = base64.b64decode(csv_base64.encode("ascii"), validate=True)
+        fname = filename
+    else:
+        raise ContractError("MISSING_COHORT_INPUT", "Provide sample_id or csv_base64")
+    saved = runner.save_session_cohort(raw, fname, user_note=user_note, sample_id=sample_id.strip() or None)
+    return {
+        "session_id": saved["session_id"],
+        "profile": {
+            "filename": saved["profile"]["filename"],
+            "row_count": saved["profile"]["row_count"],
+            "column_count": saved["profile"]["column_count"],
+            "input_sha256": saved["profile"]["input_sha256"],
+            "candidate_treatment_columns": saved["profile"]["candidate_treatment_columns"],
+            "candidate_time_columns": saved["profile"]["candidate_time_columns"],
+            "candidate_outcome_columns": saved["profile"]["candidate_outcome_columns"],
+        },
+        "interpretation": {
+            k: v for k, v in saved["interpretation"].items() if k != "sanitized_llm_payload"
+        },
+        "default_mapping": saved["default_mapping"],
+    }
+
+
+@mcp.tool(description="Start an owned-cohort real TTE analysis run (source_mode='user_cohort') on a previously profiled session_id.")
+def start_user_cohort_tte(
+    session_id: str,
+    mapping: dict | None = None,
+    nct_id: str = "",
+    weight_method: str = "overlap",
+    seed: int = 42,
+    bootstrap_iterations: int = 80,
+) -> dict:
+    sess = runner.get_session(session_id)
+    target_rct = fetch_rct_by_nct(nct_id.strip()) if nct_id.strip() else None
+    active_mapping = mapping or recommend_column_mapping(sess["profile"], target_rct=target_rct)
+    return runner.start_user_cohort(
+        session_id,
+        active_mapping,
+        target_rct=target_rct,
+        seed=seed,
+        bootstrap_iterations=bootstrap_iterations,
+        weight_method=weight_method,
+    )
+
+
+@mcp.tool(description="Physically delete an isolated user-cohort session and all derived cohort/run files.")
+def delete_cohort_session(session_id: str) -> dict:
+    return runner.delete_session(session_id)
+
+
+@mcp.tool(description="Read the status and bounded summary of any TTE run (synthetic_only, simulated_cohort, or user_cohort). Estimates are omitted when the diagnostic gate blocks.")
 def get_tte_run(run_id: str) -> dict:
     result = runner.get(run_id)
     if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 32 * 1024:
-        return {"run_id": result["run_id"], "state": result["state"], "gate_status": result.get("gate_status"),
-                "cohort_rows": result.get("cohort_rows"), "available_artifacts": result.get("available_artifacts", []),
-                "truncated": True, "hint": "Read specific artifacts with read_tte_artifact"}
+        compact = {
+            "run_id": result["run_id"],
+            "state": result["state"],
+            "project_mode": result.get("project_mode"),
+            "gate_status": result.get("gate_status"),
+            "cohort_rows": result.get("cohort_rows"),
+            "eligible_rows": result.get("eligible_rows"),
+            "available_artifacts": result.get("available_artifacts", []),
+            "truncated": True,
+            "hint": "Read specific artifacts with read_tte_artifact",
+        }
+        if "estimates" in result and isinstance(result["estimates"], dict):
+            compact["co_presented_comparison_table"] = result["estimates"].get("co_presented_comparison_table", [])
+            compact["source_mode"] = result["estimates"].get("source_mode")
+            compact["report_badge"] = result["estimates"].get("report_badge")
+        return compact
     return result
 
 
-@mcp.tool(description="Read a permitted synthetic artifact in base64 chunks of at most 16 KiB; use next_offset for pagination.")
+@mcp.tool(description="Read a permitted run artifact in base64 chunks of at most 16 KiB; use next_offset for pagination.")
 def read_tte_artifact(run_id: str, name: str, offset: int = 0, limit: int = 16384) -> dict:
     return runner.read_artifact(run_id, name, offset=offset, limit=limit)
 
 
-def page(body, status=200, refresh=False):
+# ----------------------------------------------------------------------
+# HTML Layout & Origin Helpers
+# ----------------------------------------------------------------------
+
+
+def page(body, status=200, refresh=False, title="EmulatRx · 目标试验模拟（TTE）双轨工作台"):
     refresh_tag = '<meta http-equiv="refresh" content="2">' if refresh else ""
     document = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">{refresh_tag}
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>EmulatRx · 合成 TTE 预览</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)}</title>
 <style>:root{{--ink:#18332f;--muted:#536965;--line:#d5dfd9;--paper:#fbfaf6;--accent:#176b5e;--soft:#e9f3ee;--warn:#fff1d7}}
 *{{box-sizing:border-box}}body{{font:16px/1.65 'PingFang SC','Noto Sans CJK SC','Source Han Sans SC',sans-serif;background:#eef2ef;color:var(--ink);margin:0}}
-main{{max-width:1160px;margin:24px auto;padding:clamp(18px,3vw,42px);background:var(--paper);border:1px solid var(--line);box-shadow:0 8px 28px #18332f12}}
-h1,h2,h3{{font-family:'Noto Serif CJK SC','Songti SC',serif;line-height:1.35}}h1{{margin:0 0 6px;font-size:1.8rem}}h2{{margin:36px 0 14px;font-size:1.55rem;border-bottom:1px solid var(--line);padding-bottom:9px}}h3{{margin:24px 0 8px;font-size:1.16rem}}
-p{{max-width:78ch}}.eyebrow{{font-size:.78rem;letter-spacing:.12em;color:var(--accent);font-weight:700}}
-.notice{{background:var(--warn);border-left:5px solid #a26416;padding:13px 16px;margin:20px 0;font-size:.94rem}}.error,.field-error{{background:#fff0ec;color:#912b1d;border-left:4px solid #ae4937;padding:9px 12px}}.field-error{{margin:8px 0;font-size:.9rem}}
+main{{max-width:1180px;margin:22px auto;padding:clamp(18px,3vw,40px);background:var(--paper);border:1px solid var(--line);box-shadow:0 8px 28px #18332f12}}
+h1,h2,h3{{font-family:'Noto Serif CJK SC','Songti SC',serif;line-height:1.35}}h1{{margin:0 0 6px;font-size:1.82rem}}h2{{margin:32px 0 14px;font-size:1.48rem;border-bottom:1px solid var(--line);padding-bottom:8px}}h3{{margin:18px 0 8px;font-size:1.14rem}}
+p{{max-width:86ch}}.eyebrow{{font-size:.78rem;letter-spacing:.1em;color:var(--accent);font-weight:700}}
+.notice{{background:var(--warn);border-left:5px solid #a26416;padding:12px 16px;margin:16px 0;font-size:.92rem}}.error,.field-error{{background:#fff0ec;color:#912b1d;border-left:4px solid #ae4937;padding:10px 14px}}.field-error{{margin:8px 0;font-size:.9rem}}
 .hero{{padding:28px 30px;background:#e8f2ec;border-left:6px solid var(--accent)}}.hero h2{{border:0;margin:0 0 12px;font-size:2rem}}.hero p{{font-size:1.08rem}}.hero-warning{{font-weight:700}}
-.flow-intro{{margin:24px 0}}.metric-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:10px;margin:18px 0}}.metric-grid>div{{border:1px solid var(--line);background:#fff;padding:14px 16px}}.metric-grid strong{{display:block;font:700 1.35rem/1.3 'Noto Serif CJK SC','Songti SC',serif;color:var(--accent)}}.metric-grid span{{display:block;color:var(--muted);font-size:.85rem;margin-top:4px}}
-fieldset{{border:1px solid var(--line);margin:18px 0;padding:18px 20px;background:#fff}}legend{{font-weight:700;color:var(--accent);font-size:1.08rem;padding:0 8px}}fieldset p{{margin:4px 0 14px;color:var(--muted)}}.field-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px}}.control{{display:block;font-weight:650}}.control span,.control small{{display:block}}.control small{{font-weight:400;font-size:.82rem;color:var(--muted);line-height:1.45;margin:4px 0 7px}}
-input,select{{font:inherit;width:100%;border:1px solid #a9bcb3;border-radius:3px;padding:9px 10px;background:#fff;color:var(--ink)}}input:focus-visible,select:focus-visible,button:focus-visible,a:focus-visible,summary:focus-visible{{outline:3px solid #e1a44b;outline-offset:2px}}
-.actions{{display:flex;gap:10px;flex-wrap:wrap;margin:24px 0}}button,.primary-link{{display:inline-block;font:700 1rem/1.3 inherit;background:var(--accent);color:white;border:1px solid var(--accent);padding:11px 19px;cursor:pointer;text-decoration:none}}button:hover,.primary-link:hover{{background:#12574c;color:#fff}}button.secondary{{background:#fff;color:var(--accent)}}button.secondary:hover{{background:var(--soft)}}
-pre{{white-space:pre-wrap;word-break:break-word;background:#eef2ef;padding:14px;max-height:550px;overflow:auto;font-size:.83rem}}details{{border:1px solid var(--line);background:#fff;margin:15px 0;padding:10px 14px}}summary{{cursor:pointer;font-weight:700;color:var(--accent)}}
-.scroll{{overflow:auto;max-width:100%}}table{{border-collapse:collapse;width:100%;font-size:.9rem}}td,th{{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}}th{{background:#eef3ef}}.variable-list{{columns:2;line-height:1.8}}
-figure{{display:inline-block;vertical-align:top;max-width:48%;min-width:330px;margin:8px 1% 8px 0}}figure svg{{width:100%;height:auto;background:#f8faf8}}figcaption{{font-weight:700}}.bar{{background:var(--accent);height:12px;min-width:2px}}.legend{{font-size:.8rem}}a{{color:#125e53}}code{{font-size:.83rem;word-break:break-all}}
+.flow-intro{{margin:24px 0}}.metric-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:10px;margin:16px 0}}.metric-grid>div{{border:1px solid var(--line);background:#fff;padding:13px 15px;border-radius:5px}}.metric-grid strong{{display:block;font:700 1.28rem/1.3 'Noto Serif CJK SC','Songti SC',serif;color:var(--accent)}}.metric-grid span{{display:block;color:var(--muted);font-size:.84rem;margin-top:4px}}
+fieldset{{border:1px solid var(--line);border-radius:6px;margin:16px 0;padding:18px 20px;background:#fff}}legend{{font-weight:700;color:var(--accent);font-size:1.06rem;padding:0 8px}}fieldset p{{margin:4px 0 12px;color:var(--muted)}}.field-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(225px,1fr));gap:14px}}.control{{display:block;font-weight:650}}.control span,.control small{{display:block}}.control small{{font-weight:400;font-size:.82rem;color:var(--muted);line-height:1.45;margin:4px 0 7px}}
+input,select{{font:inherit;width:100%;border:1px solid #a9bcb3;border-radius:4px;padding:8px 10px;background:#fff;color:var(--ink)}}input:focus-visible,select:focus-visible,button:focus-visible,a:focus-visible,summary:focus-visible{{outline:3px solid #e1a44b;outline-offset:2px}}
+.actions{{display:flex;gap:10px;flex-wrap:wrap;margin:20px 0}}button,.primary-link{{display:inline-block;font:700 .96rem/1.3 inherit;background:var(--accent);color:white;border:1px solid var(--accent);border-radius:4px;padding:10px 18px;cursor:pointer;text-decoration:none}}button:hover,.primary-link:hover{{background:#12574c;color:#fff}}button.secondary{{background:#fff;color:var(--accent)}}button.secondary:hover{{background:var(--soft)}}
+pre{{white-space:pre-wrap;word-break:break-word;background:#eef2ef;padding:14px;max-height:550px;overflow:auto;font-size:.82rem}}details{{border:1px solid var(--line);border-radius:5px;background:#fff;margin:14px 0;padding:10px 14px}}summary{{cursor:pointer;font-weight:700;color:var(--accent)}}
+.scroll{{overflow:auto;max-width:100%}}table{{border-collapse:collapse;width:100%;font-size:.88rem}}td,th{{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}}th{{background:#eef3ef}}.variable-list{{columns:2;line-height:1.8}}
+figure{{display:inline-block;vertical-align:top;max-width:48.5%;min-width:320px;margin:8px 1% 8px 0}}figure svg{{width:100%;height:auto;background:#f8faf8}}figcaption{{font-weight:700;margin-bottom:6px}}.bar{{background:var(--accent);height:12px;min-width:2px}}.legend{{font-size:.8rem;margin-top:6px}}a{{color:#125e53}}code{{font-size:.82rem;word-break:break-all}}
 .run-overview{{background:#f3f7f3;border-top:4px solid var(--accent);padding:4px 18px 16px}}.run-overview h2{{margin-top:18px}}.run-overview nav{{padding:10px 0;border-top:1px solid var(--line)}}.key-result{{padding:14px 18px;background:var(--soft);font-weight:650}}
-@media(max-width:700px){{main{{margin:0;padding:18px}}.hero{{padding:20px}}.hero h2{{font-size:1.55rem}}.variable-list{{columns:1}}figure{{min-width:100%;max-width:100%}}}}
-@media print{{body{{background:white;color:#111}}main{{border:0;box-shadow:none;max-width:none;margin:0;padding:0}}.notice{{background:white;border:1px solid #aaa}}.actions,.run-overview nav,.print-hide{{display:none!important}}details{{border:0;padding:0}}details>summary{{display:none}}details>*{{display:block}}figure{{break-inside:avoid}}.scroll{{overflow:visible}}table{{font-size:9pt}}td,th{{white-space:normal;padding:4px}}}}
+@media(max-width:700px){{main{{margin:0;padding:16px}}.hero{{padding:20px}}.hero h2{{font-size:1.55rem}}.variable-list{{columns:1}}figure{{min-width:100%;max-width:100%}}}}
+@media print{{body{{background:white;color:#111}}main{{border:0;box-shadow:none;max-width:none;margin:0;padding:0}}.notice{{background:white;border:1px solid #aaa}}.actions,.run-overview nav,.print-hide,.wb-topbar,.stepper{{display:none!important}}details{{border:0;padding:0}}details>summary{{display:none}}details>*{{display:block}}figure{{break-inside:avoid}}.scroll{{overflow:visible}}table{{font-size:9pt}}td,th{{white-space:normal;padding:4px}}}}
 </style></head><body><main>
-<h1>EmulatRx 合成 TTE 工作台</h1><div class="notice"><strong>数据边界：</strong>{html.escape(NOTICE)}</div>
-<details class="version-note"><summary>代码版本与分析来源</summary><p>分析依赖：已合入 main 的 PR #14，预览固定源提交 <code>{html.escape(DEPENDENCY_COMMIT)}</code>。</p></details>{body}</main></body></html>"""
-    return HTMLResponse(document, status_code=status, headers={"Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'", "X-Content-Type-Options": "nosniff"})
+<h1>EmulatRx · 目标试验模拟（TTE）双轨研究工作台</h1><div class="notice"><strong>方法学与数据隐私边界：</strong>{html.escape(NOTICE)}</div>
+<details class="version-note print-hide"><summary>代码版本与确定性统计引擎来源</summary><p>底层加权门禁与竞争风险生存估计 100% 由确定性 <code>emulatrx_tte</code> 计算；源提交 <code>{html.escape(DEPENDENCY_COMMIT)}</code>。</p></details>{body}</main></body></html>"""
+    return HTMLResponse(
+        document,
+        status_code=status,
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
-async def _form_fields(request):
+def _check_same_origin(request):
     origin = request.headers.get("origin")
     if origin and urlsplit(origin).netloc != request.headers.get("host"):
         raise ContractError("ORIGIN_MISMATCH", "request origin does not match host")
+
+
+async def _read_json_body(request, max_bytes=256 * 1024):
+    _check_same_origin(request)
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > max_bytes:
+            raise ContractError("INPUT_TOO_LARGE", "JSON request exceeds size limit")
+        body.extend(chunk)
+    try:
+        data = json.loads(body.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ContractError("INVALID_JSON", f"invalid JSON payload: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ContractError("INVALID_TYPE", "JSON body must be an object")
+    return data
+
+
+async def _form_fields(request):
+    _check_same_origin(request)
     if request.headers.get("content-type", "").split(";", 1)[0].lower() != "application/x-www-form-urlencoded":
         raise ContractError("INVALID_MEDIA_TYPE", "only the fixed form is accepted")
     body = bytearray()
@@ -126,8 +340,196 @@ def _protocol_from_form(fields):
     return runner.validate(protocol), settings
 
 
+# ----------------------------------------------------------------------
+# Dual-Mode Workbench REST API Endpoints
+# ----------------------------------------------------------------------
+
+
+async def api_workbench_bootstrap(request):
+    return JSONResponse(
+        {
+            "llm_status": get_llm_status(),
+            "samples": list(SAMPLE_COHORT_SPECS.values()),
+            "ideas": list(CLINICAL_IDEA_PRESETS),
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+async def api_download_sample(request):
+    sample_id = request.path_params["sample_id"]
+    try:
+        filename, raw = generate_sample_cohort_csv_bytes(sample_id)
+    except ValueError:
+        return JSONResponse({"error": "未知的样表编号"}, status_code=404)
+    return Response(
+        raw,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+async def api_upload_or_load_session(request):
+    try:
+        _check_same_origin(request)
+        ctype = request.headers.get("content-type", "").lower()
+        if ctype.startswith("application/json"):
+            payload = await _read_json_body(request)
+            sample_id = str(payload.get("sample_id", "")).strip()
+            if sample_id not in SAMPLE_COHORT_SPECS:
+                raise ContractError("INVALID_SAMPLE_ID", f"未知的内置样表编号：{sample_id}")
+            filename, raw = generate_sample_cohort_csv_bytes(sample_id)
+            saved = runner.save_session_cohort(
+                raw,
+                filename,
+                session_id=payload.get("session_id"),
+                user_note=str(payload.get("user_note", "")),
+                sample_id=sample_id,
+            )
+        elif ctype.startswith("multipart/form-data"):
+            form_data = await request.form(max_files=1, max_fields=6, max_part_size=MAX_USER_COHORT_BYTES)
+            upload = form_data.get("file")
+            if upload is None or not hasattr(upload, "read"):
+                raise ContractError("MISSING_FILE", "请选择要上传的 CSV / TSV 队列文件。")
+            raw = await upload.read()
+            filename = getattr(upload, "filename", None) or "uploaded_cohort.csv"
+            await upload.close()
+            user_note = str(form_data.get("user_note") or "")
+            session_id = str(form_data.get("session_id") or "") or None
+            saved = runner.save_session_cohort(raw, filename, session_id=session_id, user_note=user_note)
+        else:
+            raise ContractError("UNSUPPORTED_CONTENT_TYPE", "请通过文件上传表单或样表载入接口提交。")
+
+        return JSONResponse(
+            {
+                "session_id": saved["session_id"],
+                "profile": saved["profile"],
+                "interpretation": saved["interpretation"],
+                "default_mapping": saved["default_mapping"],
+                "llm_status": get_llm_status(),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+    except ContractError as exc:
+        return JSONResponse({"error": f"{exc.code}: {exc}", "code": exc.code}, status_code=400)
+
+
+async def api_update_session_note(request):
+    try:
+        payload = await _read_json_body(request, max_bytes=16 * 1024)
+        res = runner.update_session_note(request.path_params["session_id"], str(payload.get("user_note", "")))
+        return JSONResponse(res, headers={"Cache-Control": "no-store"})
+    except ContractError as exc:
+        return JSONResponse({"error": f"{exc.code}: {exc}", "code": exc.code}, status_code=400)
+
+
+async def api_delete_session(request):
+    try:
+        _check_same_origin(request)
+        res = runner.delete_session(request.path_params["session_id"])
+        return JSONResponse(res, status_code=200, headers={"Cache-Control": "no-store"})
+    except ContractError as exc:
+        return JSONResponse({"error": f"{exc.code}: {exc}", "code": exc.code}, status_code=400)
+
+
+async def api_parse_idea(request):
+    try:
+        payload = await _read_json_body(request, max_bytes=32 * 1024)
+        pico = parse_research_idea_pico(str(payload.get("idea_text", "")))
+        return JSONResponse({"pico": pico, "llm_status": get_llm_status()}, headers={"Cache-Control": "no-store"})
+    except ContractError as exc:
+        return JSONResponse({"error": f"{exc.code}: {exc}", "code": exc.code}, status_code=400)
+
+
+async def api_search_rcts(request):
+    try:
+        payload = await _read_json_body(request, max_bytes=64 * 1024)
+        res = search_candidate_rcts(
+            str(payload.get("query", "")),
+            condition=str(payload.get("condition", "")),
+            intervention=str(payload.get("intervention", "")),
+            context_summary=payload.get("context_summary") if isinstance(payload.get("context_summary"), dict) else None,
+            max_results=int(payload.get("max_results", 6)),
+        )
+        return JSONResponse(res, headers={"Cache-Control": "no-store"})
+    except ContractError as exc:
+        return JSONResponse({"error": f"{exc.code}: {exc}", "code": exc.code}, status_code=400)
+
+
+async def api_draft_mapping_or_protocol(request):
+    try:
+        payload = await _read_json_body(request, max_bytes=128 * 1024)
+        pmode = str(payload.get("project_mode", ""))
+        target_rct = payload.get("target_rct") if isinstance(payload.get("target_rct"), dict) else None
+        if pmode == SOURCE_MODE_USER_COHORT:
+            sess = runner.get_session(str(payload.get("session_id", "")))
+            mapping = recommend_column_mapping(sess["profile"], target_rct=target_rct)
+            return JSONResponse({"project_mode": pmode, "mapping": mapping}, headers={"Cache-Control": "no-store"})
+        if pmode == SOURCE_MODE_SIMULATED_COHORT:
+            pico = payload.get("pico") if isinstance(payload.get("pico"), dict) else None
+            proto, dgp = build_simulated_protocol_and_dgp(target_rct=target_rct, pico=pico)
+            return JSONResponse(
+                {"project_mode": pmode, "protocol": proto, "dgp_preview": dgp},
+                headers={"Cache-Control": "no-store"},
+            )
+        raise ContractError("UNSUPPORTED_SOURCE_MODE", f"Unsupported project_mode: {pmode}")
+    except ContractError as exc:
+        return JSONResponse({"error": f"{exc.code}: {exc}", "code": exc.code}, status_code=400)
+
+
+async def api_start_dual_run(request):
+    try:
+        payload = await _read_json_body(request, max_bytes=128 * 1024)
+        pmode = str(payload.get("project_mode", ""))
+        target_rct = payload.get("target_rct") if isinstance(payload.get("target_rct"), dict) else None
+        if pmode == SOURCE_MODE_USER_COHORT:
+            session_id = str(payload.get("session_id", ""))
+            mapping = payload.get("mapping")
+            if not isinstance(mapping, dict):
+                raise ContractError("INVALID_MAPPING", "mapping must be an object")
+            status = runner.start_user_cohort(session_id, mapping, target_rct=target_rct)
+        elif pmode == SOURCE_MODE_SIMULATED_COHORT:
+            pico = payload.get("pico") if isinstance(payload.get("pico"), dict) else None
+            sim_config = payload.get("sim_config") if isinstance(payload.get("sim_config"), dict) else {}
+            status = runner.start_simulated_cohort(target_rct=target_rct, pico=pico, sim_config=sim_config)
+        else:
+            raise ContractError("UNSUPPORTED_SOURCE_MODE", f"Unsupported project_mode: {pmode}")
+        return JSONResponse(
+            {
+                **status,
+                "status_url": f"/api/dual-runs/{status['run_id']}",
+                "view_url": f"/runs/{status['run_id']}",
+                "report_url": f"/runs/{status['run_id']}/report",
+            },
+            status_code=202,
+            headers={"Cache-Control": "no-store"},
+        )
+    except ContractError as exc:
+        code_http = 429 if exc.code == "BUSY" else 400
+        return JSONResponse({"error": f"{exc.code}: {exc}", "code": exc.code}, status_code=code_http)
+
+
+async def api_get_dual_run(request):
+    try:
+        result = runner.get(request.path_params["run_id"])
+    except (ContractError, OSError, ValueError):
+        return JSONResponse({"error": "运行不存在或已清除。"}, status_code=404)
+    out = dict(result)
+    if result.get("state") not in ("queued", "running") and result.get("kind") != "synthetic_tte":
+        out["rendered_html"] = render_dualmode_run_view(result, runner.root)
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+# ----------------------------------------------------------------------
+# Browser Pages (Workbench Home + Dual-Mode & Legacy Run/Report Views)
+# ----------------------------------------------------------------------
+
+
 async def home(request):
-    return page(home_view())
+    return page(workbench_home_view())
 
 
 async def new_protocol(request):
@@ -172,7 +574,10 @@ async def show_run(request):
         result = runner.get(request.path_params["run_id"])
     except (ContractError, OSError, ValueError):
         return page("运行不存在或已过期。", status=404)
-    return page(result_view(result, runner.root), refresh=result["state"] in ("queued", "running"))
+    is_running = result["state"] in ("queued", "running")
+    if result.get("kind", "synthetic_tte") != "synthetic_tte":
+        return page(render_dualmode_run_view(result, runner.root), refresh=is_running)
+    return page(result_view(result, runner.root), refresh=is_running)
 
 
 async def show_cohort(request):
@@ -194,6 +599,22 @@ async def show_report(request):
         result = runner.get(request.path_params["run_id"])
         if result["state"] not in ("completed", "blocked"):
             return page("报告尚未生成。", status=409)
+        if result.get("kind", "synthetic_tte") != "synthetic_tte":
+            pmode = result.get("project_mode", "dual")
+            title_prefix = (
+                "真实队列目标试验模拟（真项目）分析报告"
+                if pmode == SOURCE_MODE_USER_COHORT
+                else "目标试验模拟（无数据模拟预演项目）可行性报告"
+            )
+            response = page(
+                render_dualmode_run_view(result, runner.root, standalone_report=True),
+                title=f"EmulatRx · {title_prefix}",
+            )
+            if request.query_params.get("download") == "1":
+                slug = "user-cohort-report" if pmode == SOURCE_MODE_USER_COHORT else "simulated-rehearsal-report"
+                response.headers["Content-Disposition"] = f'attachment; filename="emulatrx-{slug}-{result["run_id"]}.html"'
+            return response
+
         response = page(report_view(result, runner.root))
         if request.query_params.get("download") == "1":
             response.headers["Content-Disposition"] = f'attachment; filename="emulatrx-synthetic-report-{result["run_id"]}.html"'
@@ -211,7 +632,7 @@ async def download_artifact(request):
 
 
 async def health(request):
-    return JSONResponse({"status": "ok", "service": "emulatrx-synthetic-tte-preview"})
+    return JSONResponse({"status": "ok", "service": "emulatrx-dualmode-tte-workbench"})
 
 
 mcp_app = mcp.streamable_http_app()
@@ -223,16 +644,32 @@ async def lifespan(app):
         yield
 
 
-inner = Starlette(routes=[Route("/healthz", health), Route("/", home),
-                          Route("/protocol/new", new_protocol),
-                          Route("/protocol/edit", edit_protocol, methods=["POST"]),
-                          Route("/validate", validate_form, methods=["POST"]),
-                          Route("/runs", create_run, methods=["POST"]),
-                          Route("/runs/{run_id}/cohort", show_cohort),
-                          Route("/runs/{run_id}/report", show_report),
-                          Route("/runs/{run_id}", show_run),
-                          Route("/runs/{run_id}/artifacts/{name:path}", download_artifact),
-                          Mount("/", app=mcp_app)], lifespan=lifespan)
+inner = Starlette(
+    routes=[
+        Route("/healthz", health),
+        Route("/", home),
+        Route("/api/workbench/bootstrap", api_workbench_bootstrap),
+        Route("/api/samples/{sample_id}/download", api_download_sample),
+        Route("/api/sessions/upload", api_upload_or_load_session, methods=["POST"]),
+        Route("/api/sessions/{session_id}/note", api_update_session_note, methods=["POST"]),
+        Route("/api/sessions/{session_id}", api_delete_session, methods=["DELETE"]),
+        Route("/api/idea/parse", api_parse_idea, methods=["POST"]),
+        Route("/api/rcts/search", api_search_rcts, methods=["POST"]),
+        Route("/api/rcts/draft", api_draft_mapping_or_protocol, methods=["POST"]),
+        Route("/api/dual-runs", api_start_dual_run, methods=["POST"]),
+        Route("/api/dual-runs/{run_id}", api_get_dual_run),
+        Route("/protocol/new", new_protocol),
+        Route("/protocol/edit", edit_protocol, methods=["POST"]),
+        Route("/validate", validate_form, methods=["POST"]),
+        Route("/runs", create_run, methods=["POST"]),
+        Route("/runs/{run_id}/cohort", show_cohort),
+        Route("/runs/{run_id}/report", show_report),
+        Route("/runs/{run_id}", show_run),
+        Route("/runs/{run_id}/artifacts/{name:path}", download_artifact),
+        Mount("/", app=mcp_app),
+    ],
+    lifespan=lifespan,
+)
 
 
 class AuthenticationGate:
@@ -253,13 +690,20 @@ class AuthenticationGate:
                 scheme, encoded = authorization.split(b" ", 1)
                 decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
                 user, password = decoded.split(":", 1)
-                valid = scheme.lower() == b"basic" and user == "preview" and secrets.compare_digest(password, WEB_PASSWORD)
+                valid = (
+                    scheme.lower() == b"basic"
+                    and user == "preview"
+                    and secrets.compare_digest(password, WEB_PASSWORD)
+                )
             except (ValueError, UnicodeError):
                 valid = False
             challenge = b'Basic realm="EmulatRx synthetic TTE preview"'
         if not valid:
-            response = JSONResponse({"error": "authentication required"}, status_code=401,
-                                    headers={"WWW-Authenticate": challenge.decode("ascii"), "Cache-Control": "no-store"})
+            response = JSONResponse(
+                {"error": "authentication required"},
+                status_code=401,
+                headers={"WWW-Authenticate": challenge.decode("ascii"), "Cache-Control": "no-store"},
+            )
             return await response(scope, receive, send)
         return await self.app(scope, receive, send)
 
