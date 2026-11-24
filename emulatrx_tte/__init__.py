@@ -35,6 +35,8 @@ from .llm_assist import (
     assert_llm_payload_privacy_safe,
     get_llm_status,
     interpret_cohort_profile,
+    normalize_llm_base_url,
+    parse_llm_json_content,
     parse_research_idea_pico,
     sanitize_profile_for_llm,
 )

@@ -170,7 +170,16 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
         def fake_ctgov(req, timeout):
             return _FakeHTTPResp(json.dumps(MOCK_STUDIES).encode("utf-8"))
 
-        with mock.patch.dict(os.environ, {"EMULATRX_LLM_API_KEY": "sk-test-e2e-key"}, clear=False):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "EMULATRX_LLM_API_KEY_FILE": str(self.base / "missing_llm_secret"),
+                "EMULATRX_LLM_API_KEY": "sk-test-e2e-key",
+                "EMULATRX_LLM_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/",
+                "EMULATRX_LLM_MODEL": "qwen-plus",
+            },
+            clear=False,
+        ):
             with mock.patch.object(llm_assist, "urlopen_llm", side_effect=fake_llm), mock.patch.object(
                 rct_matcher, "urlopen_ctgov", side_effect=fake_ctgov
             ):
@@ -368,6 +377,34 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
             del_res = self.mcp_call("delete_cohort_session", {"session_id": sid})
             self.assertEqual(del_res["status"], "session_deleted")
             self.assertFalse(del_res["session_exists_on_disk"])
+
+    def test_ymadmin_secret_file_contract_and_zero_secret_leak_in_web_responses(self):
+        secret_path = self.base / "ymadmin_llm_secret"
+        clean_env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("EMULATRX_LLM_API_KEY_FILE", "EMULATRX_LLM_API_KEY", "OPENAI_API_KEY")
+        }
+        # 1. Missing secret file -> container/service boots cleanly and reports unmounted key deterministic fallback
+        with mock.patch.object(llm_assist, "DEFAULT_LLM_SECRET_FILE", self.base / "no_default_secret"):
+            with mock.patch.dict(os.environ, {**clean_env, "EMULATRX_LLM_API_KEY_FILE": str(secret_path)}, clear=True):
+                boot_no_key = self.client.get("/api/workbench/bootstrap", headers=self.web_auth)
+                self.assertEqual(boot_no_key.status_code, 200)
+                self.assertFalse(boot_no_key.json()["llm_status"]["enabled"])
+                self.assertIn("当前未挂载模型密钥，已启用确定性规则引擎兜底", boot_no_key.json()["llm_status"]["label_zh"])
+
+                # 2. Provision secret file -> service activates LLM mode without leaking secret anywhere
+                secret_val = "sk-YMADMIN-BAILIAN-DO-NOT-ECHO-1122334455"
+                secret_path.write_text(secret_val + "\n", encoding="utf-8")
+                boot_with_key = self.client.get("/api/workbench/bootstrap", headers=self.web_auth)
+                self.assertEqual(boot_with_key.status_code, 200)
+                self.assertTrue(boot_with_key.json()["llm_status"]["enabled"])
+                self.assertEqual(boot_with_key.json()["llm_status"]["key_source"], "secret_file")
+                self.assertNotIn(secret_val, boot_with_key.text)
+
+                home_with_key = self.client.get("/", headers=self.web_auth)
+                self.assertEqual(home_with_key.status_code, 200)
+                self.assertNotIn(secret_val, home_with_key.text)
 
 
 if __name__ == "__main__":

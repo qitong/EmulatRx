@@ -6,7 +6,7 @@ services:
       dockerfile: Dockerfile.preview
       args:
         CODE_COMMIT: ${EMULATRX_CODE_COMMIT:?Set tested full commit SHA}
-        TTE_DEPENDENCY_COMMIT: ${EMULATRX_TTE_DEPENDENCY_COMMIT:?Set pinned reviewed PR 14 commit SHA}
+        TTE_DEPENDENCY_COMMIT: ${EMULATRX_TTE_DEPENDENCY_COMMIT:?Set pinned reviewed commit SHA}
     image: emulatrx-preview:${EMULATRX_CODE_COMMIT:?Set tested full commit SHA}
     init: true
     restart: unless-stopped
@@ -25,11 +25,19 @@ services:
       EMULATRX_WEB_PASSWORD_FILE: /run/secrets/web_password
       EMULATRX_MCP_TOKEN_FILE: /run/secrets/mcp_token
       EMULATRX_ALLOWED_HOSTS: ${EMULATRX_ALLOWED_HOSTS:?Set private Tailscale host and local loopback hosts}
+      # Optional OpenAI-compatible gateway (DeepSeek / DashScope Bailian / OpenAI):
+      # If /run/secrets/llm_api_key is not mounted or empty, the container starts cleanly in deterministic rule mode.
+      EMULATRX_LLM_API_KEY_FILE: ${EMULATRX_LLM_API_KEY_FILE:-/run/secrets/llm_api_key}
+      EMULATRX_LLM_BASE_URL: ${EMULATRX_LLM_BASE_URL:-https://api.openai.com/v1}
+      EMULATRX_LLM_MODEL: ${EMULATRX_LLM_MODEL:-gpt-4o-mini}
     secrets:
       - web_password
       - mcp_token
     volumes:
       - /opt/emulatrx-preview/data:/data
+      # Optional host secret directory bind: when /opt/emulatrx-preview/secrets/llm_api_key exists (0400, UID 10001),
+      # set EMULATRX_LLM_API_KEY_FILE=/run/emulatrx-llm/llm_api_key or mount /opt/emulatrx-preview/secrets/llm_api_key:/run/secrets/llm_api_key:ro
+      # in an optional compose.llm.yaml override without blocking startup when no LLM key file is provisioned.
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).read()"]
       interval: 30s

@@ -139,9 +139,14 @@ class PrivacyGuardAndLLMAssistTests(unittest.TestCase):
                 }
                 return _FakeHTTPResponse(json.dumps(reply).encode("utf-8"))
 
+            # Simulate existing env without secret file
             with mock.patch.dict(
                 os.environ,
-                {"EMULATRX_LLM_API_KEY": "sk-mock-test-key", "EMULATRX_LLM_MODEL": "gpt-4o-mini"},
+                {
+                    "EMULATRX_LLM_API_KEY_FILE": str(Path(tempfile.gettempdir()) / "nonexistent-secret-key"),
+                    "EMULATRX_LLM_API_KEY": "sk-mock-test-key",
+                    "EMULATRX_LLM_MODEL": "gpt-4o-mini",
+                },
                 clear=False,
             ):
                 self.assertTrue(get_llm_status()["enabled"])
@@ -201,6 +206,116 @@ class PrivacyGuardAndLLMAssistTests(unittest.TestCase):
                 pico_fb = parse_research_idea_pico("帕博利珠单抗联合含铂化疗一线治疗晚期非小细胞肺癌")
                 self.assertEqual(pico_fb["assist_mode"], "deterministic_rules")
                 self.assertIn("Pembrolizumab", pico_fb["search_query_en"])
+
+    def test_secret_file_priority_empty_file_fallback_zero_key_leak_and_deepseek_bailian_gateways(self):
+        # 1. URL normalization for DeepSeek, Alibaba Bailian (DashScope), and OpenAI
+        self.assertEqual(llm_assist.normalize_llm_base_url("https://api.deepseek.com/"), "https://api.deepseek.com/v1")
+        self.assertEqual(llm_assist.normalize_llm_base_url("https://api.deepseek.com/v1/"), "https://api.deepseek.com/v1")
+        self.assertEqual(
+            llm_assist.normalize_llm_base_url("https://dashscope.aliyuncs.com/compatible-mode"),
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        )
+        self.assertEqual(
+            llm_assist.normalize_llm_base_url("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"),
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        )
+        self.assertEqual(llm_assist.normalize_llm_base_url("https://api.openai.com/v1"), "https://api.openai.com/v1")
+
+        with tempfile.TemporaryDirectory() as td:
+            tbase = Path(td)
+            secret_file = tbase / "llm_api_key"
+            default_secret_file = tbase / "default_run_secret"
+            empty_file = tbase / "empty_secret"
+            empty_file.write_text("   \n\t  ", encoding="utf-8")
+
+            secret_token = "sk-TOP-PRIORITY-FILE-SECRET-99887766"
+            secret_file.write_text(f"  {secret_token}\n", encoding="utf-8")
+            default_secret_file.write_text("sk-DEFAULT-RUN-SECRET-554433\n", encoding="utf-8")
+
+            # 2. Empty secret file + no env keys -> clean deterministic fallback & honest banner
+            clean_env = {
+                k: v
+                for k, v in os.environ.items()
+                if k not in ("EMULATRX_LLM_API_KEY_FILE", "EMULATRX_LLM_API_KEY", "OPENAI_API_KEY")
+            }
+            with mock.patch.object(llm_assist, "DEFAULT_LLM_SECRET_FILE", tbase / "absent_default"):
+                with mock.patch.dict(os.environ, {**clean_env, "EMULATRX_LLM_API_KEY_FILE": str(empty_file)}, clear=True):
+                    st_empty = get_llm_status()
+                    self.assertFalse(st_empty["enabled"])
+                    self.assertEqual(st_empty["mode"], "deterministic_rules")
+                    self.assertIn("当前未挂载模型密钥，已启用确定性规则引擎兜底", st_empty["label_zh"])
+
+            # 3. Default /run/secrets/llm_api_key auto-pickup when EMULATRX_LLM_API_KEY_FILE is unset
+            with mock.patch.object(llm_assist, "DEFAULT_LLM_SECRET_FILE", default_secret_file):
+                with mock.patch.dict(
+                    os.environ,
+                    {**clean_env, "EMULATRX_LLM_API_KEY": "sk-LOWER-PRIORITY-ENV"},
+                    clear=True,
+                ):
+                    st_def = get_llm_status()
+                    self.assertTrue(st_def["enabled"])
+                    self.assertEqual(st_def["key_source"], "default_secret_file")
+                    self.assertNotIn("sk-DEFAULT-RUN-SECRET-554433", json.dumps(st_def, ensure_ascii=False))
+
+            # 4. Explicit EMULATRX_LLM_API_KEY_FILE wins over EMULATRX_LLM_API_KEY & OPENAI_API_KEY + DeepSeek-R1 <think> & ```json parsing
+            seen_auth: list[str] = []
+            seen_urls: list[str] = []
+            seen_bodies: list[dict] = []
+
+            def fake_deepseek_reasoner(req, timeout):
+                seen_urls.append(req.full_url)
+                seen_auth.append(req.get_header("Authorization"))
+                seen_bodies.append(json.loads(req.data.decode("utf-8")))
+                reasoning_reply = (
+                    "<think>\nLet us extract PICO carefully for Heart Failure and Dapagliflozin.\n</think>\n"
+                    "Here is the JSON result:\n```json\n"
+                    + json.dumps(
+                        {
+                            "population": "慢性心衰成人患者",
+                            "intervention": "达格列净 (Dapagliflozin)",
+                            "comparator": "西格列汀 (Sitagliptin)",
+                            "primary_outcome": "心衰住院或心血管死亡",
+                            "competing_event": "非心血管竞争死亡",
+                            "condition_query_en": "Heart Failure",
+                            "intervention_query_en": "Dapagliflozin",
+                            "search_query_en": "Dapagliflozin Heart Failure",
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n```"
+                )
+                return _FakeHTTPResponse(
+                    json.dumps({"choices": [{"message": {"content": reasoning_reply}}]}).encode("utf-8")
+                )
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    **clean_env,
+                    "EMULATRX_LLM_API_KEY_FILE": str(secret_file),
+                    "EMULATRX_LLM_API_KEY": "sk-env-override-should-lose",
+                    "OPENAI_API_KEY": "sk-openai-should-lose",
+                    "EMULATRX_LLM_BASE_URL": "https://api.deepseek.com/",
+                    "EMULATRX_LLM_MODEL": "deepseek-reasoner",
+                },
+                clear=True,
+            ):
+                st_file = get_llm_status()
+                self.assertTrue(st_file["enabled"])
+                self.assertEqual(st_file["key_source"], "secret_file")
+                self.assertEqual(st_file["gateway_host"], "api.deepseek.com")
+                self.assertNotIn(secret_token, json.dumps(st_file, ensure_ascii=False))
+
+                with mock.patch.object(llm_assist, "urlopen_llm", side_effect=fake_deepseek_reasoner):
+                    pico_ds = parse_research_idea_pico("达格列净对比西格列汀治疗慢性心衰")
+                self.assertEqual(pico_ds["assist_mode"], "llm_assisted")
+                self.assertEqual(pico_ds["population"], "慢性心衰成人患者")
+                self.assertEqual(seen_urls[0], "https://api.deepseek.com/v1/chat/completions")
+                self.assertEqual(seen_auth[0], f"Bearer {secret_token}")
+                # Must NOT send OpenAI-only response_format or temperature on deepseek-reasoner
+                self.assertNotIn("response_format", seen_bodies[0])
+                self.assertNotIn("temperature", seen_bodies[0])
+                self.assertNotIn(secret_token, json.dumps(pico_ds, ensure_ascii=False))
 
 
 class RCTMatcherTests(unittest.TestCase):

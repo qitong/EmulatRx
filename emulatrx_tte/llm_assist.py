@@ -1,23 +1,33 @@
-"""Privacy-guarded OpenAI-compatible LLM helper with 100% deterministic rule-engine fallback.
+"""Privacy-guarded OpenAI-compatible LLM helper (OpenAI / DeepSeek / DashScope Bailian) with secret-file priority and 100% deterministic fallback.
 
-STRICT PRIVACY INVARIANT:
-Any outbound LLM payload constructed from a user cohort MUST pass through `sanitize_profile_for_llm`
-and `assert_llm_payload_privacy_safe`. It may contain ONLY table-level column names, inferred types,
-missingness rates, deduplicated short category labels (<= 20 labels, never identifier columns or ID-like
-tokens), and aggregate numeric quantiles/means/SDs — NEVER a single individual patient record or subject ID.
+STRICT PRIVACY & SECRET INVARIANTS:
+1. Secret priority:
+   (a) File at `EMULATRX_LLM_API_KEY_FILE` (or default `/run/secrets/llm_api_key` if present and non-empty);
+   (b) `EMULATRX_LLM_API_KEY`;
+   (c) `OPENAI_API_KEY`.
+   Missing or empty secret files NEVER raise on startup; the service degrades cleanly to deterministic rules.
+   API keys are NEVER included in status dicts, logs, error messages, or audit artifacts.
+2. Cohort privacy:
+   Any outbound LLM payload constructed from a user cohort MUST pass through `sanitize_profile_for_llm`
+   and `assert_llm_payload_privacy_safe`. It may contain ONLY table-level column names, inferred types,
+   missingness rates, deduplicated short category labels (<= 20 labels, never identifier columns or ID-like
+   tokens), and aggregate numeric quantiles/means/SDs — NEVER a single individual patient record or subject ID.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import re
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen as _std_urlopen
 
 from ._common import ContractError
 
 
+DEFAULT_LLM_SECRET_FILE = Path("/run/secrets/llm_api_key")
 DEFAULT_LLM_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_LLM_MODEL = "gpt-4o-mini"
 DEFAULT_LLM_TIMEOUT = 15
@@ -69,16 +79,72 @@ def urlopen_llm(request: Request, timeout: float):
     return _std_urlopen(request, timeout=timeout)
 
 
+def normalize_llm_base_url(raw_url: str) -> str:
+    """Normalize OpenAI / DeepSeek / DashScope (百炼) compatible gateway base URLs to '.../v1' (or explicit versioned root).
+
+    Examples:
+      - 'https://api.deepseek.com/' -> 'https://api.deepseek.com/v1'
+      - 'https://api.deepseek.com/v1/' -> 'https://api.deepseek.com/v1'
+      - 'https://dashscope.aliyuncs.com/compatible-mode/' -> 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+      - 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions' -> 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+      - 'https://api.openai.com/v1' -> 'https://api.openai.com/v1'
+    """
+    cleaned = (raw_url or "").strip().rstrip("/")
+    if not cleaned:
+        return DEFAULT_LLM_BASE_URL
+    if cleaned.endswith("/chat/completions"):
+        cleaned = cleaned[: -len("/chat/completions")].rstrip("/")
+
+    parsed = urlsplit(cleaned)
+    path = parsed.path.rstrip("/")
+    # Keep explicit version segments (/v1, /v2, /v3, /v4, /v1beta, etc.); append /v1 for bare host or /compatible-mode
+    if not path or path.endswith("/compatible-mode") or path.endswith("/openai"):
+        cleaned = f"{cleaned}/v1"
+    return cleaned
+
+
+def _read_optional_secret_file(path_candidate: Path) -> str:
+    try:
+        if path_candidate.is_file():
+            val = path_candidate.read_text(encoding="utf-8").strip()
+            if val and val.isprintable():
+                return val
+    except OSError:
+        return ""
+    return ""
+
+
+def _resolve_api_key() -> tuple[str, str]:
+    """Return (api_key, key_source) following strict ymadmin priority without ever raising on missing files."""
+    explicit_file = os.environ.get("EMULATRX_LLM_API_KEY_FILE", "").strip()
+    if explicit_file:
+        val = _read_optional_secret_file(Path(explicit_file))
+        if val:
+            return val, "secret_file"
+    else:
+        val_default = _read_optional_secret_file(DEFAULT_LLM_SECRET_FILE)
+        if val_default:
+            return val_default, "default_secret_file"
+
+    env_emulatrx = os.environ.get("EMULATRX_LLM_API_KEY", "").strip()
+    if env_emulatrx:
+        return env_emulatrx, "env_emulatrx"
+
+    env_openai = os.environ.get("OPENAI_API_KEY", "").strip()
+    if env_openai:
+        return env_openai, "env_openai"
+
+    return "", "none"
+
+
 def _resolve_llm_config() -> dict:
-    api_key = (
-        os.environ.get("EMULATRX_LLM_API_KEY", "").strip()
-        or os.environ.get("OPENAI_API_KEY", "").strip()
-    )
-    base_url = (
+    api_key, key_source = _resolve_api_key()
+    raw_base = (
         os.environ.get("EMULATRX_LLM_BASE_URL", "").strip()
         or os.environ.get("OPENAI_BASE_URL", "").strip()
         or DEFAULT_LLM_BASE_URL
-    ).rstrip("/")
+    )
+    base_url = normalize_llm_base_url(raw_base)
     model = (
         os.environ.get("EMULATRX_LLM_MODEL", "").strip()
         or os.environ.get("OPENAI_MODEL", "").strip()
@@ -92,31 +158,87 @@ def _resolve_llm_config() -> dict:
     return {
         "enabled": enabled,
         "api_key": api_key,
+        "key_source": key_source,
         "base_url": base_url,
         "model": model if enabled else None,
         "configured_model": model,
-        "timeout": max(2.0, min(timeout, 30.0)),
+        "timeout": max(2.0, min(timeout, 45.0)),
     }
 
 
 def get_llm_status() -> dict:
-    """Return safe public status for the Web UI and MCP tools (never exposes API keys)."""
+    """Return safe public status for the Web UI and MCP tools (NEVER exposes API keys or secret file contents)."""
     cfg = _resolve_llm_config()
+    parsed_host = urlsplit(cfg["base_url"]).netloc or "openai-compatible"
     if cfg["enabled"]:
         return {
             "enabled": True,
             "mode": "llm_assisted",
-            "label_zh": f"AI 智能辅助已启用（{cfg['configured_model']}）",
+            "key_source": cfg["key_source"],
+            "gateway_host": parsed_host,
+            "label_zh": f"AI 智能辅助已启用（{cfg['configured_model']} @ {parsed_host}）",
             "model": cfg["configured_model"],
             "privacy_policy_zh": "严格表头与汇总统计脱敏：仅发送列名、类型、缺失率、去重短枚举（≤20项）与分位数汇总，0 行患者记录外发",
         }
     return {
         "enabled": False,
         "mode": "deterministic_rules",
-        "label_zh": "本地规则引擎模式（未配置外部大模型密钥，全本地零外发运行）",
+        "key_source": "none",
+        "gateway_host": None,
+        "label_zh": "当前未挂载模型密钥，已启用确定性规则引擎兜底（本地规则引擎模式）",
         "model": None,
         "privacy_policy_zh": "全本地确定性规则运行：无任何外部大模型网络调用，个体患者记录 100% 留存本机独立会话目录",
     }
+
+
+def parse_llm_json_content(raw_content: object) -> dict | None:
+    """Parse JSON dict from OpenAI / DeepSeek-R1 / Qwen / Bailian responses, stripping <think> blocks and markdown fences."""
+    if isinstance(raw_content, list):
+        # Handle multi-part content blocks [{"type": "text", "text": "..."}]
+        parts = [
+            str(item.get("text", ""))
+            for item in raw_content
+            if isinstance(item, dict) and item.get("type") in (None, "text", "output_text")
+        ]
+        text = "\n".join(parts).strip()
+    elif isinstance(raw_content, str):
+        text = raw_content.strip()
+    else:
+        return None
+
+    if not text:
+        return None
+
+    # 1. Strip <think>...</think> reasoning blocks (e.g., deepseek-reasoner / qwq / qwen3)
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE).strip()
+    if "</think>" in text:
+        text = text.split("</think>")[-1].strip()
+
+    # 2. Extract fenced ```json ... ``` block if present
+    fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    candidates = []
+    if fence_match:
+        candidates.append(fence_match.group(1).strip())
+    candidates.append(text)
+
+    for cand in candidates:
+        try:
+            parsed = json.loads(cand)
+            if isinstance(parsed, dict):
+                return parsed
+        except ValueError:
+            pass
+
+    # 3. Fallback: scan from first '{' using raw_decode to tolerate leading/trailing gateway commentary
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", text):
+        try:
+            parsed, _ = decoder.raw_decode(text[match.start() :])
+            if isinstance(parsed, dict):
+                return parsed
+        except ValueError:
+            continue
+    return None
 
 
 def sanitize_profile_for_llm(profile: dict, user_note: str = "") -> dict:
@@ -125,7 +247,6 @@ def sanitize_profile_for_llm(profile: dict, user_note: str = "") -> dict:
     for col in profile.get("columns", []):
         col_name = str(col.get("name", ""))
         role = str(col.get("inferred_role", ""))
-        # Never send identifier columns or high-cardinality free text
         if role == "identifier" or ID_COL_RE.search(col_name):
             continue
         entry: dict = {
@@ -151,7 +272,6 @@ def sanitize_profile_for_llm(profile: dict, user_note: str = "") -> dict:
             entry["distinct_categories"] = safe_labels
         safe_columns.append(entry)
 
-    # Scrub any accidental ID-like tokens from optional user note
     clean_note = re.sub(
         r"\b[A-Za-z]{2,12}[-_][0-9]{3,}[-_0-9]*\b",
         "[REDACTED_ID]",
@@ -175,7 +295,6 @@ def assert_llm_payload_privacy_safe(payload_bytes: bytes, forbidden_values: list
                 "PRIVACY_VIOLATION_BLOCKED",
                 "Blocked outbound LLM request containing a raw patient/row value.",
             )
-    # Also scan JSON string tokens for Hosp-2023-0001 / ONC-880001 / SYN-000001 style subject IDs
     for match in re.findall(r"\b(?:Hosp|ONC|PAT|MRN|SUBJ|SYN)[-_][0-9]{3,}[-_0-9]*\b", text, flags=re.IGNORECASE):
         raise ContractError(
             "PRIVACY_VIOLATION_BLOCKED",
@@ -183,23 +302,34 @@ def assert_llm_payload_privacy_safe(payload_bytes: bytes, forbidden_values: list
         )
 
 
+def _is_reasoning_model(model_name: str) -> bool:
+    ml = (model_name or "").lower()
+    return any(tok in ml for tok in ("reasoner", "deepseek-r1", "-r1", "qwq", "o1-", "o3-"))
+
+
 def _call_chat_json(system_prompt: str, user_payload: dict, *, forbidden_values: tuple[str, ...] = ()) -> dict | None:
-    """Invoke OpenAI-compatible chat completions endpoint returning a JSON dict, or None on any failure/absence."""
+    """Invoke OpenAI / DeepSeek / DashScope compatible `/chat/completions` without OpenAI-proprietary schema locks."""
     cfg = _resolve_llm_config()
     if not cfg["enabled"]:
         return None
 
-    body_obj = {
-        "model": cfg["configured_model"],
-        "temperature": 0.1,
-        "response_format": {"type": "json_object"},
+    model_name = cfg["configured_model"]
+    json_instruction = (
+        f"{system_prompt}\n"
+        "IMPORTANT: Output ONLY a single valid JSON object. Do not wrap in extra commentary."
+    )
+    body_obj: dict = {
+        "model": model_name,
         "messages": [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": json_instruction},
             {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
         ],
     }
+    # Reasoning models (e.g. deepseek-reasoner / qwq) may reject temperature or response_format; keep payload maximally compatible
+    if not _is_reasoning_model(model_name):
+        body_obj["temperature"] = 0.1
+
     raw_body = json.dumps(body_obj, ensure_ascii=False).encode("utf-8")
-    # Enforce ironclad privacy check BEFORE opening any network socket!
     assert_llm_payload_privacy_safe(raw_body, forbidden_values=forbidden_values)
 
     url = f"{cfg['base_url']}/chat/completions"
@@ -216,21 +346,14 @@ def _call_chat_json(system_prompt: str, user_payload: dict, *, forbidden_values:
     )
     try:
         with urlopen_llm(req, timeout=cfg["timeout"]) as resp:
-            resp_bytes = resp.read(256 * 1024)
+            resp_bytes = resp.read(512 * 1024)
         parsed = json.loads(resp_bytes.decode("utf-8"))
-        content = parsed["choices"][0]["message"]["content"]
-        if isinstance(content, str):
-            content_clean = content.strip()
-            if content_clean.startswith("```"):
-                content_clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", content_clean, flags=re.DOTALL)
-            out = json.loads(content_clean)
-            if isinstance(out, dict):
-                return out
+        message = parsed["choices"][0]["message"]
+        return parse_llm_json_content(message.get("content"))
     except ContractError:
         raise
     except (HTTPError, URLError, TimeoutError, OSError, KeyError, IndexError, ValueError, TypeError):
         return None
-    return None
 
 
 def _extract_deterministic_terms(text: str) -> dict:
@@ -257,7 +380,6 @@ def _extract_deterministic_terms(text: str) -> dict:
             elif role == "outcome" and zh_label not in outcomes_zh:
                 outcomes_zh.append(zh_label)
 
-    # Also capture explicit capitalized English drug/medical tokens from text
     ascii_tokens = re.findall(r"\b[A-Za-z][A-Za-z0-9-]{3,24}\b", text)
     stop = {
         "with", "from", "that", "this", "plus", "versus", "study", "trial", "cohort",
@@ -341,7 +463,6 @@ def interpret_cohort_profile(profile: dict, user_note: str = "", *, forbidden_va
     """Interpret a privacy-safe CohortProfile into clinical domain hints & ClinicalTrials.gov search terms."""
     safe_summary = sanitize_profile_for_llm(profile, user_note=user_note)
 
-    # Deterministic keyword extraction from column names, safe treatment/outcome labels, and user note
     corpus_parts = [safe_summary.get("user_domain_note", "")]
     for col in safe_summary["columns"]:
         corpus_parts.append(col["name"].replace("_", " "))
@@ -404,7 +525,6 @@ def rerank_and_explain_rcts(candidates: list[dict], context_summary: dict) -> tu
     if not candidates:
         return [], get_llm_status()["mode"]
 
-    # Ensure context_summary contains no raw rows
     compact_candidates = [
         {
             "nct_id": c["nct_id"],

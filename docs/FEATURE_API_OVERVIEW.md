@@ -44,9 +44,10 @@
 
 ## 3. 数据隐私红线与三态证据边界
 
-1. **LLM 表头画像隐私铁律（0 行个体记录外发）**：
-   - `emulatrx_tte/llm_assist.py` 通过 `sanitize_profile_for_llm` 与发送前拦截器 `assert_llm_payload_privacy_safe` 双重锁定：发往外部 OpenAI 兼容接口（`EMULATRX_LLM_API_KEY` / `OPENAI_API_KEY`）的请求体**仅允许包含列名、推断类型、缺失率、非主键短分类枚举值（≤20 项且不含 ID 模式）及数值列分位数/均值/标准差汇总，严禁包含任何一行患者记录或患者 ID（如 `Hosp-2023-0001`、`ONC-880001`）**。
-   - 未配置任何大模型密钥或网络异常时，自动无缝回退本地确定性规则与双语医学词典，绝不中断用户流程，并在工作台顶栏诚实展示当前处于 `AI 智能辅助已启用` 还是 `本地规则引擎模式`。
+1. **LLM 表头画像隐私铁律与 `ymadmin` Secret 契约（0 行个体记录外发、密钥零回显）**：
+   - `emulatrx_tte/llm_assist.py` 读取密钥严格遵循优先级：`EMULATRX_LLM_API_KEY_FILE`（或默认 `/run/secrets/llm_api_key` 非空文件）> `EMULATRX_LLM_API_KEY` > `OPENAI_API_KEY`，并原生兼容 DeepSeek（`deepseek-chat` / `deepseek-reasoner`）、阿里云百炼 DashScope（`qwen-plus` 等）及标准 OpenAI 网关（自动规范化 `EMULATRX_LLM_BASE_URL` 末尾斜杠与 `/v1`、剥离 `<think>...</think>` 思考块与 ```` ```json ```` 围栏，不锁定 OpenAI 专有 `json_schema`）。
+   - 通过 `sanitize_profile_for_llm` 与发送前拦截器 `assert_llm_payload_privacy_safe` 双重锁定：发往外部网关的请求体**仅允许包含列名、推断类型、缺失率、非主键短分类枚举值（≤20 项且不含 ID 模式）及数值列分位数/均值/标准差汇总，严禁包含任何一行患者记录或患者 ID（如 `Hosp-2023-0001`、`ONC-880001`）**，且任何日志/响应/审计包绝不回显密钥。
+   - 当未挂载密钥文件、密钥文件为空或网络异常时，容器正常启动并 100% 自动回退本地确定性规则与双语医学词典，顶栏诚实展示 `当前未挂载模型密钥，已启用确定性规则引擎兜底（本地规则引擎模式）`。
 2. **公开 `ClinicalTrials.gov` 检索与显式离线兜底**：
    - `emulatrx_tte/rct_matcher.py` 优先实时请求官方 `https://clinicaltrials.gov/api/v2/studies`（及 `/studies/{nct_id}`）并生成原始响应 SHA-256 收据哈希；仅当运行环境无外网或连接超时时，回退至内置代表性公开 RCT 目录，且**每条记录显式标记 `source: "offline_curated_catalog_fallback"`**，绝不伪装为实时联网响应。
 3. **三态报告与声明锁严格区分**：
