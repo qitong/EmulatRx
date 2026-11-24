@@ -339,11 +339,20 @@ class TTEGracePeriodCCWTests(unittest.TestCase):
         html_text = (out_a / "ccw_preview_report.html").read_text(encoding="utf-8")
         self.assertIn("朴素事后分组假阳性曲线", html_text)
         self.assertIn("双侧宽限期分臂 IPCW-CCW 校正曲线", html_text)
+        self.assertIn("合成真值 (Ground Truth", html_text)
         self.assertIn("synthetic_only", html_text)
         self.assertIn("非真实患者数据", html_text)
+        self.assertNotIn("http://", html_text)
+        self.assertNotIn("https://", html_text)
+        self.assertIn("truth_cif_initiate_within_grace", truth)
+        self.assertIn("truth_cif_never_initiate", truth)
+        self.assertEqual(len(truth["truth_cif_initiate_within_grace"]), 19)
+        self.assertEqual(len(truth["truth_cif_never_initiate"]), 19)
         step_paths = re.findall(r"<path class='cif-step' d='([^']+)'", html_text)
+        truth_paths = re.findall(r"<path class='cif-truth-step' d='([^']+)'", html_text)
         self.assertEqual(len(step_paths), 4)
-        for p_cmd in step_paths:
+        self.assertEqual(len(truth_paths), 4)
+        for p_cmd in [*step_paths, *truth_paths]:
             self.assertIn(" H", p_cmd)
             self.assertIn(" V", p_cmd)
             self.assertNotIn(" L", p_cmd)
@@ -367,7 +376,7 @@ class TTEGracePeriodCCWTests(unittest.TestCase):
         res, code = run_ccw_synthetic_pipeline(
             tv_proto,
             seed=99,
-            n_cases=800,
+            n_cases=1800,
             bootstrap_iterations=40,
             out_dir=out_tv,
         )
@@ -450,6 +459,210 @@ class TTEGracePeriodCCWTests(unittest.TestCase):
         self.assertIn("emulatrx_tte.ccw", msg)
         self.assertIn("grace-period", msg)
         self.assertIn("pooled", msg)
+
+    def test_time_varying_confounder_true_null_probe_eliminates_strategy1_bias(self) -> None:
+        """Regression test for Review Blocking #1: Strategy 1 IPCW must condition on pre-period X_tv."""
+        tv_null_proto = {
+            "protocol_id": "ccw_tv_true_null_probe",
+            "protocol_version": "tte-ccw-v1",
+            "source_mode": "synthetic_only",
+            "grace_period_spec": {
+                "grace_period_days": 60,
+                "period_length_days": 10,
+                "max_followup_days": 120,
+                "evaluation_horizons_days": [60, 120],
+            },
+            "covariates": {
+                "baseline_covariates": [
+                    {"name": "x_base_noise", "type": "continuous", "assessed_day_offset": 0}
+                ],
+                "time_varying_covariates": [
+                    {"name": "x_tv_bin", "type": "binary", "offset_from_period_start_days": -1}
+                ],
+            },
+            "ipcw_spec": {"truncate_quantiles": None, "include_admin_ipcw": False},
+            "diagnostic_gates": {
+                "min_ess_ratio": 0.25,
+                "max_post_grace_smd": 0.10,
+                "max_stabilized_weight": 12.0,
+                "min_uncensored_subjects_per_clone": 50,
+            },
+        }
+
+        def _simulate_tv_null_cohort(seed: int, concentrated_period1: bool) -> tuple[pd.DataFrame, pd.DataFrame]:
+            rng = np.random.default_rng(seed)
+            n = 4000
+            k_total = 12
+            m_g = 6
+            delta = 10.0
+            x_base = np.round(rng.standard_normal(n), 6)
+            # Pre-period binary confounder driving BOTH initiation (0.85 vs 0.15) and 120d risk (0.50 vs 0.10)
+            z_tv = (rng.random(n) < 0.50).astype(np.int64)
+
+            p_ev_step = np.where(z_tv == 1, 1.0 - (1.0 - 0.50) ** (1.0 / k_total), 1.0 - (1.0 - 0.10) ** (1.0 / k_total))
+            if concentrated_period1:
+                p_init_step = np.where(z_tv == 1, 0.85, 0.15)
+            else:
+                p_init_step = np.where(z_tv == 1, 1.0 - (1.0 - 0.85) ** (1.0 / m_g), 1.0 - (1.0 - 0.15) ** (1.0 / m_g))
+
+            active = np.ones(n, dtype=bool)
+            initiated = np.zeros(n, dtype=bool)
+            init_day = np.full(n, np.nan, dtype=np.float64)
+            dur_day = np.full(n, 120.0, dtype=np.float64)
+            ev_code = np.zeros(n, dtype=np.int64)
+            exit_k = np.full(n, k_total, dtype=np.int64)
+
+            for k in range(1, k_total + 1):
+                if k == 1 or (not concentrated_period1 and k <= m_g):
+                    can_init = active & (~initiated)
+                    do_init = can_init & (rng.random(n) < p_init_step)
+                    initiated[do_init] = True
+                    init_day[do_init] = (k - 1) * delta + 2.0
+
+                # Strict null causal effect: hazard depends ONLY on z_tv, NEVER on initiated
+                ev_now = active & (rng.random(n) < p_ev_step)
+                dur_day[ev_now] = (k - 1) * delta + 7.0
+                ev_code[ev_now] = 1
+                exit_k[ev_now] = k
+                active[ev_now] = False
+
+            cohort_df = pd.DataFrame(
+                {
+                    "subject_id": [f"SYN-{i + 1:06d}" for i in range(n)],
+                    "initiation_day": init_day,
+                    "duration_day": dur_day,
+                    "event_code": ev_code,
+                    "x_base_noise": x_base,
+                }
+            )
+            pp_records = []
+            for i in range(n):
+                sid = f"SYN-{i + 1:06d}"
+                zv = int(z_tv[i])
+                for k in range(1, int(exit_k[i]) + 1):
+                    pp_records.append(
+                        {
+                            "subject_id": sid,
+                            "period_idx": k,
+                            "x_tv_bin": zv,
+                            "x_tv_bin__assessed_day": (k - 1) * delta - 1.0,
+                        }
+                    )
+            return cohort_df, pd.DataFrame(pp_records)
+
+        for mode_label, conc in (("concentrated_k1", True), ("multi_period_grace", False)):
+            cohort_df, pp_df = _simulate_tv_null_cohort(seed=2026 if conc else 2027, concentrated_period1=conc)
+            res, code = run_grace_period_ccw(
+                tv_null_proto,
+                cohort_df,
+                seed=31,
+                bootstrap_iterations=80,
+                person_period_covariates=pp_df,
+            )
+            self.assertEqual(code, 0, msg=f"{mode_label} blocked unexpectedly: {res.get('gate_failures')}")
+            self.assertEqual(res["gate_status"], "passed")
+            est_120 = res["estimates"]["horizons"]["120"]
+            self.assertLess(abs(est_120["ccw_rd_event1"]), 0.035, msg=f"{mode_label}: {est_120}")
+            self.assertLessEqual(est_120["ccw_rd_event1_ci_lower"], 0.0, msg=f"{mode_label}: {est_120}")
+            self.assertGreaterEqual(est_120["ccw_rd_event1_ci_upper"], 0.0, msg=f"{mode_label}: {est_120}")
+
+    def test_positivity_collapse_masked_by_extreme_quantile_truncation_blocks_fail_closed(self) -> None:
+        """Regression test for Review Blocking #2: truncation cannot hide positivity failure or over-clip."""
+        # Invalid quantile bounds rejected with ContractError (exit code 2)
+        for bad_q in ([0.60, 0.40], [0.50, 0.50], [-0.05, 0.95], [0.05, 1.05]):
+            bad_p = copy.deepcopy(self.protocol)
+            bad_p["ipcw_spec"]["truncate_quantiles"] = bad_q
+            with self.assertRaises(ContractError) as ctx_q:
+                validate_ccw_protocol_dict(bad_p)
+            self.assertEqual(ctx_q.exception.exit_code, 2)
+
+        # 5,000-subject cohort with 0.98 / 0.02 initiation probabilities by binary baseline risk stratum
+        rng = np.random.default_rng(5050)
+        n = 5000
+        stratum = (rng.random(n) < 0.50).astype(np.int64)
+        p_init = np.where(stratum == 1, 0.98, 0.02)
+        did_init = rng.random(n) < p_init
+        init_day = np.where(did_init, rng.choice([5.0, 15.0, 25.0, 35.0, 45.0, 55.0], size=n), np.nan)
+        ev_u = rng.random(n)
+        dur_day = np.where(ev_u < 0.25, rng.uniform(65.0, 175.0, size=n), 180.0)
+        ev_code = np.where(ev_u < 0.25, 1, 0)
+
+        collapse_df = pd.DataFrame(
+            {
+                "subject_id": [f"SYN-{i + 1:06d}" for i in range(n)],
+                "initiation_day": init_day,
+                "duration_day": np.round(dur_day, 4),
+                "event_code": ev_code,
+                "x_age_std": np.round(rng.standard_normal(n), 6),
+                "x_biomarker_std": np.round(rng.standard_normal(n), 6),
+                "x_comorbidity_bin": (rng.random(n) < 0.4).astype(np.int64),
+                "x_high_risk_bin": stratum,
+            }
+        )
+
+        for trunc_spec, out_sub in (
+            (None, "collapse_none"),
+            ([0.49, 0.51], "collapse_4951"),
+            ([0.01, 0.99], "collapse_0199"),
+        ):
+            proto_c = copy.deepcopy(self.protocol)
+            proto_c["ipcw_spec"]["truncate_quantiles"] = trunc_spec
+            proto_c["diagnostic_gates"]["max_stabilized_weight"] = 2.0
+            proto_c["diagnostic_gates"]["min_ess_ratio"] = 0.05
+            proto_c["diagnostic_gates"]["max_post_grace_smd"] = 2.0
+            proto_c["diagnostic_gates"]["min_uncensored_subjects_per_clone"] = 10
+
+            out_dir = self.base / out_sub
+            res, code = run_grace_period_ccw(
+                proto_c,
+                collapse_df,
+                seed=42,
+                bootstrap_iterations=20,
+                out_dir=out_dir,
+            )
+            self.assertEqual(code, 3, msg=f"trunc={trunc_spec} should fail closed with code 3: {res}")
+            self.assertEqual(res["gate_status"], "blocked")
+            self.assertFalse((out_dir / "ccw_estimates.json").exists())
+            diag = json.loads((out_dir / "ccw_diagnostics.json").read_text(encoding="utf-8"))
+            self.assertEqual(diag["gate_status"], "blocked")
+            self.assertGreater(diag["pre_truncation_max_stabilized_weight"], 20.0)
+            codes = {f["code"] for f in diag["gate_failures"]}
+            self.assertIn("PRE_TRUNCATION_WEIGHT_EXCEEDED", codes)
+            if trunc_spec == [0.49, 0.51]:
+                self.assertIn("EXCESSIVE_WEIGHT_TRUNCATION", codes)
+                self.assertGreater(diag["truncated_weight_fraction"]["max_across_clones"], 0.80)
+
+        # Verify CLI run-ccw-synthetic also fails closed (exit code 3, no ccw_estimates.json) under [0.49, 0.51]
+        cli_proto = copy.deepcopy(self.protocol)
+        cli_proto["ipcw_spec"]["truncate_quantiles"] = [0.49, 0.51]
+        cli_proto["diagnostic_gates"]["max_stabilized_weight"] = 2.0
+        p_cli = self.write_json(cli_proto, "cli_collapse_4951.json")
+        p_dgp_collapse = self.write_json(
+            {"initiation_covariate_slopes": [0.0, 0.0, 0.0, 7.8], "grace_initiation_intercept": -3.9},
+            "dgp_collapse.json",
+        )
+        out_cli = self.base / "cli_collapse_out"
+        cli_res = self.run_cli(
+            "run-ccw-synthetic",
+            [
+                "--protocol",
+                str(p_cli),
+                "--seed",
+                "42",
+                "--cases",
+                "5000",
+                "--bootstrap-iterations",
+                "20",
+                "--dgp-params",
+                str(p_dgp_collapse),
+                "--out",
+                str(out_cli),
+            ],
+        )
+        self.assertEqual(cli_res.returncode, 3, cli_res.stderr)
+        self.assertFalse((out_cli / "ccw_estimates.json").exists())
+        cli_diag = json.loads((out_cli / "ccw_diagnostics.json").read_text(encoding="utf-8"))
+        self.assertGreater(cli_diag["pre_truncation_max_stabilized_weight"], 20.0)
 
 
 if __name__ == "__main__":

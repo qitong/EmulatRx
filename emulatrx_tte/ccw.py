@@ -50,7 +50,7 @@ CCW_METHODOLOGICAL_DISCLAIMER = (
 )
 
 CCW_IDENTIFICATION_ASSUMPTIONS = (
-    "1. 纵向条件可交换性 (Longitudinal conditional exchangeability): 所有共同影响宽限期/随访期给药启动（人工删失）与结局/竞争死亡的基线及离散期前协变量均被无误差测量并正确纳入分臂删失模型；CCW 无法消除未测混杂。",
+    "1. 纵向条件可交换性 (Longitudinal conditional exchangeability): 所有共同影响宽限期/随访期给药启动（人工删失）与结局/竞争死亡的基线及离散期前协变量均被无误差测量并正确纳入分臂删失模型（tte-ccw-v1 中宽限期 time_varying_covariates 限定为不受 (0, g] 内前期给药影响的期前混杂因素；给药后治疗–混杂反馈需序贯试验或参数 g-formula）；CCW 无法消除未测混杂。",
     "2. 策略一致性与无干扰 (Consistency & no interference): 宽限期 [0, g] 内遵循观测自然启动分布（逾期未启动者在 t=g 强制启动的协议持续对比）或预设协议等价，且个体间互不干扰。",
     "3. 纵向正性 (Longitudinal positivity): 在各协变量层内，存活至 t=g 者有正概率在 <=g 启动治疗，且各期未启动者有正概率继续不启动治疗。",
     "4. 条件非信息性行政删失 (Arm-conditional independent right-censoring): 给定已测协变量与克隆策略臂（或叠加行政删失 IPCW 后），行政失访独立于潜在事件时间。",
@@ -402,7 +402,7 @@ def validate_ccw_protocol_dict(obj: dict) -> dict:
     if not isinstance(include_admin_ipcw, bool):
         raise ContractError("INVALID_IPCW_SPEC", "ipcw_spec.include_admin_ipcw must be a boolean")
 
-    # 4. diagnostic_gates (all four required explicitly, zero hardcoded clinical defaults)
+    # 4. diagnostic_gates (four core gates required explicitly, plus optional pre-truncation / clipping gates)
     gates = obj["diagnostic_gates"]
     if not isinstance(gates, dict):
         raise ContractError("INVALID_TYPE", "diagnostic_gates must be an object")
@@ -413,6 +413,10 @@ def validate_ccw_protocol_dict(obj: dict) -> dict:
             "max_post_grace_smd",
             "max_stabilized_weight",
             "min_uncensored_subjects_per_clone",
+        ),
+        optional=(
+            "max_pre_truncation_weight",
+            "max_truncated_weight_fraction",
         ),
         context="diagnostic_gates",
         missing_code="MISSING_DIAGNOSTIC_GATE",
@@ -446,6 +450,30 @@ def validate_ccw_protocol_dict(obj: dict) -> dict:
             "diagnostic_gates.min_uncensored_subjects_per_clone must be an integer >= 1",
         )
 
+    norm_gates: dict[str, Any] = {
+        "min_ess_ratio": float(min_ess),
+        "max_post_grace_smd": float(max_smd),
+        "max_stabilized_weight": float(max_w),
+        "min_uncensored_subjects_per_clone": int(min_uncens),
+    }
+    if "max_pre_truncation_weight" in gates:
+        max_pre_w = gates["max_pre_truncation_weight"]
+        if not is_strict_number(max_pre_w) or float(max_pre_w) < 1.0:
+            raise ContractError(
+                "INVALID_DIAGNOSTIC_GATE",
+                "diagnostic_gates.max_pre_truncation_weight must be a finite number >= 1.0",
+            )
+        norm_gates["max_pre_truncation_weight"] = float(max_pre_w)
+
+    if "max_truncated_weight_fraction" in gates:
+        max_trunc_f = gates["max_truncated_weight_fraction"]
+        if not is_strict_number(max_trunc_f) or not (0.0 < float(max_trunc_f) <= 1.0):
+            raise ContractError(
+                "INVALID_DIAGNOSTIC_GATE",
+                "diagnostic_gates.max_truncated_weight_fraction must be a finite number in (0.0, 1.0]",
+            )
+        norm_gates["max_truncated_weight_fraction"] = float(max_trunc_f)
+
     if "methodological_disclaimer" in obj and not isinstance(obj["methodological_disclaimer"], str):
         raise ContractError("INVALID_TYPE", "methodological_disclaimer must be a string")
 
@@ -469,12 +497,7 @@ def validate_ccw_protocol_dict(obj: dict) -> dict:
             "truncate_quantiles": norm_trunc,
             "include_admin_ipcw": include_admin_ipcw,
         },
-        "diagnostic_gates": {
-            "min_ess_ratio": float(min_ess),
-            "max_post_grace_smd": float(max_smd),
-            "max_stabilized_weight": float(max_w),
-            "min_uncensored_subjects_per_clone": int(min_uncens),
-        },
+        "diagnostic_gates": norm_gates,
         "methodological_disclaimer": CCW_METHODOLOGICAL_DISCLAIMER,
     }
 
@@ -906,11 +929,24 @@ def _compute_ccw_counterfactual_truth(
         horizons_dict[f"{float(h_raw):g}"] = entry
         horizon_table.append(entry)
 
+    truth_time_days = [round(k * delta, 6) for k in range(0, k_total + 1)]
+    truth_cif1_s1 = [0.0] + [round(curve_by_period[k]["cif1_s1"], 10) for k in range(1, k_total + 1)]
+    truth_cif1_s0 = [0.0] + [round(curve_by_period[k]["cif1_s0"], 10) for k in range(1, k_total + 1)]
+    truth_cif2_s1 = [0.0] + [round(curve_by_period[k]["cif2_s1"], 10) for k in range(1, k_total + 1)]
+    truth_cif2_s0 = [0.0] + [round(curve_by_period[k]["cif2_s0"], 10) for k in range(1, k_total + 1)]
+
     return {
         "truth_auxiliary_seed": truth_seed,
         "n_truth_counterfactual": n_truth,
         "horizons": horizons_dict,
         "horizon_truth_table": horizon_table,
+        "curves": {
+            "time_days": truth_time_days,
+            "truth_cif_initiate_within_grace": truth_cif1_s1,
+            "truth_cif_never_initiate": truth_cif1_s0,
+            "truth_cif2_initiate_within_grace": truth_cif2_s1,
+            "truth_cif2_never_initiate": truth_cif2_s0,
+        },
     }
 
 
@@ -1125,6 +1161,9 @@ def generate_synthetic_ccw_cohort(
         },
         "horizons": truth_info["horizons"],
         "horizon_truth_table": truth_info["horizon_truth_table"],
+        "curves": truth_info["curves"],
+        "truth_cif_initiate_within_grace": truth_info["curves"]["truth_cif_initiate_within_grace"],
+        "truth_cif_never_initiate": truth_info["curves"]["truth_cif_never_initiate"],
     }
 
     if out_dir is None:
@@ -1471,6 +1510,7 @@ def validate_ccw_cohort_df(
         "X_base": X_base,
         "X_tv": X_tv,
         "base_cov_names": base_names,
+        "tv_cov_names": [c["name"] for c in tv_covs],
     }
 
 
@@ -1681,6 +1721,75 @@ def _fit_logistic_with_col_guard(X: np.ndarray, y: np.ndarray) -> np.ndarray:
     return fit_binary_logistic_mle(X[:, keep], y)
 
 
+def _fit_and_predict_logistic_with_col_guard(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_eval: np.ndarray,
+    *,
+    max_iter: int = 100,
+    tol: float = 1e-13,
+) -> np.ndarray:
+    """Fit unpenalized damped IRLS logistic regression on (X_train, y_train) and predict on X_eval."""
+    n_tr = X_train.shape[0]
+    n_ev = X_eval.shape[0]
+    if n_ev == 0:
+        return np.zeros(0, dtype=np.float64)
+    if n_tr == 0:
+        return np.full(n_ev, 0.5, dtype=np.float64)
+    y_mean = float(np.mean(y_train))
+    if y_mean <= 0.0 or y_mean >= 1.0 or X_train.shape[1] == 0:
+        return np.full(n_ev, y_mean, dtype=np.float64)
+
+    keep = np.ptp(X_train, axis=0) > 1e-12
+    if not np.any(keep):
+        return np.full(n_ev, y_mean, dtype=np.float64)
+
+    X_sub = X_train[:, keep].astype(np.float64)
+    p = X_sub.shape[1]
+    X_aug = np.column_stack([np.ones(n_tr, dtype=np.float64), X_sub])
+    y_f = y_train.astype(np.float64)
+    beta = np.zeros(p + 1, dtype=np.float64)
+
+    def _neg_loglik(b: np.ndarray) -> float:
+        eta = np.clip(X_aug @ b, -35.0, 35.0)
+        return float(np.sum(np.logaddexp(0.0, eta) - y_f * eta))
+
+    nll = _neg_loglik(beta)
+    for _ in range(max_iter):
+        eta = np.clip(X_aug @ beta, -35.0, 35.0)
+        prob = expit(eta)
+        grad = X_aug.T @ (prob - y_f)
+        if float(np.max(np.abs(grad))) <= tol:
+            break
+        w = prob * (1.0 - prob)
+        if float(np.max(w)) < 1e-15:
+            break
+        hess = (X_aug * np.maximum(w, 1e-14)[:, None]).T @ X_aug
+        try:
+            step = np.linalg.solve(hess, grad)
+        except np.linalg.LinAlgError:
+            step, *_ = np.linalg.lstsq(hess + 1e-12 * np.eye(p + 1), grad, rcond=None)
+
+        alpha = 1.0
+        accepted = False
+        while alpha >= 1e-6:
+            cand = beta - alpha * step
+            if np.max(np.abs(X_aug @ cand)) > 35.0 and np.max(np.abs(eta)) >= 34.5:
+                break
+            cand_nll = _neg_loglik(cand)
+            if cand_nll <= nll + 1e-12:
+                beta = cand
+                nll = cand_nll
+                accepted = True
+                break
+            alpha *= 0.5
+        if not accepted:
+            break
+
+    X_ev_aug = np.column_stack([np.ones(n_ev, dtype=np.float64), X_eval[:, keep].astype(np.float64)])
+    return expit(np.clip(X_ev_aug @ beta, -35.0, 35.0))
+
+
 def _fit_pooled_admin_ipcw_multiplier(
     *,
     risk_mask: np.ndarray,
@@ -1788,7 +1897,75 @@ def _fit_arm_specific_ipcw_and_aj(
         y1_sg = adherent_g[idx_sg].astype(np.float64)
         p1_num = float(np.mean(y1_sg))
         if 0.0 < p1_num < 1.0:
-            p1_hat = _fit_logistic_with_col_guard(X_base[idx_sg], y1_sg)
+            if X_tv.shape[2] > 0:
+                # Fit discrete-time grace-window initiation hazard P(A_{i,k}=1 | A_bar_{k-1}=0, T>(k-1)Delta, k, X_base, X_tv)
+                k_g_grid = np.arange(1, m_g + 1, dtype=np.int64)
+                E1_g = (k_exit[:, None] >= k_g_grid[None, :]) & (
+                    (~has_init[:, None]) | (k_init[:, None] >= k_g_grid[None, :])
+                )
+                A1_g = E1_g & has_init[:, None] & (k_init[:, None] == k_g_grid[None, :])
+
+                lam_sg = np.zeros((idx_sg.size, m_g), dtype=np.float64)
+                active_g_ks: list[int] = []
+                for k in range(1, m_g + 1):
+                    n_ek = int(np.sum(E1_g[:, k - 1]))
+                    if n_ek == 0:
+                        continue
+                    sum_ak = int(np.sum(A1_g[:, k - 1]))
+                    if sum_ak == 0:
+                        lam_sg[:, k - 1] = 0.0
+                    elif sum_ak == n_ek:
+                        lam_sg[:, k - 1] = 1.0
+                    else:
+                        active_g_ks.append(k)
+
+                if active_g_ks:
+                    tr_s: list[np.ndarray] = []
+                    tr_k: list[np.ndarray] = []
+                    tr_y: list[np.ndarray] = []
+                    ev_s: list[np.ndarray] = []
+                    ev_k: list[np.ndarray] = []
+                    for k in active_g_ks:
+                        idx_ek = np.flatnonzero(E1_g[:, k - 1])
+                        tr_s.append(idx_ek)
+                        tr_k.append(np.full(idx_ek.size, k, dtype=np.int64))
+                        tr_y.append(A1_g[idx_ek, k - 1].astype(np.float64))
+                        ev_s.append(idx_sg)
+                        ev_k.append(np.full(idx_sg.size, k, dtype=np.int64))
+
+                    tr_s_cat = np.concatenate(tr_s)
+                    tr_k_cat = np.concatenate(tr_k)
+                    tr_y_cat = np.concatenate(tr_y)
+                    ev_s_cat = np.concatenate(ev_s)
+                    ev_k_cat = np.concatenate(ev_k)
+
+                    tr_feats: list[np.ndarray] = []
+                    ev_feats: list[np.ndarray] = []
+                    if len(active_g_ks) > 1:
+                        tr_feats.append(
+                            np.column_stack([(tr_k_cat == kv).astype(np.float64) for kv in active_g_ks[1:]])
+                        )
+                        ev_feats.append(
+                            np.column_stack([(ev_k_cat == kv).astype(np.float64) for kv in active_g_ks[1:]])
+                        )
+                    tr_feats.append(X_base[tr_s_cat])
+                    tr_feats.append(X_tv[tr_s_cat, tr_k_cat - 1, :])
+                    ev_feats.append(X_base[ev_s_cat])
+                    ev_feats.append(X_tv[ev_s_cat, ev_k_cat - 1, :])
+
+                    pred_lam = _fit_and_predict_logistic_with_col_guard(
+                        np.column_stack(tr_feats),
+                        tr_y_cat,
+                        np.column_stack(ev_feats),
+                    )
+                    n_sg = idx_sg.size
+                    for pos_idx, k in enumerate(active_g_ks):
+                        lam_sg[:, k - 1] = pred_lam[pos_idx * n_sg : (pos_idx + 1) * n_sg]
+
+                p1_hat = 1.0 - np.prod(1.0 - np.clip(lam_sg, 0.0, 1.0), axis=1)
+            else:
+                p1_hat = _fit_logistic_with_col_guard(X_base[idx_sg], y1_sg)
+
             adh_local = adherent_g[idx_sg]
             adh_idx = idx_sg[adh_local]
             w1_post = p1_num / np.clip(p1_hat[adh_local], 1e-12, 1.0)
@@ -1807,12 +1984,21 @@ def _fit_arm_specific_ipcw_and_aj(
         )
         W1 = W1 * adm_m1
 
+    W1_pre_trunc = W1.copy()
+    s1_start_k = 1 if include_admin_ipcw else (m_g + 1)
     if truncate_quantiles is not None:
-        for k in range(m_g + 1 if not include_admin_ipcw else 1, k_total + 1):
+        for k in range(s1_start_k, k_total + 1):
             mk = R1[:, k - 1]
             if np.any(mk):
                 lo, hi = np.quantile(W1[mk, k - 1], truncate_quantiles)
                 W1[mk, k - 1] = np.clip(W1[mk, k - 1], float(lo), float(hi))
+
+    active_r1_mask = R1[:, (s1_start_k - 1) :]
+    if np.any(active_r1_mask):
+        clipped1 = np.abs(W1[:, (s1_start_k - 1) :][active_r1_mask] - W1_pre_trunc[:, (s1_start_k - 1) :][active_r1_mask]) > 1e-12
+        trunc_frac_1 = float(np.mean(clipped1))
+    else:
+        trunc_frac_1 = 0.0
 
     # --- Strategy 0 ('never_initiate') ---
     E0 = (k_exit[:, None] >= k_grid[None, :]) & ((~has_init[:, None]) | (k_init[:, None] >= k_grid[None, :]))
@@ -1874,12 +2060,18 @@ def _fit_arm_specific_ipcw_and_aj(
         )
         W0 = W0 * adm_m0
 
+    W0_pre_trunc = W0.copy()
     if truncate_quantiles is not None:
         for k in range(1, k_total + 1):
             mk = R0[:, k - 1]
             if np.any(mk):
                 lo, hi = np.quantile(W0[mk, k - 1], truncate_quantiles)
                 W0[mk, k - 1] = np.clip(W0[mk, k - 1], float(lo), float(hi))
+
+    if np.any(R0):
+        trunc_frac_0 = float(np.mean(np.abs(W0[R0] - W0_pre_trunc[R0]) > 1e-12))
+    else:
+        trunc_frac_0 = 0.0
 
     # --- Weighted Discrete-Time Aalen-Johansen Recursion ---
     def _discrete_aj(R_mat: np.ndarray, W_mat: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -1910,8 +2102,12 @@ def _fit_arm_specific_ipcw_and_aj(
     return {
         "R1": R1,
         "W1": W1,
+        "W1_pre_trunc": W1_pre_trunc,
+        "trunc_frac_1": trunc_frac_1,
         "R0": R0,
         "W0": W0,
+        "W0_pre_trunc": W0_pre_trunc,
+        "trunc_frac_0": trunc_frac_0,
         "cif1_s1": cif1_s1,
         "cif2_s1": cif2_s1,
         "surv_s1": surv_s1,
@@ -2026,17 +2222,25 @@ def _evaluate_ccw_diagnostic_gates(
     fit_res: dict[str, Any],
     X_base: np.ndarray,
     cov_names: list[str],
+    X_tv: np.ndarray | None = None,
+    tv_cov_names: list[str] | None = None,
 ) -> dict[str, Any]:
     gp = protocol["grace_period_spec"]
     delta = float(gp["period_length_days"])
     grace_days = float(gp["grace_period_days"])
     m_g = int(round(grace_days / delta))
     gates = protocol["diagnostic_gates"]
+    trunc_q = protocol["ipcw_spec"]["truncate_quantiles"]
 
     R1: np.ndarray = fit_res["R1"]
     W1: np.ndarray = fit_res["W1"]
+    W1_pre: np.ndarray = fit_res["W1_pre_trunc"]
     R0: np.ndarray = fit_res["R0"]
     W0: np.ndarray = fit_res["W0"]
+    W0_pre: np.ndarray = fit_res["W0_pre_trunc"]
+    trunc_frac_1 = float(fit_res["trunc_frac_1"])
+    trunc_frac_0 = float(fit_res["trunc_frac_0"])
+    max_trunc_frac = max(trunc_frac_1, trunc_frac_0)
 
     # t = g+ corresponds to period m_g + 1 outcome risk set (index m_g)
     mask1_pg = R1[:, m_g]
@@ -2048,9 +2252,22 @@ def _evaluate_ccw_diagnostic_gates(
     ess_ratio1_pg = (ess1_pg / n1_pg) if n1_pg > 0 else 0.0
     ess_ratio0_pg = (ess0_pg / n0_pg) if n0_pg > 0 else 0.0
 
+    X_smd_cols = [X_base]
+    smd_cov_names = list(cov_names)
+    if X_tv is not None and X_tv.shape[2] > 0 and tv_cov_names:
+        for j, tname in enumerate(tv_cov_names):
+            X_smd_cols.append(X_tv[:, 0:1, j])
+            smd_cov_names.append(f"{tname}__k1")
+            if m_g > 1:
+                X_smd_cols.append(np.mean(X_tv[:, :m_g, j], axis=1, keepdims=True))
+                smd_cov_names.append(f"{tname}__grace_mean")
+                X_smd_cols.append(X_tv[:, m_g - 1 : m_g, j])
+                smd_cov_names.append(f"{tname}__k{m_g}")
+    X_smd = np.column_stack(X_smd_cols)
+
     smd_rows = _compute_post_grace_smd_table(
-        X_base=X_base,
-        cov_names=cov_names,
+        X_base=X_smd,
+        cov_names=smd_cov_names,
         mask0=mask0_pg,
         w0=W0[:, m_g],
         mask1=mask1_pg,
@@ -2065,8 +2282,13 @@ def _evaluate_ccw_diagnostic_gates(
     w1_pg_vals = W1[:, m_g:][R1[:, m_g:]] if np.any(R1[:, m_g:]) else np.array([], dtype=np.float64)
     w0_all_vals = W0[R0] if np.any(R0) else np.array([], dtype=np.float64)
     w0_pg_vals = W0[:, m_g:][R0[:, m_g:]] if np.any(R0[:, m_g:]) else np.array([], dtype=np.float64)
+    w1_pre_pg_vals = W1_pre[:, m_g:][R1[:, m_g:]] if np.any(R1[:, m_g:]) else np.array([], dtype=np.float64)
+    w0_pre_all_vals = W0_pre[R0] if np.any(R0) else np.array([], dtype=np.float64)
+
     all_uncens_w = np.concatenate([W1[R1], W0[R0]])
     overall_max_w = float(np.max(all_uncens_w)) if all_uncens_w.size > 0 else 0.0
+    all_pre_trunc_w = np.concatenate([W1_pre[R1], W0_pre[R0]])
+    pre_trunc_max_w = float(np.max(all_pre_trunc_w)) if all_pre_trunc_w.size > 0 else 0.0
 
     horizon_ess: list[dict[str, Any]] = []
     for h_raw in gp["evaluation_horizons_days"]:
@@ -2106,12 +2328,47 @@ def _evaluate_ccw_diagnostic_gates(
         )
 
     max_allowed_w = float(gates["max_stabilized_weight"])
+    effective_max_pre_w = float(
+        gates.get("max_pre_truncation_weight", max_allowed_w * 2.0 if trunc_q is not None else max_allowed_w)
+    )
+    effective_max_trunc_frac = float(gates.get("max_truncated_weight_fraction", 0.10))
+    quantile_span = float(trunc_q[1] - trunc_q[0]) if trunc_q is not None else None
+
+    if pre_trunc_max_w > effective_max_pre_w:
+        failures.append(
+            {
+                "code": "PRE_TRUNCATION_WEIGHT_EXCEEDED",
+                "detail": (
+                    f"Pre-truncation maximum stabilized IPCW weight {pre_trunc_max_w:.6f} exceeds "
+                    f"max_pre_truncation_weight={effective_max_pre_w:.6f} (longitudinal positivity violation)"
+                ),
+                "metric_value": round(pre_trunc_max_w, 8),
+                "threshold": effective_max_pre_w,
+            }
+        )
+
+    if trunc_q is not None and (
+        (quantile_span is not None and quantile_span < 0.80 - 1e-12) or (max_trunc_frac > effective_max_trunc_frac)
+    ):
+        failures.append(
+            {
+                "code": "EXCESSIVE_WEIGHT_TRUNCATION",
+                "detail": (
+                    f"Excessive IPCW quantile clipping detected: truncate_quantiles={trunc_q} "
+                    f"(span={quantile_span:.4f}, min_required_span=0.80), max clone truncated_weight_fraction="
+                    f"{max_trunc_frac:.6f} (max_truncated_weight_fraction={effective_max_trunc_frac:.6f})"
+                ),
+                "metric_value": round(max_trunc_frac, 8),
+                "threshold": effective_max_trunc_frac,
+            }
+        )
+
     if overall_max_w > max_allowed_w:
         failures.append(
             {
                 "code": "MAX_WEIGHT_EXCEEDED",
                 "detail": (
-                    f"Maximum stabilized IPCW weight {overall_max_w:.6f} exceeds "
+                    f"Post-truncation maximum stabilized IPCW weight {overall_max_w:.6f} exceeds "
                     f"diagnostic_gates.max_stabilized_weight={max_allowed_w:.6f}"
                 ),
                 "metric_value": round(overall_max_w, 8),
@@ -2153,6 +2410,12 @@ def _evaluate_ccw_diagnostic_gates(
         )
 
     gate_status = "blocked" if failures else "passed"
+    trunc_frac_payload = {
+        "strategy_1": round(trunc_frac_1, 8),
+        "strategy_0": round(trunc_frac_0, 8),
+        "max_across_clones": round(max_trunc_frac, 8),
+        "quantile_span": round(quantile_span, 8) if quantile_span is not None else None,
+    }
     return {
         "protocol_id": protocol["protocol_id"],
         "protocol_version": CCW_PROTOCOL_VERSION,
@@ -2161,7 +2424,15 @@ def _evaluate_ccw_diagnostic_gates(
         "methodological_disclaimer": protocol["methodological_disclaimer"],
         "gate_status": gate_status,
         "gate_failures": failures,
-        "diagnostic_gates": dict(gates),
+        "diagnostic_gates": {
+            **dict(gates),
+            "effective_max_pre_truncation_weight": effective_max_pre_w,
+            "effective_max_truncated_weight_fraction": effective_max_trunc_frac,
+        },
+        "pre_truncation_max_stabilized_weight": round(pre_trunc_max_w, 8),
+        "post_truncation_max_stabilized_weight": round(overall_max_w, 8),
+        "max_stabilized_weight": round(overall_max_w, 8),
+        "truncated_weight_fraction": trunc_frac_payload,
         "post_grace_entry_summary": {
             "grace_period_days": gp["grace_period_days"],
             "post_grace_period_idx": m_g + 1,
@@ -2178,9 +2449,14 @@ def _evaluate_ccw_diagnostic_gates(
         "horizon_ess_summary": horizon_ess,
         "stabilized_weight_summary": {
             "overall_max_weight": round(overall_max_w, 8),
+            "pre_truncation_max_stabilized_weight": round(pre_trunc_max_w, 8),
+            "post_truncation_max_stabilized_weight": round(overall_max_w, 8),
+            "truncated_weight_fraction": trunc_frac_payload,
             "strategy_1_post_grace": _weight_distribution_summary(w1_pg_vals),
             "strategy_0_all_periods": _weight_distribution_summary(w0_all_vals),
             "strategy_0_post_grace": _weight_distribution_summary(w0_pg_vals),
+            "pre_truncation_strategy_1_post_grace": _weight_distribution_summary(w1_pre_pg_vals),
+            "pre_truncation_strategy_0_all_periods": _weight_distribution_summary(w0_pre_all_vals),
         },
     }
 
@@ -2544,12 +2820,32 @@ def _render_ccw_preview_report_html(
     nv_s0 = [(float(r["time_day"]), float(r["naive_group0_cif_event1"])) for r in naive_curve_rows]
     nv_s1 = [(float(r["time_day"]), float(r["naive_group1_cif_event1"])) for r in naive_curve_rows]
 
+    truth_curves_obj = (dgp_truth or {}).get("curves", {})
+    if (
+        truth_curves_obj
+        and "time_days" in truth_curves_obj
+        and "truth_cif_never_initiate" in truth_curves_obj
+        and "truth_cif_initiate_within_grace" in truth_curves_obj
+    ):
+        t_days_tr = [float(t) for t in truth_curves_obj["time_days"]]
+        truth_s0: list[tuple[float, float]] | None = list(
+            zip(t_days_tr, [float(y) for y in truth_curves_obj["truth_cif_never_initiate"]])
+        )
+        truth_s1: list[tuple[float, float]] | None = list(
+            zip(t_days_tr, [float(y) for y in truth_curves_obj["truth_cif_initiate_within_grace"]])
+        )
+    else:
+        truth_s0 = None
+        truth_s1 = None
+
     peak_cif = max(
         0.10,
         *(y for _, y in ccw_s0),
         *(y for _, y in ccw_s1),
         *(y for _, y in nv_s0),
         *(y for _, y in nv_s1),
+        *(y for _, y in (truth_s0 or [])),
+        *(y for _, y in (truth_s1 or [])),
     )
     y_max = min(1.0, math.ceil(peak_cif * 11.5) / 10.0)
 
@@ -2566,6 +2862,19 @@ def _render_ccw_preview_report_html(
         gx = x_left + plot_w * (grace_days / max_followup)
         p0 = _svg_step_path(pts0, x_left, y_bot, plot_w, plot_h, max_followup, y_max)
         p1 = _svg_step_path(pts1, x_left, y_bot, plot_w, plot_h, max_followup, y_max)
+        truth_svg_paths = ""
+        truth_legend_items = ""
+        if truth_s0 is not None and truth_s1 is not None:
+            pt0 = _svg_step_path(truth_s0, x_left, y_bot, plot_w, plot_h, max_followup, y_max)
+            pt1 = _svg_step_path(truth_s1, x_left, y_bot, plot_w, plot_h, max_followup, y_max)
+            truth_svg_paths = (
+                f"<path class='cif-truth-step' d='{pt0}' fill='none' stroke='#4338ca' stroke-width='2.0' stroke-dasharray='6,4'/>"
+                f"<path class='cif-truth-step' d='{pt1}' fill='none' stroke='#b45309' stroke-width='2.0' stroke-dasharray='6,4'/>"
+            )
+            truth_legend_items = (
+                "<span><i style='border-top:2px dashed #4338ca;background:transparent;height:0'></i>合成真值 (Ground Truth: 策略 0 全程不启动)</span>"
+                "<span><i style='border-top:2px dashed #b45309;background:transparent;height:0'></i>合成真值 (Ground Truth: 策略 1 宽限期内启动)</span>"
+            )
         y_ticks = []
         for frac in (0.0, 0.25, 0.5, 0.75, 1.0):
             yv = y_max * frac
@@ -2593,13 +2902,15 @@ def _render_ccw_preview_report_html(
             + f"<line x1='{gx:.1f}' y1='{y_bot - plot_h:.1f}' x2='{gx:.1f}' y2='{y_bot:.1f}' stroke='#94a3b8' stroke-width='1.5' stroke-dasharray='5,4'/>"
             f"<text x='{(x_left + gx) / 2:.1f}' y='{y_bot - plot_h + 15:.1f}' text-anchor='middle' font-size='10.5' fill='#334155'>{esc(shade_label)} (g={grace_days:g}d)</text>"
             f"<path d='M{x_left},{y_bot - plot_h:.1f} V{y_bot:.1f} H{x_left + plot_w:.1f}' fill='none' stroke='#334155' stroke-width='1.4'/>"
-            f"<path class='cif-step' d='{p0}' fill='none' stroke='#1d4ed8' stroke-width='2.6'/>"
+            + truth_svg_paths
+            + f"<path class='cif-step' d='{p0}' fill='none' stroke='#1d4ed8' stroke-width='2.6'/>"
             f"<path class='cif-step' d='{p1}' fill='none' stroke='{stroke1}' stroke-width='2.6'/>"
             "</svg>"
             "<div class='legend'>"
             f"<span><i style='background:#1d4ed8'></i>{esc(label0)}</span>"
             f"<span><i style='background:{stroke1}'></i>{esc(label1)}</span>"
-            "</div></div>"
+            + truth_legend_items
+            + "</div></div>"
         )
 
     svg_naive = _build_cif_svg(
@@ -3008,6 +3319,8 @@ def run_grace_period_ccw(
         fit_res=fit_res,
         X_base=validated["X_base"],
         cov_names=validated["base_cov_names"],
+        X_tv=validated["X_tv"],
+        tv_cov_names=validated["tv_cov_names"],
     )
 
     balance_fieldnames = [

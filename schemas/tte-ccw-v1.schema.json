@@ -136,6 +136,15 @@
           "type": "number",
           "minimum": 1.0
         },
+        "max_pre_truncation_weight": {
+          "type": "number",
+          "minimum": 1.0
+        },
+        "max_truncated_weight_fraction": {
+          "type": "number",
+          "exclusiveMinimum": 0.0,
+          "maximum": 1.0
+        },
         "min_uncensored_subjects_per_clone": {
           "type": "integer",
           "minimum": 1

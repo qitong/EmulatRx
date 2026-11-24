@@ -19,7 +19,7 @@ At each explicit evaluation horizon $t^* \in (0, H_{\max}]$, `emulatrx_tte.ccw` 
 - **Strategy 0 (`never_initiate`)**: remain uninitiated throughout follow-up (subjects who initiate at $T^{\text{init}}_i \le T_i$ violate Strategy 0 at the start of their initiation period).
 
 ### 1.3 Mandatory Causal Identification Assumptions
-1. **Longitudinal conditional exchangeability**: all baseline ($L_0$) and pre-period time-varying ($L_{k-1}$) confounders jointly affecting treatment initiation and outcomes are measured without error and included in the arm-specific censoring models (**CCW cannot remove unmeasured confounding**).
+1. **Longitudinal conditional exchangeability**: all baseline ($L_0$) and pre-period time-varying ($L_{k-1}$) confounders jointly affecting treatment initiation and outcomes are measured without error and included in the arm-specific censoring models (**CCW cannot remove unmeasured confounding**). In `tte-ccw-v1`, grace-window `time_varying_covariates` represent pre-period confounders not affected by prior treatment initiation within $(0, g]$; post-initiation treatment–confounder feedback requires sequential trials or the parametric g-formula.
 2. **Consistency & no interference**: grace-period initiation follows the protocol-sustained natural initiation distribution (or protocol equivalence across initiation days in $[0, g]$) without cross-subject interference.
 3. **Longitudinal positivity**: within every covariate stratum, survivors to $t=g$ have positive probability of having initiated by $g$, and uninitiated subjects in each period $k$ have positive probability of remaining uninitiated.
 4. **Arm-conditional independent right-censoring**: administrative censoring is conditionally independent of latent failure times given measured covariates and clone strategy (or reweighted via `ipcw_spec.include_admin_ipcw=true`).
@@ -39,7 +39,7 @@ All clinical time windows and diagnostic thresholds are passed explicitly via JS
 | --- | --- | --- |
 | `0` | Contract & diagnostic gates passed | Publishes full CCW bundle (`ccw_estimates.json`, `ccw_diagnostics.json`, `ccw_attrition.json`, `curves/*.csv`, `audit_report.md`, `ccw_preview_report.html`, `run_manifest.json`) |
 | `2` | `ContractError` (schema error, non-`SYN-*` ID, non-divisible step $\Delta$, post-baseline/time-travel covariate leak, `OUTPUT_EXISTS`) | Publishes **nothing**; writes `<CODE>: <detail>` to `stderr` |
-| `3` | Fail-closed diagnostic gate blocked (`UNCENSORED_BELOW_MIN`, `MAX_WEIGHT_EXCEEDED`, `ESS_RATIO_BELOW_MIN`, `POST_GRACE_SMD_EXCEEDS_MAX`) | Publishes diagnostic evidence (`normalized_protocol.json`, `ccw_diagnostics.json`, `ccw_attrition.json`, `balance_post_grace.csv`, `run_manifest.json`); **100% omits `ccw_estimates.json`** |
+| `3` | Fail-closed diagnostic gate blocked (`UNCENSORED_BELOW_MIN`, `PRE_TRUNCATION_WEIGHT_EXCEEDED`, `EXCESSIVE_WEIGHT_TRUNCATION`, `MAX_WEIGHT_EXCEEDED`, `ESS_RATIO_BELOW_MIN`, `POST_GRACE_SMD_EXCEEDS_MAX`) | Publishes diagnostic evidence (`normalized_protocol.json`, `ccw_diagnostics.json`, `ccw_attrition.json`, `balance_post_grace.csv`, `run_manifest.json`); **100% omits `ccw_estimates.json`** |
 
 ---
 

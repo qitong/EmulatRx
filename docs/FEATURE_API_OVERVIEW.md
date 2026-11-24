@@ -244,11 +244,11 @@ python -m emulatrx_tte estimate \
 
 ## 6. 限制与下一步
 
-- **当前 `main` 明确限制（含 `#8` / PR #10 与 `#9` / PR #14 已合并边界）**：
-  1. **聚焦静态基线与固定地标竞争风险设计**：`#8`（PR #10）与 `#9`（PR #14）已在 `main` 完整覆盖静态基线分配（`observational_baseline`）与显式固定地标分配（`observational_landmark`）下的重叠加权/IPTW 门禁与竞争风险生存估计，尚未包含双侧宽限期克隆删失加权（CCW）或时变混杂 g-formula；
-  2. **显式规则检查与敏感性指标的方法学边界**：`validate-protocol`、`diagnose` 与 `RR_CIF` E-value 无法检测真实世界中的未测混杂、测量误差或未建模信息性删失，不能证明因果有效性；
-  3. **遗留模块冻结与实验性本地接口限制**：按启曈在 `Item #40` 的拍板，`v1-codebase.ipynb` 与 `environment.yml`（`langgraph==0.2.56`）保持冻结不动；`scripts/generate_synthetic_oncology.py` 仍为无原子防覆写保护的实验性本地脚本（可能直接覆写 `trials/<trial-id>/` 既有缓存输出），`emulation_utils.adjust_immortal_time_bias` 简化 CCW 原型尚未修复。
+- **当前 `main` 明确限制（含 `#8` / PR #10、`#9` / PR #14、`#11` / PR #12 与私网预览 PR #13 已合并边界）**：
+  1. **已合并 `main` 聚焦静态基线与固定地标竞争风险设计**：`#8`（PR #10）与 `#9`（PR #14）在 `main` 覆盖静态基线分配（`observational_baseline`）与固定地标分配（`observational_landmark`）；双侧宽限期克隆删失加权（CCW）与遗留 `emulation_utils.adjust_immortal_time_bias` 的 `RuntimeError` 防误调护栏位于本待审分支（[#17](https://github.com/qitong/EmulatRx/issues/17) / [Draft PR #18](https://github.com/qitong/EmulatRx/pull/18)），尚未合并入 `main`；
+  2. **显式规则检查与敏感性指标的方法学边界**：`validate-protocol`、`validate-ccw`、`diagnose` 与 `RR_CIF` E-value 无法检测真实世界中的未测混杂、测量误差或未建模信息性删失，不能证明因果有效性；`tte-ccw-v1` 的宽限期时变协变量限定为不受前期给药影响的期前混杂因素（治疗–混杂反馈需序贯试验或 g-formula）；
+  3. **遗留模块冻结与实验性本地接口限制**：按启曈在 `Item #40` 的拍板，`v1-codebase.ipynb` 与 `environment.yml`（`langgraph==0.2.56`）保持冻结不动；`scripts/generate_synthetic_oncology.py` 仍为无原子防覆写保护的实验性本地脚本（可能直接覆写 `trials/<trial-id>/` 既有缓存输出）。
 - **在途与下一步**：
-  1. 审阅合入 [PR #12](https://github.com/qitong/EmulatRx/pull/12) 关闭 [Issue #11](https://github.com/qitong/EmulatRx/issues/11)，完成阶段一（`#8` / PR #10）与阶段二（`#9` / PR #14）合入后 `docs/FEATURE_API_OVERVIEW.md` 的实时 `main`（`11e58c2`）基线与双作业 45 项 CI 口径收口；
-  2. 独立推进在途开放 [PR #13](https://github.com/qitong/EmulatRx/pull/13)（私有合成预览工作台分支，当前尚未合并入 `main`）；
-  3. **后续待启曈决定的扩展点**：在 `#8`、`#9` 已验收合入基础上，是否启动第二批动态策略能力（双侧宽限期分臂 IPCW 克隆删失加权 CCW、逐月序贯目标试验、离散时间 Pooled Logistic / 参数 g-formula），以及未来若需接入获授权真实队列时的独立数据合规与签署版 SAP 审批流程。
+  1. 推进在途开放 [PR #16](https://github.com/qitong/EmulatRx/pull/16)（面向研究者的想法/数据双入口、ClinicalTrials 目标 RCT 匹配与真/模双轨 TTE 工作台，当前尚未合并入 `main`）审阅收口；
+  2. 推进本分支在途开放 [Draft PR #18](https://github.com/qitong/EmulatRx/pull/18)（关闭 [Issue #17](https://github.com/qitong/EmulatRx/issues/17)：P1 双侧宽限期分臂 IPCW-CCW 模块、不朽时间偏倚合成验证与 `adjust_immortal_time_bias` 防误调收口，当前尚未合并入 `main`）异构复核与启曈人工审阅；
+  3. **后续待启曈决定的候选扩展点**：逐期序贯目标试验（P2）、RCT 公开结果对标与阴性对照（P3）、参数化 g-formula（P4），以及未来若需接入获授权真实纵向队列时的独立数据合规与签署版 SAP 审批流程。
