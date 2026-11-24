@@ -1,0 +1,8 @@
+*
+!emulatrx_tte/
+!emulatrx_tte/**
+!emulatrx_preview/
+!emulatrx_preview/**
+!examples/
+!examples/tte_preview_v1.json
+!requirements-preview.txt

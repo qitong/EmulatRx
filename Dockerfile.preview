@@ -1,0 +1,19 @@
+FROM python:3.11-slim
+ARG CODE_COMMIT
+ARG TTE_DEPENDENCY_COMMIT
+RUN case "$CODE_COMMIT" in *[!0-9a-f]*|'') exit 1;; esac && test "${#CODE_COMMIT}" -eq 40
+RUN case "$TTE_DEPENDENCY_COMMIT" in *[!0-9a-f]*|'') exit 1;; esac && test "${#TTE_DEPENDENCY_COMMIT}" -eq 40
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 EMULATRX_CODE_DIRTY=false OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+ENV EMULATRX_CODE_COMMIT=$CODE_COMMIT EMULATRX_TTE_DEPENDENCY_COMMIT=$TTE_DEPENDENCY_COMMIT EMULATRX_RUNS_DIR=/data/tte
+LABEL org.opencontainers.image.source="https://github.com/qitong/EmulatRx"
+LABEL org.opencontainers.image.revision=$CODE_COMMIT org.opencontainers.image.tte_dependency=$TTE_DEPENDENCY_COMMIT
+RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin preview
+WORKDIR /app
+COPY requirements-preview.txt ./
+RUN pip install --no-cache-dir -r requirements-preview.txt
+COPY emulatrx_tte ./emulatrx_tte
+COPY emulatrx_preview ./emulatrx_preview
+COPY examples/tte_preview_v1.json ./examples/tte_preview_v1.json
+USER 10001:10001
+EXPOSE 8000
+CMD ["uvicorn", "emulatrx_preview.app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--no-access-log"]

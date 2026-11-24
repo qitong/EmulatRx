@@ -1,5 +1,7 @@
 # EmulatRx Framework
 
+> **Private synthetic TTE preview:** The Chinese browser workbench and MCP service in [`emulatrx_preview/`](emulatrx_preview/) use the reviewed TTE implementation merged through PR #14. Teachers can load a synthetic example, edit a controlled seven-element study form, confirm a readable protocol, then inspect cohort screening, diagnostic gates, competing-risk estimates and a printable analysis report. These are method demonstrations, **not** real patient analysis, clinical efficacy evidence, or proof of causality. Do not enter or upload patient data. See [preview workflow, deployment and limits](docs/synthetic-preview.md).
+
 **EmulatRx** (EmulatRx) is an agentic framework designed to automate **Clinical Trial Design (CTD)** and **Target Trial Emulation (TTE)**. By leveraging a multi-agent architecture (Supervisor, Trialist, Informatician, Statistician, Clinician), it autonomously maps natural language trial protocols to structured Real-World Data (RWD) and performs causal inference analysis.
 
 This repository contains the implementation of the EmulatRx framework as described in the manuscript *"EmulatRx: Empowering Clinical Trial Design with Agentic Intelligence and Real World Data"*.
