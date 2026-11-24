@@ -1919,6 +1919,202 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                         404,
                     )
 
+    def test_round7_custom_egfr_flaura_e2e_step2_pico_override_422_and_privacy(self):
+        """Round-7 E2E regression: custom 30-row EGFR/NSCLC CSV matches FLAURA with zero false 422, while Step 2/explicit outcome override enforces 422 across Web/REST/MCP with zero PII leak."""
+        home_html = self.client.get("/", headers=self.web_auth).text
+        for dom_id in ("rct-cond-input", "rct-out-input", "step3-cond-hidden", "step3-out-hidden"):
+            self.assertIn(f'id="{dom_id}"', home_html)
+
+        csv_lines = ["patient_key,arm_drug,time_days,os_event,age,ecog"]
+        for i in range(30):
+            drug = "Osimertinib" if i % 2 == 0 else "Gefitinib"
+            t_days = 150 + (i * 23) % 520
+            ev = 1 if (i % 3 == 0) else 0
+            age = 50 + ((i * 7) % 22)
+            ecog = (i // 2) % 2
+            csv_lines.append(f"PT-ONC-{i + 1:03d},{drug},{t_days},{ev},{age},{ecog}")
+        custom_csv = ("\n".join(csv_lines) + "\n").encode("utf-8")
+
+        captured_llm_payloads: list[str] = []
+
+        def fake_llm_audit(req, timeout):
+            raw_str = req.data.decode("utf-8")
+            captured_llm_payloads.append(raw_str)
+            if "public_reference_context" in raw_str:
+                ans = {
+                    "rankings": [
+                        {"nct_id": "NCT02296125", "match_score": 0.96, "recommended": True, "reason_zh": "奥希替尼对比吉非替尼一线治疗"},
+                    ]
+                }
+            else:
+                ans = {
+                    "domain_summary_zh": "EGFR 突变晚期非小细胞肺癌靶向队列",
+                    "condition_query_en": "EGFR-Mutated Non-Small Cell Lung Cancer",
+                    "intervention_query_en": "Osimertinib",
+                    "comparator_query_en": "Gefitinib",
+                    "search_query_en": "Osimertinib Gefitinib EGFR Non-Small Cell Lung Cancer",
+                }
+            return _FakeHTTPResp(json.dumps({"choices": [{"message": {"content": json.dumps(ans, ensure_ascii=False)}}]}).encode("utf-8"))
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "EMULATRX_LLM_API_KEY_FILE": str(self.base / "absent_secret"),
+                "EMULATRX_LLM_API_KEY": "sk-round7-test",
+                "EMULATRX_OFFLINE_RCT_CATALOG": "1",
+            },
+            clear=False,
+        ):
+            with mock.patch.object(llm_assist, "urlopen_llm", side_effect=fake_llm_audit):
+                # 1. Blocker 1 E2E: Upload exact 30-row CSV + Step 2 note "EGFR-mutated non-small cell lung cancer, overall survival"
+                up = self.client.post(
+                    "/api/sessions/upload",
+                    headers=self.web_auth,
+                    files={"file": ("egfr_nsclc_30.csv", custom_csv, "text/csv")},
+                    data={"user_note": "EGFR-mutated non-small cell lung cancer, overall survival"},
+                )
+                self.assertEqual(up.status_code, 200, up.text)
+                sid = up.json()["session_id"]
+                interp = up.json()["interpretation"]
+                self.assertNotIn("Chronic Kidney Disease", interp["condition_query_en"])
+                self.assertIn("EGFR-Mutated Non-Small Cell Lung Cancer", interp["condition_query_en"])
+
+                srch_ok = self.client.post(
+                    "/api/rcts/search",
+                    headers=self.web_auth,
+                    json={
+                        "session_id": sid,
+                        "project_mode": "user_cohort",
+                        "query": interp["search_query_en"],
+                        "condition": interp["condition_query_en"],
+                        "intervention": interp["intervention_query_en"],
+                        "comparator": interp["comparator_query_en"],
+                        "outcome": interp["outcome_query_en"],
+                    },
+                )
+                self.assertEqual(srch_ok.status_code, 200, srch_ok.text)
+                flaura_card = srch_ok.json()["candidates"][0]
+                self.assertEqual(flaura_card["nct_id"], "NCT02296125")
+                self.assertEqual(flaura_card["overall_alignment_status"], "protocol_aligned")
+                self.assertTrue(flaura_card["is_recommended"])
+
+                draft_ok = self.client.post(
+                    "/api/rcts/draft",
+                    headers=self.web_auth,
+                    json={"project_mode": "user_cohort", "session_id": sid, "target_rct": flaura_card},
+                )
+                self.assertEqual(draft_ok.status_code, 200, draft_ok.text)
+                map_30 = draft_ok.json()["mapping"]
+                map_30["eligibility_criteria"] = []
+                map_30["max_abs_smd"] = 0.65
+                map_30["min_ess_ratio"] = 0.10
+                map_30["bootstrap_iterations"] = 20
+
+                for run_endpoint in ("/api/dual-runs", "/api/v1/projects/user-cohort/runs"):
+                    r_ok = self.client.post(
+                        run_endpoint,
+                        headers=self.web_auth,
+                        json={"project_mode": "user_cohort", "session_id": sid, "mapping": map_30, "target_rct": flaura_card},
+                    )
+                    self.assertEqual(r_ok.status_code, 202, r_ok.text)
+                    fin_ok = self.wait_dual_run(r_ok.json()["run_id"])
+                    self.assertEqual(fin_ok["state"], "completed", fin_ok)
+                    self.assertEqual(fin_ok["estimates"]["target_rct"]["overall_alignment_status"], "protocol_aligned")
+
+                # 2. Blocker 2 E2E (explicit `outcome="Blood ketone change"` override on draft, dual-runs, v1 user-cohort, and MCP)
+                for endpoint, body in (
+                    (
+                        "/api/rcts/draft",
+                        {"project_mode": "user_cohort", "session_id": sid, "target_rct": flaura_card, "outcome": "Blood ketone change"},
+                    ),
+                    (
+                        "/api/dual-runs",
+                        {"project_mode": "user_cohort", "session_id": sid, "mapping": map_30, "target_rct": flaura_card, "outcome": "Blood ketone change"},
+                    ),
+                    (
+                        "/api/v1/projects/user-cohort/runs",
+                        {"session_id": sid, "mapping": map_30, "target_rct": flaura_card, "outcome": "Blood ketone change"},
+                    ),
+                ):
+                    r_422 = self.client.post(endpoint, headers=self.web_auth, json=body)
+                    self.assertEqual(r_422.status_code, 422, f"{endpoint} -> {r_422.text}")
+                    self.assertEqual(r_422.json()["error_code"], "PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED")
+
+                mcp_exp_422 = self.client.post(
+                    "/mcp",
+                    headers=self.mcp_auth,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 201,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "start_user_cohort_tte",
+                            "arguments": {
+                                "session_id": sid,
+                                "nct_id": "NCT02296125",
+                                "outcome": "Blood ketone change",
+                                "bootstrap_iterations": 20,
+                            },
+                        },
+                    },
+                )
+                self.assertEqual(mcp_exp_422.status_code, 200)
+                self.assertTrue(mcp_exp_422.json()["result"]["isError"], mcp_exp_422.text)
+                self.assertIn("PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED", mcp_exp_422.text)
+
+                # 3. Blocker 2 E2E (Step 2 persisted `condition`/`outcome` overrides WITH untrusted PII tokens -> carried forward even when omitted in Step 3/4!)
+                srch_mismatch = self.client.post(
+                    "/api/rcts/search",
+                    headers=self.web_auth,
+                    json={
+                        "session_id": sid,
+                        "project_mode": "user_cohort",
+                        "query": "Osimertinib Gefitinib NSCLC",
+                        "condition": "EGFR-mutated non-small cell lung cancer Alice Smith",
+                        "intervention": "Osimertinib",
+                        "comparator": "Gefitinib",
+                        "outcome": "Blood ketone change 987654321",
+                    },
+                )
+                self.assertEqual(srch_mismatch.status_code, 200, srch_mismatch.text)
+                flaura_demoted = next(c for c in srch_mismatch.json()["candidates"] if c["nct_id"] == "NCT02296125")
+                self.assertEqual(flaura_demoted["outcome_alignment"], "surrogate_or_mismatched")
+                self.assertLessEqual(flaura_demoted["match_score"], 0.48)
+                self.assertFalse(flaura_demoted["is_recommended"])
+
+                # Verify Step 2 persisted `override_outcome` blocks subsequent draft / dual-runs / v1 / MCP even when `outcome` is omitted!
+                for endpoint, body in (
+                    ("/api/rcts/draft", {"project_mode": "user_cohort", "session_id": sid, "target_rct": flaura_demoted}),
+                    ("/api/dual-runs", {"project_mode": "user_cohort", "session_id": sid, "mapping": map_30, "target_rct": flaura_demoted}),
+                    ("/api/v1/projects/user-cohort/runs", {"session_id": sid, "mapping": map_30, "target_rct": flaura_demoted}),
+                ):
+                    r_persisted_422 = self.client.post(endpoint, headers=self.web_auth, json=body)
+                    self.assertEqual(r_persisted_422.status_code, 422, f"Persisted override {endpoint} -> {r_persisted_422.text}")
+                    self.assertEqual(r_persisted_422.json()["error_code"], "PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED")
+
+                mcp_persisted_422 = self.client.post(
+                    "/mcp",
+                    headers=self.mcp_auth,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 202,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "start_user_cohort_tte",
+                            "arguments": {"session_id": sid, "nct_id": "NCT02296125", "bootstrap_iterations": 20},
+                        },
+                    },
+                )
+                self.assertEqual(mcp_persisted_422.status_code, 200)
+                self.assertTrue(mcp_persisted_422.json()["result"]["isError"], mcp_persisted_422.text)
+                self.assertIn("PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED", mcp_persisted_422.text)
+
+        # Verify 3-layer LLM privacy guard: ZERO leak of `Alice`, `Smith`, `987654321`, or `PT-ONC-` in any outbound LLM request!
+        self.assertGreaterEqual(len(captured_llm_payloads), 2)
+        for p_str in captured_llm_payloads:
+            for forbidden_tok in ("Alice", "Smith", "987654321", "PT-ONC-"):
+                self.assertNotIn(forbidden_tok, p_str)
+
 
 if __name__ == "__main__":
     unittest.main()

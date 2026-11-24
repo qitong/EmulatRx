@@ -83,15 +83,65 @@ BILINGUAL_CLINICAL_TERMS: tuple[tuple[tuple[str, ...], str, str, str], ...] = (
     (("安慰剂", "标准治疗", "placebo", "standard of care"), "Placebo / Standard Care", "comparator", "标准对照治疗"),
     (("心衰", "心力衰竭", "heart failure", "hfref", "hfpef", "nyha"), "Heart Failure", "condition", "心力衰竭 (Heart Failure)"),
     (("2型糖尿病", "糖尿病", "diabetes", "t2dm", "hba1c"), "Type 2 Diabetes", "condition", "2 型糖尿病 (Type 2 Diabetes)"),
-    (("慢性肾病", "慢性肾脏病", "糖尿病肾病", "肾功能", "ckd", "egfr", "kidney"), "Chronic Kidney Disease", "condition", "慢性肾脏病 (CKD)"),
-    (("非小细胞肺癌", "肺癌", "nsclc", "lung cancer", "pdl1", "pd-l1"), "Non-Small Cell Lung Cancer", "condition", "晚期非小细胞肺癌 (NSCLC)"),
+    (
+        (
+            "慢性肾脏病",
+            "慢性肾病",
+            "糖尿病肾病",
+            "肾功能不全",
+            "终末期肾病",
+            "chronic kidney disease",
+            "kidney disease",
+            "diabetic kidney",
+            "diabetic nephropathy",
+            "nephropathy",
+            "renal insufficiency",
+            "ckd",
+            "dkd",
+        ),
+        "Chronic Kidney Disease",
+        "condition",
+        "慢性肾脏病 (CKD)",
+    ),
+    (
+        (
+            "egfr-mutated",
+            "egfr mutated",
+            "egfr mutation",
+            "egfr mutations",
+            "egfr+",
+            "egfr-positive",
+            "egfr positive",
+            "egfr exon",
+            "exon 19",
+            "exon19",
+            "exon19del",
+            "l858r",
+            "t790m",
+            "egfr-tki",
+            "egfr tki",
+            "egfr_subtype",
+            "egfr subtype",
+            "egfr突变",
+            "egfr 突变",
+            "egfr敏感",
+            "egfr阳性",
+        ),
+        "EGFR-Mutated Non-Small Cell Lung Cancer",
+        "condition",
+        "EGFR 突变晚期非小细胞肺癌 (EGFRm NSCLC)",
+    ),
+    (("非小细胞肺癌", "肺癌", "nsclc", "non-small cell lung", "non-small-cell lung", "lung cancer", "pdl1", "pd-l1"), "Non-Small Cell Lung Cancer", "condition", "晚期非小细胞肺癌 (NSCLC)"),
     (("乳腺癌", "breast cancer"), "Breast Cancer", "condition", "乳腺癌 (Breast Cancer)"),
     (("房颤", "心房颤动", "atrial fibrillation", "afib"), "Atrial Fibrillation", "condition", "心房颤动 (Atrial Fibrillation)"),
     (("脓毒症", "重症", "sepsis", "icu"), "Sepsis", "condition", "脓毒症 / 重症感染 (Sepsis)"),
     (("卒中", "脑卒中", "栓塞", "stroke", "embolism"), "Stroke or Systemic Embolism", "outcome", "卒中或体循环栓塞"),
     (("心衰恶化", "心衰住院", "心血管死亡", "心血管事件", "主要不良心血管", "心肌梗死", "hf_or_cv", "mace", "cardiovascular"), "Heart Failure Hospitalization or CV Death", "outcome", "心衰住院或心血管事件"),
-    (("进展", "肿瘤死亡", "无进展生存", "总生存", "progression", "pfs", "cancerdeath", "os_days"), "Disease Progression or Cancer Death", "outcome", "疾病进展或肿瘤特异死亡"),
-    (("肾衰竭", "终末期肾病", "esrd", "kidney failure"), "Kidney Failure or Sustained eGFR Decline", "outcome", "持续肾功能恶化或终末期肾病"),
+    (("总生存", "全因死亡", "overall survival", "all-cause mortality", "os_event", "os event", "os_days", "os days"), "Overall Survival", "outcome", "总生存期 (Overall Survival)"),
+    (("进展", "肿瘤死亡", "无进展生存", "progression-free survival", "progression", "pfs", "pfs_event", "pfs event", "pfs_days", "cancerdeath"), "Disease Progression or Cancer Death", "outcome", "疾病进展或肿瘤特异死亡"),
+    (("肾衰竭", "终末期肾病", "esrd", "kidney failure", "sustained egfr"), "Kidney Failure or Sustained eGFR Decline", "outcome", "持续肾功能恶化或终末期肾病"),
+    (("血酮", "酮体", "酮症", "blood ketone", "ketone", "ketones", "ketonemia", "beta-hydroxybutyrate"), "Blood Ketone Change", "outcome", "血酮水平变化 (Blood Ketone)"),
+    (("糖化血红蛋白变化", "血糖变化", "hba1c change", "change in hba1c"), "HbA1c Change", "outcome", "糖化血红蛋白变化 (HbA1c)"),
 )
 
 # Closed word-level whitelist for safe clinical/statistical category labels & column names
@@ -100,7 +150,7 @@ SAFE_CONTROLLED_CLINICAL_WORDS: frozenset[str] = frozenset(
         # Coding & booleans
         "0", "1", "2", "3", "4", "yes", "no", "true", "false", "y", "n", "na", "none", "unknown", "missing",
         # Sex & demographics
-        "male", "female", "m", "f", "adult", "elderly",
+        "male", "female", "m", "f", "adult", "elderly", "age", "bmi", "sex",
         # Trial arms & generic treatment roles
         "active", "control", "comparator", "reference", "placebo", "experimental", "standard", "care", "soc",
         "drug", "regimen", "therapy", "arm", "group", "plus", "doublet", "monotherapy", "combination",
@@ -113,14 +163,16 @@ SAFE_CONTROLLED_CLINICAL_WORDS: frozenset[str] = frozenset(
         "osimertinib", "gefitinib", "erlotinib", "afatinib", "aumolertinib", "furmonertinib",
         "platinum", "chemo", "chemotherapy", "pemetrexed", "carboplatin", "cisplatin", "paclitaxel",
         "apixaban", "rivaroxaban", "dabigatran", "edoxaban", "warfarin", "aspirin", "statin", "acei", "arb",
-        # Whitelisted outcome & survival status words
-        "censor", "censored", "alive", "dead", "death", "survive", "survived", "free",
+        # Whitelisted outcome, disease & survival status words
+        "censor", "censored", "alive", "dead", "death", "survive", "survived", "survival", "overall", "free",
         "event", "primary", "competing", "outcome", "status", "hf", "cv", "noncv", "cardiovascular", "mace", "mi", "infarction", "ascvd",
-        "progression", "cancer", "cancerdeath", "relapse", "recurrence", "treatment", "unrelated", "treatmentunrelated", "pfs",
-        "stroke", "embolism", "bleeding", "esrd", "renal", "kidney", "hospitalization", "ketone", "ketonemia",
-        # Whitelisted staging / functional scales / smoking
+        "progression", "cancer", "cancerdeath", "relapse", "recurrence", "treatment", "unrelated", "treatmentunrelated", "pfs", "os", "dfs", "efs",
+        "lung", "nsclc", "non", "small", "cell", "carcinoma", "adenocarcinoma", "squamous", "tumor", "metastatic", "advanced",
+        "stroke", "embolism", "bleeding", "esrd", "renal", "kidney", "ckd", "hospitalization", "ketone", "ketones", "ketonemia",
+        "blood", "change", "fasting", "body", "weight", "hba1c", "glucose", "time", "days", "months", "years",
+        # Whitelisted staging / functional scales / smoking / biomarkers
         "nyha", "class", "i", "ii", "iii", "iv", "stage", "ia", "ib", "iia", "iib", "iiia", "iiib", "iva", "ivb",
-        "ecog", "ps", "g1", "g2", "g3", "g3a", "g3b", "g4", "g5", "egfr", "exon19del", "l858r", "cns", "tki",
+        "ecog", "ps", "g1", "g2", "g3", "g3a", "g3b", "g4", "g5", "egfr", "mutated", "mutation", "mutations", "exon", "19", "exon19del", "l858r", "t790m", "alk", "ros1", "kras", "cns", "tki",
         "never", "former", "current", "smoker", "nonsmoker", "smoking",
         "low", "medium", "moderate", "high", "positive", "negative",
         # Common Chinese controlled status labels
@@ -154,6 +206,43 @@ def is_whitelisted_clinical_category(label: str, count: int) -> bool:
     return all(part in SAFE_CONTROLLED_CLINICAL_WORDS for part in parts)
 
 
+ONCOLOGY_CONTEXT_CUE_RE = re.compile(
+    r"(?i)(?:\blung\b|\bnsclc\b|\bcancer\b|\bcarcinoma\b|\badenocarcinoma\b|\btumor\b|\bosimertinib\b|\bgefitinib\b|\berlotinib\b|\bafatinib\b|\baumolertinib\b|\bfurmonertinib\b|\btagrisso\b|\biressa\b|\bazd9291\b|肺癌|非小细胞|腺癌|肿瘤|奥希替尼|吉非替尼|厄洛替尼|阿法替尼)"
+)
+RENAL_EGFR_CUE_RE = re.compile(
+    r"(?i)(?:egfr[_\s]*(?:ml|min|decline|decrease|<|>|<=|>=|\d)|sustained\s+egfr|ml/min|1\.73\s*m|肾小球滤过率)"
+)
+NEGATED_EGFR_CUE_RE = re.compile(
+    r"(?i)(?:无\s*egfr\s*(?:敏感)?突变|no\s+egfr\s+mutation|without\s+egfr\s+mutation|egfr\s+wild[- ]type|wild[- ]type\s+egfr|egfr[- ]negative)"
+)
+
+
+def _trigger_matches(lowered: str, trig: str) -> bool:
+    tl = trig.lower()
+    if tl.isascii() and tl.replace("-", "").replace("_", "").isalnum() and len(tl) <= 4:
+        return bool(re.search(rf"(?<![a-z0-9]){re.escape(tl)}(?![a-z0-9])", lowered))
+    return tl in lowered
+
+
+def _has_oncology_egfr_context(raw_text: str) -> bool:
+    """Return True if `egfr` appears in an oncology biomarker/NSCLC context rather than renal eGFR."""
+    if not raw_text:
+        return False
+    scrubbed = NEGATED_EGFR_CUE_RE.sub(" ", raw_text)
+    scrubbed = RENAL_EGFR_CUE_RE.sub(" ", scrubbed)
+    if not re.search(r"(?i)(?<![a-z0-9])egfr(?![a-z0-9])", scrubbed):
+        return False
+    return bool(ONCOLOGY_CONTEXT_CUE_RE.search(scrubbed))
+
+
+def _dedupe_nsclc_conditions(conditions_en: list[str], conditions_zh: list[str]) -> None:
+    if "EGFR-Mutated Non-Small Cell Lung Cancer" in conditions_en and "Non-Small Cell Lung Cancer" in conditions_en:
+        idx = conditions_en.index("Non-Small Cell Lung Cancer")
+        conditions_en.pop(idx)
+        if idx < len(conditions_zh):
+            conditions_zh.pop(idx)
+
+
 def extract_whitelisted_clinical_concepts(raw_text: str) -> dict:
     """Extract ONLY canonical clinical concepts from untrusted user notes/context, discarding all numbers, names, and raw prose."""
     text = (raw_text or "").strip()
@@ -165,21 +254,25 @@ def extract_whitelisted_clinical_concepts(raw_text: str) -> dict:
             "interventions_zh": [],
             "comparators_en": [],
             "comparators_zh": [],
+            "outcomes_en": [],
             "outcomes_zh": [],
             "whitelisted_keywords_en": [],
         }
 
     lowered = text.lower()
+    scrubbed_for_egfr = NEGATED_EGFR_CUE_RE.sub(" ", lowered)
     conditions_en: list[str] = []
     conditions_zh: list[str] = []
     interventions_en: list[str] = []
     interventions_zh: list[str] = []
     comparators_en: list[str] = []
     comparators_zh: list[str] = []
+    outcomes_en: list[str] = []
     outcomes_zh: list[str] = []
 
     for triggers, en_term, role, zh_label in BILINGUAL_CLINICAL_TERMS:
-        if any(t.lower() in lowered for t in triggers):
+        target_str = scrubbed_for_egfr if en_term == "EGFR-Mutated Non-Small Cell Lung Cancer" else lowered
+        if any(_trigger_matches(target_str, t) for t in triggers):
             if role == "condition" and en_term not in conditions_en:
                 conditions_en.append(en_term)
                 conditions_zh.append(zh_label)
@@ -189,8 +282,14 @@ def extract_whitelisted_clinical_concepts(raw_text: str) -> dict:
             elif role == "comparator" and en_term not in comparators_en:
                 comparators_en.append(en_term)
                 comparators_zh.append(zh_label)
-            elif role == "outcome" and zh_label not in outcomes_zh:
+            elif role == "outcome" and en_term not in outcomes_en:
+                outcomes_en.append(en_term)
                 outcomes_zh.append(zh_label)
+
+    if _has_oncology_egfr_context(text) and "EGFR-Mutated Non-Small Cell Lung Cancer" not in conditions_en:
+        conditions_en.insert(0, "EGFR-Mutated Non-Small Cell Lung Cancer")
+        conditions_zh.insert(0, "EGFR 突变晚期非小细胞肺癌 (EGFRm NSCLC)")
+    _dedupe_nsclc_conditions(conditions_en, conditions_zh)
 
     # Only allow ASCII words that explicitly appear in SAFE_CONTROLLED_CLINICAL_WORDS (blocks 'Alice', 'Smith', 'Patient', 'identifier', '123456789'!)
     generic_noise = {"0", "1", "2", "3", "4", "yes", "no", "true", "false", "y", "n", "m", "f", "i", "ii", "iii", "iv", "none", "unknown", "missing"}
@@ -207,6 +306,7 @@ def extract_whitelisted_clinical_concepts(raw_text: str) -> dict:
         "interventions_zh": interventions_zh,
         "comparators_en": comparators_en,
         "comparators_zh": comparators_zh,
+        "outcomes_en": outcomes_en,
         "outcomes_zh": outcomes_zh,
         "whitelisted_keywords_en": whitelisted_en[:8],
     }
@@ -463,9 +563,11 @@ def sanitize_study_context_for_llm(context_summary: dict | None) -> dict:
             "condition",
             "intervention",
             "comparator",
+            "outcome",
             "condition_query_en",
             "intervention_query_en",
             "comparator_query_en",
+            "outcome_query_en",
             "search_query_en",
             "domain_summary_zh",
             "population",
@@ -477,6 +579,7 @@ def sanitize_study_context_for_llm(context_summary: dict | None) -> dict:
         "conditions_en": concepts["conditions_en"],
         "interventions_en": concepts["interventions_en"],
         "comparators_en": concepts["comparators_en"],
+        "outcomes_en": concepts["outcomes_en"],
         "outcomes_zh": concepts["outcomes_zh"],
         "whitelisted_keywords_en": concepts["whitelisted_keywords_en"],
     }
@@ -711,16 +814,19 @@ def _call_chat_json(
 
 def _extract_deterministic_terms(text: str) -> dict:
     lowered = text.lower()
+    scrubbed_for_egfr = NEGATED_EGFR_CUE_RE.sub(" ", lowered)
     conditions_en: list[str] = []
     conditions_zh: list[str] = []
     interventions_en: list[str] = []
     interventions_zh: list[str] = []
     comparators_en: list[str] = []
     comparators_zh: list[str] = []
+    outcomes_en: list[str] = []
     outcomes_zh: list[str] = []
 
     for triggers, en_term, role, zh_label in BILINGUAL_CLINICAL_TERMS:
-        if any(t.lower() in lowered for t in triggers):
+        target_str = scrubbed_for_egfr if en_term == "EGFR-Mutated Non-Small Cell Lung Cancer" else lowered
+        if any(_trigger_matches(target_str, t) for t in triggers):
             if role == "condition" and en_term not in conditions_en:
                 conditions_en.append(en_term)
                 conditions_zh.append(zh_label)
@@ -730,8 +836,14 @@ def _extract_deterministic_terms(text: str) -> dict:
             elif role == "comparator" and en_term not in comparators_en:
                 comparators_en.append(en_term)
                 comparators_zh.append(zh_label)
-            elif role == "outcome" and zh_label not in outcomes_zh:
+            elif role == "outcome" and en_term not in outcomes_en:
+                outcomes_en.append(en_term)
                 outcomes_zh.append(zh_label)
+
+    if _has_oncology_egfr_context(text) and "EGFR-Mutated Non-Small Cell Lung Cancer" not in conditions_en:
+        conditions_en.insert(0, "EGFR-Mutated Non-Small Cell Lung Cancer")
+        conditions_zh.insert(0, "EGFR 突变晚期非小细胞肺癌 (EGFRm NSCLC)")
+    _dedupe_nsclc_conditions(conditions_en, conditions_zh)
 
     ascii_tokens = re.findall(r"\b[A-Za-z][A-Za-z0-9-]{3,24}\b", text)
     stop = {
@@ -751,6 +863,7 @@ def _extract_deterministic_terms(text: str) -> dict:
         "interventions_zh": interventions_zh,
         "comparators_en": comparators_en,
         "comparators_zh": comparators_zh,
+        "outcomes_en": outcomes_en,
         "outcomes_zh": outcomes_zh,
         "extra_en": extra_en[:5],
     }
@@ -1029,6 +1142,7 @@ def interpret_cohort_profile(
         else (raw_comp or det_comp_en)
     )
 
+    note_concepts_direct = extract_whitelisted_clinical_concepts(user_note)
     det_outcome_en = ""
     det_followup_days: float | None = None
     if sample_spec:
@@ -1036,18 +1150,19 @@ def interpret_cohort_profile(
         if sample_spec.get("target_followup_days"):
             det_followup_days = float(sample_spec["target_followup_days"])
     if not det_outcome_en:
-        out_clues: list[str] = []
-        if default_mapping:
-            out_clues.extend(str(v) for v in (default_mapping.get("primary_event_values") or []))
-            if default_mapping.get("outcome_column"):
-                out_clues.append(str(default_mapping["outcome_column"]))
-        for oc in (profile.get("candidate_outcome_columns") or [])[:1]:
-            out_clues.append(str(oc.get("column", "")))
-            for cat in oc.get("categories") or []:
-                val_s = str(cat.get("value", "")).strip()
-                if val_s.lower() not in ("0", "1", "2", "censored", "censor", "alive", "alive_censored"):
-                    out_clues.append(val_s)
-        det_outcome_en = " ".join(c.replace("_", " ") for c in out_clues if c).strip()
+        out_clues: list[str] = list(note_concepts_direct.get("outcomes_en") or det.get("outcomes_en") or [])
+        if not out_clues:
+            if default_mapping:
+                out_clues.extend(str(v) for v in (default_mapping.get("primary_event_values") or []))
+                if default_mapping.get("outcome_column"):
+                    out_clues.append(str(default_mapping["outcome_column"]))
+            for oc in (profile.get("candidate_outcome_columns") or [])[:1]:
+                out_clues.append(str(oc.get("column", "")))
+                for cat in oc.get("categories") or []:
+                    val_s = str(cat.get("value", "")).strip()
+                    if val_s.lower() not in ("0", "1", "2", "censored", "censor", "alive", "alive_censored"):
+                        out_clues.append(val_s)
+        det_outcome_en = " ".join(dict.fromkeys(c.replace("_", " ") for c in out_clues if c)).strip()
     if det_followup_days is None and default_mapping and default_mapping.get("horizon_days"):
         try:
             det_followup_days = float(max(float(h) for h in default_mapping["horizon_days"]))
@@ -1093,6 +1208,11 @@ def interpret_cohort_profile(
         fallback_res["comparator_query_en"] = det_comp_en
         if sample_spec and det_cond_en:
             fallback_res["condition_query_en"] = det_cond_en
+        elif "Chronic Kidney Disease" not in det["conditions_en"] and "chronic kidney disease" in fallback_res["condition_query_en"].lower():
+            # Prevent LLM from hallucinating CKD from baseline eGFR lab column or oncology EGFR mutation
+            fallback_res["condition_query_en"] = det_cond_en or re.sub(
+                r"(?i)\bchronic\s+kidney\s+disease\b", "", fallback_res["condition_query_en"]
+            ).strip()
         if det_comp_en and det_comp_en.lower() not in fallback_res["search_query_en"].lower():
             fallback_res["search_query_en"] = f"{det_intr_en} {det_comp_en} {fallback_res['condition_query_en']}".strip()
         fallback_res["assist_mode"] = "llm_assisted"

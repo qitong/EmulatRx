@@ -385,6 +385,10 @@ class TTERunner:
             user_note=(user_note or "")[:300],
             updated_utc=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         )
+        # Clear stale Step 2 condition/outcome overrides when Step 1 clinical note is re-submitted
+        meta.pop("override_condition", None)
+        meta.pop("override_outcome", None)
+        meta.pop("override_target_followup_days", None)
         _atomic_write_bytes(sdir / "interpretation.json", _bytes(interp))
         _atomic_write_bytes(sdir / "session_meta.json", _bytes(meta))
         return {"session_id": session_id, "interpretation": interp, "meta": meta}
@@ -553,14 +557,26 @@ class TTERunner:
         comparator_override: str = "",
     ) -> tuple[str, str]:
         """Resolve effective (active_arm, comparator_arm) strings for dual-arm RCT alignment verification."""
+        from emulatrx_tte.rct_matcher import normalize_intervention_spec
+
         meta = sess.get("meta") or {}
         interp = sess.get("interpretation") or {}
 
         ovr_act = (intervention_override or str(mapping.get("active_drug_label") or meta.get("override_intervention") or "")).strip()
         ovr_comp = (comparator_override or str(mapping.get("comparator_drug_label") or meta.get("override_comparator") or "")).strip()
 
-        act_raw = ovr_act or str(mapping.get("active_value") or "").strip()
-        comp_raw = ovr_comp or str(mapping.get("comparator_value") or "").strip()
+        map_act = str(mapping.get("active_value") or "").strip()
+        map_comp = str(mapping.get("comparator_value") or "").strip()
+
+        # Preserve full multi-drug regimen in `mapping["active_value"]` (e.g. `Pembrolizumab_Plus_Chemo`) when `ovr_act` merely echoes `interp["intervention_query_en"]` (`Pembrolizumab`)
+        if ovr_act and map_act and ovr_act == str(interp.get("intervention_query_en") or "").strip():
+            ovr_ids = set(normalize_intervention_spec(ovr_act)["drug_ids"])
+            map_ids = set(normalize_intervention_spec(map_act)["drug_ids"])
+            if ovr_ids and ovr_ids.issubset(map_ids) and len(map_ids) > len(ovr_ids):
+                ovr_act = map_act
+
+        act_raw = ovr_act or map_act
+        comp_raw = ovr_comp or map_comp
         if act_raw in ("", "0", "1", "yes", "no", "true", "false"):
             act_raw = str(interp.get("intervention_query_en") or act_raw).strip()
         if comp_raw in ("", "0", "1", "yes", "no", "true", "false"):
@@ -572,10 +588,13 @@ class TTERunner:
         sess: dict,
         mapping: dict,
         *,
+        condition_override: str = "",
         intervention_override: str = "",
         comparator_override: str = "",
+        outcome_override: str = "",
+        target_followup_days_override: float | None = None,
     ) -> dict:
-        """Resolve full 4D PICO-T target context (arms, condition, clinical outcome, follow-up days) for a user-cohort session."""
+        """Resolve full 4D PICO-T target context (arms, condition, clinical outcome, follow-up days) with override precedence."""
         from emulatrx_tte.sample_cohorts import SAMPLE_COHORT_SPECS, SAMPLE_ID_ALIASES
 
         eff_act, eff_comp = self.resolve_user_cohort_arms(
@@ -590,38 +609,57 @@ class TTERunner:
         canon_sid = SAMPLE_ID_ALIASES.get(raw_sid, raw_sid)
         spec = SAMPLE_COHORT_SPECS.get(canon_sid) if canon_sid else None
 
-        target_cond = (
-            str(spec.get("condition_en", "")).strip()
-            if spec and spec.get("condition_en")
-            else str(interp.get("condition_query_en", "")).strip()
-        )
-        out_parts: list[str] = []
-        if spec and spec.get("outcome_en"):
-            out_parts.append(str(spec["outcome_en"]))
-        if interp.get("outcome_query_en"):
-            out_parts.append(str(interp["outcome_query_en"]))
-        for v in mapping.get("primary_event_values") or []:
-            vs = str(v).strip()
-            if vs and vs.lower() not in ("0", "1", "2"):
-                out_parts.append(vs.replace("_", " "))
-        if mapping.get("outcome_column"):
-            out_parts.append(str(mapping["outcome_column"]).replace("_", " "))
-        target_out = " ".join(dict.fromkeys(p for p in out_parts if p)).strip()
+        eff_cond_ovr = (
+            condition_override
+            or str(mapping.get("target_condition") or meta.get("override_condition") or "")
+        ).strip()
+        if eff_cond_ovr:
+            target_cond = eff_cond_ovr
+        elif spec and spec.get("condition_en"):
+            target_cond = str(spec["condition_en"]).strip()
+        else:
+            target_cond = str(interp.get("condition_query_en", "")).strip()
 
-        fu_candidates: list[float] = []
-        if spec and spec.get("target_followup_days"):
-            fu_candidates.append(float(spec["target_followup_days"]))
-        if interp.get("target_followup_days"):
-            try:
-                fu_candidates.append(float(interp["target_followup_days"]))
-            except (TypeError, ValueError):
-                pass
-        for h in mapping.get("horizon_days") or []:
-            try:
-                fu_candidates.append(float(h))
-            except (TypeError, ValueError):
-                pass
-        target_fu = max(fu_candidates) if fu_candidates else 365.0
+        eff_out_ovr = (
+            outcome_override
+            or str(mapping.get("target_outcome") or meta.get("override_outcome") or "")
+        ).strip()
+        if eff_out_ovr:
+            target_out = eff_out_ovr
+        else:
+            out_parts: list[str] = []
+            if spec and spec.get("outcome_en"):
+                out_parts.append(str(spec["outcome_en"]))
+            if interp.get("outcome_query_en"):
+                out_parts.append(str(interp["outcome_query_en"]))
+            for v in mapping.get("primary_event_values") or []:
+                vs = str(v).strip()
+                if vs and vs.lower() not in ("0", "1", "2"):
+                    out_parts.append(vs.replace("_", " "))
+            if mapping.get("outcome_column"):
+                out_parts.append(str(mapping["outcome_column"]).replace("_", " "))
+            target_out = " ".join(dict.fromkeys(p for p in out_parts if p)).strip()
+
+        if target_followup_days_override is not None and float(target_followup_days_override) > 0:
+            target_fu = float(target_followup_days_override)
+        elif meta.get("override_target_followup_days") is not None and float(meta["override_target_followup_days"]) > 0:
+            target_fu = float(meta["override_target_followup_days"])
+        else:
+            fu_candidates: list[float] = []
+            if spec and spec.get("target_followup_days"):
+                fu_candidates.append(float(spec["target_followup_days"]))
+            if interp.get("target_followup_days"):
+                try:
+                    fu_candidates.append(float(interp["target_followup_days"]))
+                except (TypeError, ValueError):
+                    pass
+            for h in mapping.get("horizon_days") or []:
+                try:
+                    fu_candidates.append(float(h))
+                except (TypeError, ValueError):
+                    pass
+            target_fu = max(fu_candidates) if fu_candidates else 365.0
+
         return {
             "intervention": eff_act,
             "comparator": eff_comp,
@@ -630,36 +668,83 @@ class TTERunner:
             "target_followup_days": target_fu,
         }
 
-    def save_session_arm_overrides(self, session_id: str, intervention: str = "", comparator: str = "") -> None:
-        """Persist researcher-supplied active/comparator drug labels for binary 0/1 user-cohort sessions."""
+    def save_session_pico_overrides(
+        self,
+        session_id: str,
+        *,
+        condition: str = "",
+        intervention: str = "",
+        comparator: str = "",
+        outcome: str = "",
+        target_followup_days: float | None = None,
+    ) -> None:
+        """Persist researcher-supplied Step 2 PICO overrides & register any untrusted tokens into `forbidden_tokens.json`."""
         if not session_id or not SESSION_ID.fullmatch(session_id):
             return
         sdir = self.sessions_root / session_id
         meta_file = sdir / "session_meta.json"
         if not meta_file.is_file():
             return
+        raw_probe = " ".join(p for p in (condition, intervention, comparator, outcome) if p)
+        new_forbidden = extract_untrusted_Note_forbidden_tokens(raw_probe) if raw_probe else []
         with self._maintenance:
             try:
                 meta = json.loads(meta_file.read_text(encoding="utf-8"))
             except Exception:
                 return
+            if new_forbidden:
+                fpath = sdir / "forbidden_tokens.json"
+                existing_fb: list[str] = []
+                if fpath.is_file():
+                    try:
+                        loaded = json.loads(fpath.read_text(encoding="utf-8"))
+                        if isinstance(loaded, list):
+                            existing_fb = [str(x) for x in loaded if isinstance(x, str) and x.strip()]
+                    except Exception:
+                        existing_fb = []
+                fb_changed = False
+                for tok in new_forbidden:
+                    if tok not in existing_fb and len(existing_fb) < 2000:
+                        existing_fb.append(tok)
+                        fb_changed = True
+                if fb_changed:
+                    _atomic_write_bytes(fpath, _bytes(existing_fb))
             changed = False
+            if condition.strip():
+                meta["override_condition"] = condition.strip()[:160]
+                changed = True
             if intervention.strip():
                 meta["override_intervention"] = intervention.strip()[:100]
                 changed = True
             if comparator.strip():
                 meta["override_comparator"] = comparator.strip()[:100]
                 changed = True
+            if outcome.strip():
+                meta["override_outcome"] = outcome.strip()[:160]
+                changed = True
+            if target_followup_days is not None and float(target_followup_days) > 0:
+                meta["override_target_followup_days"] = float(target_followup_days)
+                changed = True
             if changed:
                 _atomic_write_bytes(meta_file, _bytes(meta))
+
+    def save_session_arm_overrides(self, session_id: str, intervention: str = "", comparator: str = "") -> None:
+        """Backward-compatible wrapper delegating to `save_session_pico_overrides`."""
+        self.save_session_pico_overrides(
+            session_id,
+            intervention=intervention,
+            comparator=comparator,
+        )
 
     def resolve_simulated_effective_pico(
         self,
         *,
         pico: dict | None = None,
         idea_text: str = "",
+        condition: str = "",
         intervention: str = "",
         comparator: str = "",
+        outcome: str = "",
         sim_config: dict | None = None,
         protocol: dict | None = None,
         target_rct: dict | None = None,
@@ -684,6 +769,8 @@ class TTERunner:
         if has_pico_dict and cfg_comp_lbl and cfg_comp_lbl == trct_comp0:
             cfg_comp_lbl = ""
 
+        explicit_cond = str(condition or cfg.get("condition") or "").strip()
+        explicit_out = str(outcome or cfg.get("outcome") or "").strip()
         explicit_intr = (
             str(intervention or "").strip()
             or str(cfg.get("intervention") or "").strip()
@@ -745,6 +832,13 @@ class TTERunner:
         elif sim_intr and not eff_pico.get("intervention"):
             eff_pico["intervention"] = sim_intr
 
+        if explicit_cond:
+            eff_pico["condition_query_en"] = explicit_cond
+            eff_pico["population"] = explicit_cond
+        if explicit_out:
+            eff_pico["primary_outcome"] = explicit_out
+            eff_pico["outcome_query_en"] = explicit_out
+
         return (eff_pico if eff_pico else None), sim_intr, sim_comp
 
     def start_simulated_cohort(
@@ -753,8 +847,10 @@ class TTERunner:
         target_rct: dict | None = None,
         pico: dict | None = None,
         idea_text: str = "",
+        condition: str = "",
         intervention: str = "",
         comparator: str = "",
+        outcome: str = "",
         protocol: dict | None = None,
         sim_config: dict | None = None,
         confirm_arm_mismatch: bool = False,
@@ -783,8 +879,10 @@ class TTERunner:
         eff_pico, sim_intr, sim_comp = self.resolve_simulated_effective_pico(
             pico=pico,
             idea_text=idea_text,
+            condition=condition,
             intervention=intervention,
             comparator=comparator,
+            outcome=outcome,
             sim_config=cfg,
             protocol=protocol,
             target_rct=target_rct,
@@ -792,7 +890,7 @@ class TTERunner:
         # Unconditional server-side 4D PICO-T alignment gate whenever `target_rct` is provided
         if target_rct:
             sim_cond = str((eff_pico or {}).get("condition_query_en") or "").strip()
-            sim_out = str((eff_pico or {}).get("primary_outcome") or "").strip()
+            sim_out = str((eff_pico or {}).get("outcome_query_en") or (eff_pico or {}).get("primary_outcome") or "").strip()
             target_rct = verify_and_enrich_target_rct(
                 target_rct,
                 intervention=sim_intr,
@@ -852,13 +950,26 @@ class TTERunner:
         seed: int = 42,
         bootstrap_iterations: int = 80,
         weight_method: str | None = None,
+        condition_override: str = "",
         intervention_override: str = "",
         comparator_override: str = "",
+        outcome_override: str = "",
+        target_followup_days_override: float | None = None,
         confirm_arm_mismatch: bool = False,
         confirm_protocol_mismatch: bool = False,
     ) -> dict:
-        if intervention_override.strip() or comparator_override.strip():
-            self.save_session_arm_overrides(session_id, intervention_override, comparator_override)
+        if any(
+            x.strip()
+            for x in (condition_override, intervention_override, comparator_override, outcome_override)
+        ) or target_followup_days_override is not None:
+            self.save_session_pico_overrides(
+                session_id,
+                condition=condition_override,
+                intervention=intervention_override,
+                comparator=comparator_override,
+                outcome=outcome_override,
+                target_followup_days=target_followup_days_override,
+            )
         sess = self.get_session(session_id)
         cohort_path = sess["cohort_path"]
         if not cohort_path.is_file():
@@ -876,8 +987,11 @@ class TTERunner:
             pctx = self.resolve_user_cohort_pico_context(
                 sess,
                 mapping,
+                condition_override=condition_override,
                 intervention_override=intervention_override,
                 comparator_override=comparator_override,
+                outcome_override=outcome_override,
+                target_followup_days_override=target_followup_days_override,
             )
             target_rct = verify_and_enrich_target_rct(
                 target_rct,

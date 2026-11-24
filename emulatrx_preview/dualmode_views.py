@@ -549,21 +549,29 @@ def workbench_home_view() -> str:
 <section id="panel-step-2" class="hidden">
   <fieldset>
     <legend>ClinicalTrials.gov 候选目标随机对照试验（Target RCT）检索与选定</legend>
-    <div class="field-grid" style="grid-template-columns:1.6fr 1fr 1fr auto">
+    <div class="field-grid" style="grid-template-columns:repeat(auto-fit,minmax(210px,1fr))">
       <label class="control">
         <span>检索关键词（支持中英文疾病/药物词，或输入精确登记号如 <code>NCT03036124</code>）</span>
-        <input type="text" id="rct-query-input" placeholder="例如：Dapagliflozin Heart Failure 或 NCT03036124">
+        <input type="text" id="rct-query-input" name="query" placeholder="例如：Dapagliflozin Heart Failure 或 NCT03036124">
+      </label>
+      <label class="control">
+        <span>目标人群 / 适应证 (Condition / Population)</span>
+        <input type="text" id="rct-cond-input" name="condition" placeholder="如：EGFR-mutated NSCLC 或 Type 2 Diabetes Heart Failure">
       </label>
       <label class="control">
         <span>干预策略 (Intervention / 1代表药物)</span>
-        <input type="text" id="rct-intr-input" placeholder="如：达格列净 / Dapagliflozin">
+        <input type="text" id="rct-intr-input" name="intervention" placeholder="如：达格列净 / Dapagliflozin">
       </label>
       <label class="control">
         <span>对照策略 (Comparator / 0代表对照)</span>
-        <input type="text" id="rct-comp-input" placeholder="如：西格列汀（研究想法未限定可留空）">
+        <input type="text" id="rct-comp-input" name="comparator" placeholder="如：西格列汀（研究想法未限定可留空）">
+      </label>
+      <label class="control">
+        <span>目标主要终点 (Primary Outcome)</span>
+        <input type="text" id="rct-out-input" name="outcome" placeholder="如：Overall Survival / MACE / 心衰住院或心血管死亡">
       </label>
       <div style="display:flex;align-items:flex-end">
-        <button type="button" onclick="executeRCTSearch()">重新检索并核验双臂</button>
+        <button type="button" onclick="executeRCTSearch()">重新检索并核验四维 PICO</button>
       </div>
     </div>
     <div id="rct-source-banner" style="margin-top:12px"></div>
@@ -584,6 +592,10 @@ def workbench_home_view() -> str:
 <!-- ==================== STEP 3 ==================== -->
 <section id="panel-step-3" class="hidden">
   <div id="selected-rct-summary"></div>
+  <input type="hidden" id="step3-cond-hidden" name="condition" value="">
+  <input type="hidden" id="step3-intr-hidden" name="intervention" value="">
+  <input type="hidden" id="step3-comp-hidden" name="comparator" value="">
+  <input type="hidden" id="step3-out-hidden" name="outcome" value="">
 
   <!-- Step 3A: User Cohort Visual Mapping -->
   <div id="step3-user-mapping" class="hidden">
@@ -916,13 +928,16 @@ async function searchRCTsFromProfile() {{
     if (nr.ok) STATE.interpretation = (await nr.json()).interpretation;
   }}
   document.getElementById('rct-query-input').value = STATE.interpretation.search_query_en || '';
+  document.getElementById('rct-cond-input').value = STATE.interpretation.condition_query_en || '';
   document.getElementById('rct-intr-input').value = STATE.interpretation.intervention_query_en || '';
   document.getElementById('rct-comp-input').value = STATE.interpretation.comparator_query_en || '';
+  document.getElementById('rct-out-input').value = STATE.interpretation.outcome_query_en || '';
   goStep(2);
   await executeRCTSearch(
     STATE.interpretation.condition_query_en || '',
     STATE.interpretation.intervention_query_en || '',
-    STATE.interpretation.comparator_query_en || ''
+    STATE.interpretation.comparator_query_en || '',
+    STATE.interpretation.outcome_query_en || ''
   );
 }}
 
@@ -952,13 +967,16 @@ async function parseIdeaAndSearchRCTs() {{
     </fieldset>
   `;
   document.getElementById('rct-query-input').value = STATE.pico.search_query_en || '';
+  document.getElementById('rct-cond-input').value = STATE.pico.condition_query_en || '';
   document.getElementById('rct-intr-input').value = STATE.pico.intervention_query_en || '';
   document.getElementById('rct-comp-input').value = STATE.pico.comparator_query_en || '';
+  document.getElementById('rct-out-input').value = STATE.pico.primary_outcome || '';
   goStep(2);
   await executeRCTSearch(
     STATE.pico.condition_query_en || '',
     STATE.pico.intervention_query_en || '',
-    STATE.pico.comparator_query_en || ''
+    STATE.pico.comparator_query_en || '',
+    STATE.pico.primary_outcome || ''
   );
 }}
 
@@ -995,15 +1013,18 @@ function onToggleMismatchConfirm(checked) {{
   STATE.confirmArmMismatch = Boolean(checked);
 }}
 
-async function executeRCTSearch(cond='', intr='', comp='') {{
+async function executeRCTSearch(cond='', intr='', comp='', out='') {{
   showError('');
   const q = document.getElementById('rct-query-input').value;
+  const condBox = document.getElementById('rct-cond-input').value.trim();
   const intrBox = document.getElementById('rct-intr-input').value.trim();
   const compBox = document.getElementById('rct-comp-input').value.trim();
+  const outBox = document.getElementById('rct-out-input').value.trim();
   const ctx = STATE.mode === 'user_cohort' ? (STATE.interpretation || {{}}) : (STATE.pico || {{}});
+  const effCond = condBox || cond || ctx.condition_query_en || '';
   const effIntr = intrBox || intr || ctx.intervention_query_en || '';
   const effComp = compBox || comp || ctx.comparator_query_en || '';
-  const effCond = cond || ctx.condition_query_en || '';
+  const effOut = outBox || out || ctx.outcome_query_en || ctx.primary_outcome || '';
   const listEl = document.getElementById('rct-cards-list');
   listEl.innerHTML = '<p>正在检索 ClinicalTrials.gov 公开注册随机对照试验并执行四维 PICO-T 对齐核验…</p>';
   const resp = await fetch('/api/rcts/search', {{
@@ -1014,6 +1035,7 @@ async function executeRCTSearch(cond='', intr='', comp='') {{
       condition: effCond,
       intervention: effIntr,
       comparator: effComp,
+      outcome: effOut,
       session_id: STATE.sessionId || '',
       project_mode: STATE.mode,
       context_summary: ctx
@@ -1127,8 +1149,14 @@ async function chooseTargetRCT(idx) {{
     showError(`所选试验 ${{rct.nct_id}} 与当前研究存在方案偏离（${{rct.overall_alignment_label || rct.arm_alignment_label || rct.overall_alignment_status}}）。若仅将其作为局部方案参考框架，请先勾选列表下方的「我已知晓该试验在干预对照、目标人群、主要终点或随访窗上与当前研究存在偏离…」确认框后再继续。`);
     return;
   }}
+  const condOvr = document.getElementById('rct-cond-input').value.trim();
   const intrOvr = document.getElementById('rct-intr-input').value.trim();
   const compOvr = document.getElementById('rct-comp-input').value.trim();
+  const outOvr = document.getElementById('rct-out-input').value.trim();
+  document.getElementById('step3-cond-hidden').value = condOvr;
+  document.getElementById('step3-intr-hidden').value = intrOvr;
+  document.getElementById('step3-comp-hidden').value = compOvr;
+  document.getElementById('step3-out-hidden').value = outOvr;
   const resp = await fetch('/api/rcts/draft', {{
     method: 'POST',
     headers: {{ 'Content-Type': 'application/json' }},
@@ -1137,8 +1165,10 @@ async function chooseTargetRCT(idx) {{
       session_id: STATE.sessionId,
       target_rct: rct,
       pico: STATE.pico,
+      condition: condOvr,
       intervention: intrOvr,
       comparator: compOvr,
+      outcome: outOvr,
       confirm_arm_mismatch: STATE.confirmArmMismatch,
       confirm_protocol_mismatch: STATE.confirmArmMismatch
     }})
@@ -1363,8 +1393,10 @@ async function launchUserCohortRun() {{
       session_id: STATE.sessionId,
       mapping: mapping,
       target_rct: STATE.selectedRct,
-      intervention: document.getElementById('rct-intr-input').value.trim(),
-      comparator: document.getElementById('rct-comp-input').value.trim(),
+      condition: document.getElementById('step3-cond-hidden').value.trim() || document.getElementById('rct-cond-input').value.trim(),
+      intervention: document.getElementById('step3-intr-hidden').value.trim() || document.getElementById('rct-intr-input').value.trim(),
+      comparator: document.getElementById('step3-comp-hidden').value.trim() || document.getElementById('rct-comp-input').value.trim(),
+      outcome: document.getElementById('step3-out-hidden').value.trim() || document.getElementById('rct-out-input').value.trim(),
       confirm_arm_mismatch: STATE.confirmArmMismatch,
       confirm_protocol_mismatch: STATE.confirmArmMismatch
     }})
@@ -1397,8 +1429,10 @@ async function launchSimulatedRun() {{
       target_rct: STATE.selectedRct,
       pico: STATE.pico,
       sim_config: simConfig,
-      intervention: document.getElementById('rct-intr-input').value.trim(),
-      comparator: document.getElementById('rct-comp-input').value.trim(),
+      condition: document.getElementById('step3-cond-hidden').value.trim() || document.getElementById('rct-cond-input').value.trim(),
+      intervention: document.getElementById('step3-intr-hidden').value.trim() || document.getElementById('rct-intr-input').value.trim(),
+      comparator: document.getElementById('step3-comp-hidden').value.trim() || document.getElementById('rct-comp-input').value.trim(),
+      outcome: document.getElementById('step3-out-hidden').value.trim() || document.getElementById('rct-out-input').value.trim(),
       confirm_arm_mismatch: STATE.confirmArmMismatch,
       confirm_protocol_mismatch: STATE.confirmArmMismatch
     }})

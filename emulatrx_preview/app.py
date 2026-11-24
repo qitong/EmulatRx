@@ -136,12 +136,13 @@ def start_synthetic_tte(protocol: dict, cases: int = 2000, seed: int = 42, boots
     return runner.start(protocol, cases=cases, seed=seed, bootstrap_iterations=bootstrap_iterations)
 
 
-@mcp.tool(description="Search ClinicalTrials.gov API v2 (with explicit offline curated fallback) for target RCTs matching a clinical research idea or condition/intervention/comparator keywords.")
+@mcp.tool(description="Search ClinicalTrials.gov API v2 (with explicit offline curated fallback) for target RCTs matching a clinical research idea or condition/intervention/comparator/outcome keywords.")
 def search_target_rcts(
     query: str = "",
     condition: str = "",
     intervention: str = "",
     comparator: str = "",
+    outcome: str = "",
     idea_text: str = "",
     session_id: str = "",
     max_results: int = 5,
@@ -149,34 +150,54 @@ def search_target_rcts(
     pico = None
     ctx_summary = None
     sid = session_id.strip()
+    cond_in = condition.strip()
+    intr_in = intervention.strip()
+    comp_in = comparator.strip()
+    out_in = outcome.strip()
+    if sid and any((cond_in, intr_in, comp_in, out_in)):
+        runner.save_session_pico_overrides(
+            sid,
+            condition=cond_in,
+            intervention=intr_in,
+            comparator=comp_in,
+            outcome=out_in,
+        )
     if idea_text.strip():
-        pico = parse_research_idea_pico(idea_text)
+        pico = parse_research_idea_pico(idea_text, explicit_comparator=comp_in)
         query = query or pico["search_query_en"]
-        condition = condition or pico["condition_query_en"]
-        intervention = intervention or pico["intervention_query_en"]
-        comparator = comparator or pico.get("comparator_query_en", "")
+        condition = cond_in or pico["condition_query_en"]
+        intervention = intr_in or pico["intervention_query_en"]
+        comparator = comp_in or pico.get("comparator_query_en", "")
+        outcome = out_in or pico.get("primary_outcome", "")
         ctx_summary = pico
     elif sid:
         try:
             sess = runner.get_session(sid)
             interp = sess["interpretation"]
+            meta = sess.get("meta") or {}
             ctx_summary = interp
             query = query or interp.get("search_query_en", "")
-            condition = condition or interp.get("condition_query_en", "")
-            intervention = intervention or interp.get("intervention_query_en", "")
-            comparator = comparator or interp.get("comparator_query_en", "")
+            condition = cond_in or str(meta.get("override_condition") or interp.get("condition_query_en", ""))
+            intervention = intr_in or str(meta.get("override_intervention") or interp.get("intervention_query_en", ""))
+            comparator = comp_in or str(meta.get("override_comparator") or interp.get("comparator_query_en", ""))
+            outcome = out_in or str(meta.get("override_outcome") or interp.get("outcome_query_en", ""))
         except ContractError:
             pass
-    forbidden_vals = runner.get_session_forbidden_values(sid) if sid else ()
+    forbidden_list = list(runner.get_session_forbidden_values(sid)) if sid else []
+    if sid:
+        for tok in extract_untrusted_Note_forbidden_tokens(f"{query} {condition} {intervention} {comparator} {outcome}"):
+            if tok not in forbidden_list:
+                forbidden_list.append(tok)
     res = search_candidate_rcts(
         query,
         condition=condition,
         intervention=intervention,
         comparator=comparator,
+        outcome=outcome,
         project_mode=SOURCE_MODE_USER_COHORT if sid else SOURCE_MODE_SIMULATED_COHORT,
         context_summary=ctx_summary,
         max_results=max(1, min(int(max_results), 8)),
-        forbidden_values=forbidden_vals,
+        forbidden_values=tuple(forbidden_list),
     )
     return {"pico": pico, "llm_status": get_llm_status(), **res}
 
@@ -185,8 +206,10 @@ def search_target_rcts(
 def start_simulated_rct_tte(
     nct_id: str = "",
     idea_text: str = "",
+    condition: str = "",
     intervention: str = "",
     comparator: str = "",
+    outcome: str = "",
     cases: int = 1200,
     confounding_strength: str = "medium",
     effect_direction: str = "protective_moderate",
@@ -201,13 +224,14 @@ def start_simulated_rct_tte(
     target_rct = None
     if nct_id.strip():
         target_rct = fetch_rct_by_nct(nct_id.strip())
-    elif pico or intervention.strip() or comparator.strip():
-        q_str = (pico or {}).get("search_query_en") or f"{intervention} {comparator}".strip()
+    elif pico or condition.strip() or intervention.strip() or comparator.strip() or outcome.strip():
+        q_str = (pico or {}).get("search_query_en") or f"{intervention} {comparator} {condition}".strip()
         found = search_candidate_rcts(
             q_str,
-            condition=(pico or {}).get("condition_query_en", ""),
+            condition=condition.strip() or (pico or {}).get("condition_query_en", ""),
             intervention=intervention.strip() or (pico or {}).get("intervention_query_en", ""),
             comparator=comparator.strip() or (pico or {}).get("comparator_query_en", ""),
+            outcome=outcome.strip() or (pico or {}).get("primary_outcome", ""),
             project_mode=SOURCE_MODE_SIMULATED_COHORT,
             context_summary=pico,
             max_results=1,
@@ -218,8 +242,10 @@ def start_simulated_rct_tte(
         target_rct=target_rct,
         pico=pico,
         idea_text=idea_text,
+        condition=condition,
         intervention=intervention,
         comparator=comparator,
+        outcome=outcome,
         sim_config={
             "cases": cases,
             "confounding_strength": confounding_strength,
@@ -272,8 +298,10 @@ def start_user_cohort_tte(
     session_id: str,
     mapping: dict | None = None,
     nct_id: str = "",
+    condition: str = "",
     intervention: str = "",
     comparator: str = "",
+    outcome: str = "",
     weight_method: str = "overlap",
     seed: int = 42,
     bootstrap_iterations: int = 80,
@@ -290,8 +318,10 @@ def start_user_cohort_tte(
         seed=seed,
         bootstrap_iterations=bootstrap_iterations,
         weight_method=weight_method,
+        condition_override=condition,
         intervention_override=intervention,
         comparator_override=comparator,
+        outcome_override=outcome,
         confirm_arm_mismatch=confirm_arm_mismatch,
         confirm_protocol_mismatch=confirm_protocol_mismatch,
     )
@@ -603,10 +633,20 @@ async def api_search_rcts(request):
         project_mode = str(payload.get("project_mode", "")).strip() or (
             SOURCE_MODE_USER_COHORT if session_id else ""
         )
+        cond_in = str(payload.get("condition", "")).strip()
         intr_in = str(payload.get("intervention", "")).strip()
         comp_in = str(payload.get("comparator", "")).strip()
-        if session_id and (intr_in or comp_in):
-            runner.save_session_arm_overrides(session_id, intr_in, comp_in)
+        out_in = str(payload.get("outcome", "")).strip()
+        fu_in = float(payload["target_followup_days"]) if isinstance(payload.get("target_followup_days"), (int, float)) else None
+        if session_id and (any((cond_in, intr_in, comp_in, out_in)) or fu_in is not None):
+            runner.save_session_pico_overrides(
+                session_id,
+                condition=cond_in,
+                intervention=intr_in,
+                comparator=comp_in,
+                outcome=out_in,
+                target_followup_days=fu_in,
+            )
 
         forbidden_list = list(runner.get_session_forbidden_values(session_id)) if session_id else []
         ctx_summary = payload.get("context_summary") if isinstance(payload.get("context_summary"), dict) else None
@@ -626,9 +666,10 @@ async def api_search_rcts(request):
             raw_probe = " ".join(
                 [
                     str(payload.get("query", "")),
-                    str(payload.get("condition", "")),
+                    cond_in,
                     intr_in,
                     comp_in,
+                    out_in,
                     json.dumps(ctx_summary or {}, ensure_ascii=False),
                 ]
             )
@@ -637,11 +678,11 @@ async def api_search_rcts(request):
                     forbidden_list.append(tok)
         res = search_candidate_rcts(
             str(payload.get("query", "")),
-            condition=str(payload.get("condition", "")),
+            condition=cond_in,
             intervention=intr_in,
             comparator=comp_in,
-            outcome=str(payload.get("outcome", "")),
-            target_followup_days=float(payload["target_followup_days"]) if isinstance(payload.get("target_followup_days"), (int, float)) else None,
+            outcome=out_in,
+            target_followup_days=fu_in,
             project_mode=project_mode,
             context_summary=ctx_summary,
             max_results=int(payload.get("max_results", 6)),
@@ -661,21 +702,34 @@ async def api_draft_mapping_or_protocol(request):
             target_rct = fetch_rct_by_nct(str(payload["nct_id"]).strip())
         confirm_arm = bool(payload.get("confirm_arm_mismatch") is True)
         confirm_proto = bool(payload.get("confirm_protocol_mismatch") is True)
+        cond_ovr = str(payload.get("condition", "")).strip()
         intr_ovr = str(payload.get("intervention", "")).strip()
         comp_ovr = str(payload.get("comparator", "")).strip()
+        out_ovr = str(payload.get("outcome", "")).strip()
+        fu_ovr = float(payload["target_followup_days"]) if isinstance(payload.get("target_followup_days"), (int, float)) else None
 
         if pmode == SOURCE_MODE_USER_COHORT:
             session_id = str(payload.get("session_id", ""))
-            if intr_ovr or comp_ovr:
-                runner.save_session_arm_overrides(session_id, intr_ovr, comp_ovr)
+            if any((cond_ovr, intr_ovr, comp_ovr, out_ovr)) or fu_ovr is not None:
+                runner.save_session_pico_overrides(
+                    session_id,
+                    condition=cond_ovr,
+                    intervention=intr_ovr,
+                    comparator=comp_ovr,
+                    outcome=out_ovr,
+                    target_followup_days=fu_ovr,
+                )
             sess = runner.get_session(session_id)
             mapping = recommend_column_mapping(sess["profile"], target_rct=target_rct)
             if target_rct:
                 pctx = runner.resolve_user_cohort_pico_context(
                     sess,
                     mapping,
+                    condition_override=cond_ovr,
                     intervention_override=intr_ovr,
                     comparator_override=comp_ovr,
+                    outcome_override=out_ovr,
+                    target_followup_days_override=fu_ovr,
                 )
                 target_rct = verify_and_enrich_target_rct(
                     target_rct,
@@ -689,7 +743,7 @@ async def api_draft_mapping_or_protocol(request):
                     confirm_protocol_mismatch=confirm_proto,
                 )
             return JSONResponse(
-                {"project_mode": pmode, "mapping": mapping, "target_rct": target_rct},
+                {"project_mode": pmode, "mapping": mapping, "target_rct": target_rct, "pico_context": pctx if target_rct else None},
                 headers={"Cache-Control": "no-store"},
             )
         if pmode == SOURCE_MODE_SIMULATED_COHORT:
@@ -703,8 +757,10 @@ async def api_draft_mapping_or_protocol(request):
             eff_pico, sim_intr, sim_comp = runner.resolve_simulated_effective_pico(
                 pico=pico,
                 idea_text=str(payload.get("idea_text", "")),
+                condition=cond_ovr,
                 intervention=intr_ovr,
                 comparator=comp_ovr,
+                outcome=out_ovr,
                 sim_config=sim_cfg,
                 protocol=proto_in,
                 target_rct=target_rct,
@@ -715,7 +771,8 @@ async def api_draft_mapping_or_protocol(request):
                     intervention=sim_intr,
                     comparator=sim_comp,
                     target_condition=str((eff_pico or {}).get("condition_query_en") or "").strip(),
-                    target_outcome=str((eff_pico or {}).get("primary_outcome") or "").strip(),
+                    target_outcome=str((eff_pico or {}).get("outcome_query_en") or (eff_pico or {}).get("primary_outcome") or "").strip(),
+                    target_followup_days=fu_ovr,
                     project_mode=SOURCE_MODE_SIMULATED_COHORT,
                     confirm_arm_mismatch=confirm_arm,
                     confirm_protocol_mismatch=confirm_proto,
@@ -741,13 +798,23 @@ async def _launch_dual_run_payload(payload: dict, forced_mode: str | None = None
         target_rct = fetch_rct_by_nct(str(payload["nct_id"]).strip())
     confirm_arm = bool(payload.get("confirm_arm_mismatch") is True)
     confirm_proto = bool(payload.get("confirm_protocol_mismatch") is True)
+    cond_ovr = str(payload.get("condition", "")).strip()
     intr_ovr = str(payload.get("intervention", "")).strip()
     comp_ovr = str(payload.get("comparator", "")).strip()
+    out_ovr = str(payload.get("outcome", "")).strip()
+    fu_ovr = float(payload["target_followup_days"]) if isinstance(payload.get("target_followup_days"), (int, float)) else None
 
     if pmode == SOURCE_MODE_USER_COHORT:
         session_id = str(payload.get("session_id", ""))
-        if intr_ovr or comp_ovr:
-            runner.save_session_arm_overrides(session_id, intr_ovr, comp_ovr)
+        if any((cond_ovr, intr_ovr, comp_ovr, out_ovr)) or fu_ovr is not None:
+            runner.save_session_pico_overrides(
+                session_id,
+                condition=cond_ovr,
+                intervention=intr_ovr,
+                comparator=comp_ovr,
+                outcome=out_ovr,
+                target_followup_days=fu_ovr,
+            )
         sess = runner.get_session(session_id)
         mapping = payload.get("mapping")
         if mapping is None:
@@ -758,8 +825,11 @@ async def _launch_dual_run_payload(payload: dict, forced_mode: str | None = None
             session_id,
             mapping,
             target_rct=target_rct,
+            condition_override=cond_ovr,
             intervention_override=intr_ovr,
             comparator_override=comp_ovr,
+            outcome_override=out_ovr,
+            target_followup_days_override=fu_ovr,
             confirm_arm_mismatch=confirm_arm,
             confirm_protocol_mismatch=confirm_proto,
         )
@@ -776,8 +846,10 @@ async def _launch_dual_run_payload(payload: dict, forced_mode: str | None = None
             target_rct=target_rct,
             pico=pico,
             idea_text=idea_txt,
+            condition=cond_ovr,
             intervention=intr_ovr,
             comparator=comp_ovr,
+            outcome=out_ovr,
             protocol=proto_in,
             sim_config=sim_config,
             confirm_arm_mismatch=confirm_arm,

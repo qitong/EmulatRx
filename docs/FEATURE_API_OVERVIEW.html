@@ -231,13 +231,13 @@
         <tr>
           <td><strong>REST · 想法与四维检索</strong></td>
           <td><code>POST /api/idea/parse</code> · <code>POST /api/rcts/search</code> · <code>POST /api/rcts/draft</code></td>
-          <td><code>idea_text</code> 或 <code>query</code> / <code>condition</code> / <code>intervention</code> / <code>comparator</code> / <code>session_id</code> / <code>confirm_arm_mismatch</code> / <code>confirm_protocol_mismatch</code></td>
+          <td><code>idea_text</code> 或 <code>query</code> / <code>condition</code> / <code>intervention</code> / <code>comparator</code> / <code>outcome</code>（自动持久化至会话并跨步传递） / <code>session_id</code> / <code>confirm_arm_mismatch</code> / <code>confirm_protocol_mismatch</code></td>
           <td>结构化中文 PICO、含 <code>dimension_audit</code> 四维胶囊与 <code>effective_score_cap</code> 硬上限的候选 RCT 列表、对齐后的映射或模拟七要素协议草稿</td>
         </tr>
         <tr>
           <td><strong>REST · 双轨执行</strong></td>
           <td><code>POST /api/dual-runs</code> · <code>POST /api/v1/projects/user-cohort/runs</code> · <code>POST /api/v1/projects/simulated/runs</code> · <code>GET /api/dual-runs/{run_id}</code></td>
-          <td><code>session_id</code> + <code>mapping</code>（或 <code>pico</code> + <code>sim_config</code>）+ <code>target_rct</code> + 偏离确认布尔值</td>
+          <td><code>session_id</code> + <code>mapping</code>（或 <code>pico</code> + <code>sim_config</code>）+ <code>target_rct</code> + 可选 <code>condition</code>/<code>intervention</code>/<code>comparator</code>/<code>outcome</code> 覆写 + 偏离确认布尔值</td>
           <td><code>202 Accepted</code> 异步任务句柄；完成后返回纳排瀑布、平衡诊断、双 CIF 曲线、五量并列表、模拟真值恢复表及服务端渲染 HTML</td>
         </tr>
         <tr>
@@ -336,12 +336,12 @@
         <tr>
           <td><strong><code>tte-foundation</code></strong><br><small><code>synthetic-contract.yml</code></small></td>
           <td><code>PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -p 'test_tte_*.py' -v</code></td>
-          <td><strong>白盒数学解析基准与对抗性因果探针层（<code>test_tte_foundation.py</code> + <code>test_tte_competing_risks.py</code> + <code>test_tte_ccw.py</code> + <code>test_tte_dualmode.py</code>）</strong>：双指数竞争风险解析真值、协变量依赖删失 Fine–Gray 联合 IPCW 得分方程与稳健方差 oracle、P1 双侧宽限期 CCW 零效应消偏/保护效应恢复/<code>X_tv</code> 时变协变量/截尾前极值阻断、五维 PICO-T 对齐（<code>NCT03959501</code>、<code>NCT00842556</code>、<code>Exclusion Criteria</code> 陷阱、CAROLINA/FLAURA 正对照）及三层 LLM 隐私脱敏单测。</td>
+          <td><strong>白盒数学解析基准与对抗性因果探针层（46 项：<code>test_tte_foundation.py</code> + <code>test_tte_competing_risks.py</code> + <code>test_tte_ccw.py</code> + <code>test_tte_dualmode.py</code>）</strong>：双指数竞争风险解析真值、协变量依赖删失 Fine–Gray 联合 IPCW 得分方程与稳健方差 oracle、P1 双侧宽限期 CCW 零效应消偏/保护效应恢复/<code>X_tv</code> 时变协变量/截尾前极值阻断、五维 PICO-T 对齐（<code>NCT03959501</code>、<code>NCT00842556</code>、<code>Exclusion Criteria</code> 陷阱、肿瘤 <code>EGFR</code> 突变与肾脏 <code>CKD</code> 消歧、<code>user_cohort</code> 对称终点核验、CAROLINA/FLAURA 正对照）及三层 LLM 隐私脱敏单测。</td>
         </tr>
         <tr>
           <td><strong><code>service</code></strong><br><small><code>preview-service.yml</code></small></td>
           <td><code>PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -p 'test_preview_service.py' -v</code><br><code>PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -p 'test_dualmode_workbench.py' -v</code></td>
-          <td><strong>公开入口黑盒契约层（Web / REST / MCP）</strong>：通过本地 <code>127.0.0.1</code> 回环模拟 OpenAI 兼容网关与公开 <code>NCT*</code> 夹具，端到端验证双入口运行及 HTML 报告/JSON/CSV/manifest 下载 <code>200</code>、Web Basic 与 MCP Bearer 鉴权隔离 <code>401</code>、<code>25 MB</code> 流式超限 <code>413</code>、双臂与四维方案偏离 <code>422</code>、<code>DELETE /api/cohorts/{id}</code> 物理清除后 <code>404</code> 及 MCP 全工具契约。</td>
+          <td><strong>公开入口黑盒契约层（17 项，全仓合计 89 项 Web / REST / MCP）</strong>：通过本地 <code>127.0.0.1</code> 回环模拟 OpenAI 兼容网关与公开 <code>NCT*</code> 夹具，端到端验证双入口运行及 HTML 报告/JSON/CSV/manifest 下载 <code>200</code>、Web Basic 与 MCP Bearer 鉴权隔离 <code>401</code>、<code>25 MB</code> 流式超限 <code>413</code>、Step 2 <code>condition</code>/<code>outcome</code> 覆写持久化及双臂/四维方案偏离 <code>422</code>、<code>DELETE /api/cohorts/{id}</code> 物理清除后 <code>404</code> 及 MCP 全工具契约。</td>
         </tr>
         <tr>
           <td><strong><code>arm64-image</code></strong><br><small><code>preview-service.yml</code></small></td>

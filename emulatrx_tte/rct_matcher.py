@@ -147,8 +147,9 @@ DRUG_CLASS_LEXICON: tuple[tuple[str, str, str, str, bool, tuple[str, ...]], ...]
 CONDITION_BILINGUAL_MAP: tuple[tuple[tuple[str, ...], str], ...] = (
     (("2型糖尿病", "二型糖尿病", "糖尿病", "type 2 diabetes", "t2dm", "diabetes"), "Type 2 Diabetes"),
     (("心力衰竭", "心衰", "heart failure", "hfref", "hfpef"), "Heart Failure"),
-    (("慢性肾脏病", "慢性肾病", "糖尿病肾病", "chronic kidney disease", "diabetic kidney", "ckd"), "Chronic Kidney Disease"),
-    (("非小细胞肺癌", "肺癌", "non-small cell lung cancer", "nsclc", "lung cancer"), "Non-Small Cell Lung Cancer"),
+    (("慢性肾脏病", "慢性肾病", "糖尿病肾病", "肾功能不全", "终末期肾病", "chronic kidney disease", "kidney disease", "diabetic kidney", "diabetic nephropathy", "nephropathy", "renal insufficiency", "ckd", "dkd"), "Chronic Kidney Disease"),
+    (("egfr-mutated", "egfr mutated", "egfr mutation", "egfr+", "egfr positive", "exon 19", "exon19del", "l858r", "egfr-tki", "egfr突变", "egfr敏感"), "EGFR-Mutated Non-Small Cell Lung Cancer"),
+    (("非小细胞肺癌", "肺癌", "non-small cell lung cancer", "non-small-cell lung cancer", "nsclc", "lung cancer"), "Non-Small Cell Lung Cancer"),
     (("乳腺癌", "breast cancer"), "Breast Cancer"),
     (("心房颤动", "房颤", "atrial fibrillation", "afib"), "Atrial Fibrillation"),
     (("脓毒症", "重症感染", "sepsis"), "Sepsis"),
@@ -743,8 +744,20 @@ def translate_condition_to_english(raw_cond: str) -> str:
     lower = text.lower()
     out_en: list[str] = []
     for triggers, en_cond in CONDITION_BILINGUAL_MAP:
-        if any(t in lower for t in triggers) and en_cond not in out_en:
+        hit = False
+        for t in triggers:
+            tl = t.lower()
+            if tl.isascii() and tl.replace("-", "").isalnum() and len(tl) <= 4:
+                if re.search(rf"(?<![a-z0-9]){re.escape(tl)}(?![a-z0-9])", lower):
+                    hit = True
+                    break
+            elif tl in lower:
+                hit = True
+                break
+        if hit and en_cond not in out_en:
             out_en.append(en_cond)
+    if "EGFR-Mutated Non-Small Cell Lung Cancer" in out_en and "Non-Small Cell Lung Cancer" in out_en:
+        out_en.remove("Non-Small Cell Lung Cancer")
     for ascii_phrase in re.findall(r"[A-Za-z][A-Za-z0-9\s-]{2,40}", text):
         cl = ascii_phrase.strip()
         if cl and cl.lower() not in {x.lower() for x in out_en}:
@@ -1259,6 +1272,7 @@ POPULATION_DOMAIN_TAXONOMY: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "egfr mutated",
             "egfr mutation",
             "egfr mutations",
+            "egfr+",
             "egfr-positive",
             "egfr positive",
             "egfr exon",
@@ -1267,6 +1281,9 @@ POPULATION_DOMAIN_TAXONOMY: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "l858r",
             "t790m",
             "azd9291",
+            "egfr-tki",
+            "egfr tki",
+            "epidermal growth factor receptor",
             "egfr突变",
             "egfr 突变",
             "egfr敏感",
@@ -1334,7 +1351,12 @@ CLINICAL_OUTCOME_DOMAINS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "survival rate",
             "cancer death",
             "cancerdeath",
+            "os_event",
+            "os event",
+            "os_status",
+            "os status",
             "os_days",
+            "os days",
             "总生存",
             "全因死亡",
             "肿瘤特异死亡",
@@ -1353,7 +1375,12 @@ CLINICAL_OUTCOME_DOMAINS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "tumor progression",
             "disease progression",
             "progression_or",
+            "pfs_event",
+            "pfs event",
+            "pfs_status",
+            "pfs status",
             "pfs_days",
+            "pfs days",
             "primary relapse",
             "relapse",
             "recurrence",
@@ -1496,11 +1523,73 @@ def extract_positive_inclusion_text(raw_criteria: str) -> str:
     return parts[0].strip()
 
 
+GENERIC_OPAQUE_OUTCOME_WORDS: frozenset[str] = frozenset(
+    {
+        "",
+        "0",
+        "1",
+        "2",
+        "y",
+        "n",
+        "yes",
+        "no",
+        "true",
+        "false",
+        "event",
+        "events",
+        "status",
+        "outcome",
+        "outcomes",
+        "endpoint",
+        "endpoints",
+        "flag",
+        "code",
+        "indicator",
+        "target",
+        "censor",
+        "censored",
+        "alive",
+        "primary",
+        "competing",
+        "time",
+        "days",
+        "months",
+        "years",
+        "followup",
+        "follow",
+        "up",
+        "vital",
+        "type",
+        "observed",
+        "主要事件",
+        "结局",
+        "状态",
+        "事件",
+    }
+)
+
+
+def _is_generic_opaque_outcome_placeholder(raw_text: str) -> bool:
+    """Return True ONLY when `target_outcome` is empty or consists purely of uninformative generic column/event tokens."""
+    s = (raw_text or "").strip()
+    if not s or s == "主要临床终点事件（时间至事件结局）":
+        return True
+    tokens = [w.lower() for w in re.findall(r"[A-Za-z0-9]+|[\u4e00-\u9fff]+", s) if w.strip()]
+    if not tokens:
+        return True
+    return all(tok in GENERIC_OPAQUE_OUTCOME_WORDS for tok in tokens)
+
+
 def extract_condition_domains(raw_text: str) -> set[str]:
     """Map English/Chinese disease or population text into canonical clinical indication domains."""
     if not raw_text or not raw_text.strip():
         return set()
     cleaned = re.sub(r"(?i)type\s*1\s*diabetes|1\s*型糖尿病|diabetes\s+insipidus", " ", raw_text.lower())
+    cleaned = re.sub(
+        r"(?i)(?:无\s*egfr\s*(?:敏感)?突变|no\s+egfr\s+mutation|without\s+egfr\s+mutation|egfr\s+wild[- ]type|wild[- ]type\s+egfr|egfr[- ]negative)",
+        " ",
+        cleaned,
+    )
     cleaned_norm = re.sub(r"[_/]+", " ", cleaned)
     matched: set[str] = set()
     for dom_id, _, triggers in POPULATION_DOMAIN_TAXONOMY:
@@ -1513,6 +1602,20 @@ def extract_condition_domains(raw_text: str) -> set[str]:
             elif tl in cleaned_norm or tl in cleaned:
                 matched.add(dom_id)
                 break
+    # Recognize contextual oncology `egfr` alongside lung/NSCLC/EGFR-TKI cues (while strictly excluding renal eGFR lab phrases)
+    scrubbed_renal_egfr = re.sub(
+        r"(?i)(?:egfr[_\s]*(?:ml|min|decline|decrease|<|>|<=|>=|\d)|sustained\s+egfr|ml\s*min|1\.73\s*m|肾小球滤过率)",
+        " ",
+        cleaned_norm,
+    )
+    if re.search(r"(?<![a-z0-9])egfr(?![a-z0-9])", scrubbed_renal_egfr) and (
+        "nsclc" in matched
+        or re.search(
+            r"(?i)(?:\blung\b|\bnsclc\b|\bcancer\b|\bcarcinoma\b|\badenocarcinoma\b|\btumor\b|\bosimertinib\b|\bgefitinib\b|\berlotinib\b|\bafatinib\b|肺癌|非小细胞|奥希替尼|吉非替尼|厄洛替尼|阿法替尼)",
+            scrubbed_renal_egfr,
+        )
+    ):
+        matched.add("egfr_mut")
     return matched
 
 
@@ -1745,14 +1848,22 @@ def audit_study_pico4d_alignment(
 
     # --- 3. Primary Outcome / Endpoint Domain Alignment (`outcome_alignment`) ---
     raw_target_out = (target_outcome or "").strip()
-    is_default_generic_idea_out = raw_target_out in ("", "主要临床终点事件（时间至事件结局）")
-    target_clin, target_surr = classify_outcome_domains("" if is_default_generic_idea_out else raw_target_out)
+    is_generic_placeholder = _is_generic_opaque_outcome_placeholder(raw_target_out)
+    target_clin, target_surr = classify_outcome_domains("" if is_generic_placeholder else raw_target_out)
     # Minimal mock dicts with generic placeholder measure ("Primary Clinical Endpoint" / "Composite") and zero surrogate terms
     prim_low = prim_measures.strip().lower()
+    sec_low = sec_measures.strip().lower()
     is_minimal_clinical_placeholder = (
         not prim_measures.strip()
         or prim_low in ("primary clinical endpoint", "composite", "clinical composite")
     ) and not prim_surr
+
+    # In oncology registration RCTs (e.g. FLAURA: Primary PFS + Secondary OS), PFS and OS are paired clinical survival endpoints
+    oncology_survival_compatible = bool(
+        (target_clin & {"mortality_os", "oncology_progression"})
+        and (prim_clin & {"oncology_progression", "mortality_os"})
+        and ((target_clin & sec_clin) or ("oncology_progression" in prim_clin))
+    )
 
     surr_labels_zh = [SURROGATE_OUTCOME_ZH.get(s, s) for s in sorted(prim_surr)]
     surr_short = "/".join(surr_labels_zh[:2]) or "替代指标"
@@ -1764,7 +1875,7 @@ def audit_study_pico4d_alignment(
         out_tone = "bad"
         out_detail = f"该试验主要终点为药代动力学或早期安全性指标（{prim_measures[:60] or 'PK'}），非临床事件终点。"
     elif target_clin:
-        if (target_clin & prim_clin) or is_minimal_clinical_placeholder:
+        if (target_clin & prim_clin) or oncology_survival_compatible or is_minimal_clinical_placeholder:
             outcome_alignment = "matched"
             outcome_cap = 1.0
             out_pill_zh = "主要终点: 临床终点一致"
@@ -1775,7 +1886,7 @@ def audit_study_pico4d_alignment(
             outcome_cap = 0.65
             out_pill_zh = "主要终点: 仅次要终点匹配"
             out_tone = "warn"
-            out_detail = f"主要终点未直接覆盖目标结局，仅次要终点含目标临床事件（上限 65%）。"
+            out_detail = "主要终点未直接覆盖目标结局，仅次要终点含目标临床事件（上限 65%）。"
         else:
             outcome_alignment = "surrogate_or_mismatched"
             outcome_cap = 0.48
@@ -1789,8 +1900,15 @@ def audit_study_pico4d_alignment(
                 out_pill_zh = "主要终点: 终点领域偏离"
                 out_detail = f"该试验主要终点（{prim_measures[:68]}）与目标临床结局领域不一致（硬上限 48%）。"
             out_tone = "bad"
-    elif target_surr and not is_cohort_mode:
-        if target_surr & prim_surr:
+    elif target_surr:
+        # Symmetric explicit surrogate/biomarker target_outcome comparison across BOTH user_cohort and simulated_cohort modes!
+        if is_cohort_mode and prim_surr and not prim_clin:
+            outcome_alignment = "surrogate_or_mismatched"
+            outcome_cap = 0.48
+            out_pill_zh = f"主要终点: 替代指标({surr_short})"
+            out_tone = "bad"
+            out_detail = f"当前队列为生存时间至事件分析，而该试验主要终点仅为短期替代指标「{surr_short}」（上限 48%）。"
+        elif target_surr & prim_surr:
             outcome_alignment = "matched"
             outcome_cap = 1.0
             out_pill_zh = "主要终点: 指标一致"
@@ -1801,9 +1919,63 @@ def audit_study_pico4d_alignment(
             outcome_cap = 0.48
             out_pill_zh = "主要终点: 终点偏离"
             out_tone = "bad"
-            out_detail = f"主要终点（{prim_measures[:68]}）与目标终点不一致（上限 48%）。"
+            out_detail = f"主要终点（{prim_measures[:68]}）与所指定的目标结局「{raw_target_out[:40]}」不一致（上限 48%）。"
+    elif not is_generic_placeholder:
+        # Explicit unlisted target_outcome: perform normalized keyword comparison against primary/secondary outcomes
+        out_kw_tokens = [
+            w.lower()
+            for w in re.findall(r"[A-Za-z]{4,}|[\u4e00-\u9fff]{2,}", raw_target_out)
+            if w.lower() not in GENERIC_OPAQUE_OUTCOME_WORDS
+            and w.lower()
+            not in {
+                "change",
+                "from",
+                "baseline",
+                "rate",
+                "risk",
+                "incidence",
+                "composite",
+                "first",
+                "occurrence",
+                "week",
+                "weeks",
+                "month",
+                "months",
+                "year",
+                "years",
+                "变化",
+                "发生率",
+                "风险",
+                "基线",
+                "复合",
+            }
+        ]
+        if is_cohort_mode and prim_surr and not prim_clin:
+            outcome_alignment = "surrogate_or_mismatched"
+            outcome_cap = 0.48
+            out_pill_zh = f"主要终点: 替代指标({surr_short})"
+            out_tone = "bad"
+            out_detail = f"该试验主要终点仅为短期替代指标「{surr_short}」（上限 48%）。"
+        elif is_minimal_clinical_placeholder or (not out_kw_tokens and bool(prim_clin)) or any(k in prim_low for k in out_kw_tokens):
+            outcome_alignment = "matched"
+            outcome_cap = 1.0
+            out_pill_zh = "主要终点: 临床终点一致"
+            out_tone = "ok"
+            out_detail = f"主要终点匹配目标结局关键词（{prim_measures[:68] or '临床终点'}）。"
+        elif any(k in sec_low for k in out_kw_tokens):
+            outcome_alignment = "secondary_only"
+            outcome_cap = 0.65
+            out_pill_zh = "主要终点: 仅次要终点匹配"
+            out_tone = "warn"
+            out_detail = f"仅次要终点包含目标结局关键词「{raw_target_out[:36]}」（上限 65%）。"
+        else:
+            outcome_alignment = "surrogate_or_mismatched"
+            outcome_cap = 0.48
+            out_pill_zh = "主要终点: 终点领域偏离"
+            out_tone = "bad"
+            out_detail = f"主要终点（{prim_measures[:68]}）未覆盖目标结局「{raw_target_out[:36]}」（上限 48%）。"
     elif is_cohort_mode:
-        # Opaque user_cohort survival CSV (`event=0/1`, `time_days`): still a time-to-event clinical study; NEVER pass pure PK/surrogate lab trials!
+        # Genuinely opaque user_cohort survival CSV (`event=0/1`, `time_days` with no clinical domain tokens): still reject pure PK/surrogate lab trials!
         if prim_surr and not prim_clin:
             outcome_alignment = "surrogate_or_mismatched"
             outcome_cap = 0.48
@@ -2674,10 +2846,12 @@ def search_candidate_rcts(
 
     ctx_for_llm = dict(ctx_d)
     ctx_for_llm.setdefault("query", en_query)
-    ctx_for_llm.setdefault("condition", cond_en)
+    ctx_for_llm.setdefault("condition", cond_en or eff_target_cond)
     ctx_for_llm.setdefault("intervention", intr_en)
     if comp_en:
         ctx_for_llm.setdefault("comparator", comp_en)
+    if eff_target_out:
+        ctx_for_llm.setdefault("outcome", eff_target_out)
 
     if live_by_nct:
         ordered_live = _enforce_alignment_caps_and_sort(list(live_by_nct.values()))
@@ -2692,8 +2866,10 @@ def search_candidate_rcts(
             "source": "clinicaltrials_gov_api_v2",
             "source_label_zh": "实时联网检索 ClinicalTrials.gov API v2",
             "query_used": query_used_display or clean_query,
+            "effective_condition": eff_target_cond,
             "effective_intervention": eff_intr,
             "effective_comparator": eff_comp,
+            "effective_outcome": eff_target_out,
             "ranking_mode": rank_mode,
             "candidates": final_live,
         }
@@ -2738,8 +2914,10 @@ def search_candidate_rcts(
         "source_label_zh": "内置代表性公开 RCT 目录兜底（offline_curated_catalog_fallback）",
         "fallback_reason": live_error or "offline_or_no_live_results",
         "query_used": query_used_display or clean_query,
+        "effective_condition": eff_target_cond,
         "effective_intervention": eff_intr,
         "effective_comparator": eff_comp,
+        "effective_outcome": eff_target_out,
         "ranking_mode": rank_mode_fb,
         "candidates": final_fb,
     }

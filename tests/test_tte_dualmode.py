@@ -1027,6 +1027,106 @@ class RCTMatcherTests(unittest.TestCase):
         self.assertTrue(audit_flaura["is_recommended"])
         self.assertEqual(audit_flaura["effective_score_cap"], 1.0)
 
+    def test_round7_egfr_vs_ckd_disambiguation_and_symmetric_user_cohort_outcome_audit(self):
+        """Round-7 Blocker 1 & 2: Oncology EGFR != CKD, custom 30-row EGFR/NSCLC CSV matches FLAURA cleanly, and user_cohort rejects explicit surrogate/mismatched outcome."""
+        # --- Blocker 1: Exact 30-row custom CSV (`patient_key,arm_drug,time_days,os_event,age,ecog`) + note ---
+        csv_lines = ["patient_key,arm_drug,time_days,os_event,age,ecog"]
+        for i in range(30):
+            drug = "Osimertinib" if i % 2 == 0 else "Gefitinib"
+            t_days = 180 + (i * 19) % 540
+            ev = 1 if (i % 3 == 0) else 0
+            age = 52 + ((i * 7) % 20)
+            ecog = (i // 2) % 2
+            csv_lines.append(f"ONC-CUST-{i + 1:03d},{drug},{t_days},{ev},{age},{ecog}")
+        raw_csv = ("\n".join(csv_lines) + "\n").encode("utf-8")
+        df_onc, _, _ = read_tabular_cohort_bytes(raw_csv, "custom_egfr_nsclc.csv")
+        prof_onc = profile_cohort_dataframe(df_onc, filename="custom_egfr_nsclc.csv")
+        map_onc = recommend_column_mapping(prof_onc)
+
+        for note_str in (
+            "EGFR-mutated non-small cell lung cancer, overall survival",
+            "EGFR+ NSCLC, progression-free survival",
+            "EGFR exon 19 L858R lung cancer, overall survival",
+        ):
+            interp_onc = llm_assist.interpret_cohort_profile(
+                prof_onc,
+                user_note=note_str,
+                default_mapping=map_onc,
+            )
+            self.assertNotIn("Chronic Kidney Disease", interp_onc["condition_query_en"])
+            self.assertNotIn("慢性肾脏病", interp_onc["domain_summary_zh"])
+            self.assertIn("EGFR-Mutated Non-Small Cell Lung Cancer", interp_onc["condition_query_en"])
+
+            flaura = next(r for r in rct_matcher.OFFLINE_CURATED_RCTS if r["nct_id"] == "NCT02296125")
+            audit_custom = rct_matcher.audit_study_pico4d_alignment(
+                flaura,
+                intervention=interp_onc["intervention_query_en"],
+                comparator=interp_onc["comparator_query_en"],
+                target_condition=interp_onc["condition_query_en"],
+                target_outcome=interp_onc["outcome_query_en"],
+                target_followup_days=interp_onc["target_followup_days"],
+                project_mode="user_cohort",
+            )
+            self.assertEqual(audit_custom["population_alignment"], "matched")
+            self.assertEqual(audit_custom["outcome_alignment"], "matched")
+            self.assertEqual(audit_custom["overall_alignment_status"], "protocol_aligned")
+            self.assertEqual(audit_custom["effective_score_cap"], 1.0)
+            self.assertTrue(audit_custom["is_recommended"])
+
+        # Genuine CKD strings still classify as CKD, while sample_cardiorenal_sglt2_dpp4 (with baseline `egfr_ml_min`) resolves T2DM + HF cleanly
+        ckd_concepts = llm_assist.extract_whitelisted_clinical_concepts("Patients with chronic kidney disease and diabetic nephropathy (CKD)")
+        self.assertIn("Chronic Kidney Disease", ckd_concepts["conditions_en"])
+        egfr_only_concepts = llm_assist.extract_whitelisted_clinical_concepts("EGFR-mutated lung carcinoma with EGFR TKI")
+        self.assertNotIn("Chronic Kidney Disease", egfr_only_concepts["conditions_en"])
+        self.assertIn("EGFR-Mutated Non-Small Cell Lung Cancer", egfr_only_concepts["conditions_en"])
+
+        fname_cr, raw_cr = generate_sample_cohort_csv_bytes("sample_cardiorenal_sglt2_dpp4")
+        df_cr, _, _ = read_tabular_cohort_bytes(raw_cr, fname_cr)
+        prof_cr = profile_cohort_dataframe(df_cr, filename=fname_cr)
+        interp_cr = llm_assist.interpret_cohort_profile(prof_cr, sample_id="cardiorenal_sglt2i")
+        self.assertEqual(interp_cr["condition_query_en"], "Type 2 Diabetes Heart Failure")
+        self.assertNotIn("Chronic Kidney Disease", interp_cr["condition_query_en"])
+
+        # --- Blocker 2(a): Symmetric explicit target_outcome audit in `user_cohort` mode ---
+        flaura = next(r for r in rct_matcher.OFFLINE_CURATED_RCTS if r["nct_id"] == "NCT02296125")
+        for pmode in ("user_cohort", "simulated_cohort"):
+            audit_ketone_vs_flaura = rct_matcher.audit_study_pico4d_alignment(
+                flaura,
+                intervention="Osimertinib",
+                comparator="Gefitinib",
+                target_condition="EGFR-mutated Non-Small Cell Lung Cancer",
+                target_outcome="Blood ketone change",
+                target_followup_days=540.0,
+                project_mode=pmode,
+            )
+            self.assertEqual(audit_ketone_vs_flaura["outcome_alignment"], "surrogate_or_mismatched")
+            self.assertNotEqual(audit_ketone_vs_flaura["overall_alignment_status"], "protocol_aligned")
+            self.assertLessEqual(audit_ketone_vs_flaura["effective_score_cap"], 0.48)
+            self.assertFalse(audit_ketone_vs_flaura["is_recommended"])
+            with self.assertRaises(ContractError) as ctx_b2:
+                rct_matcher.verify_and_enrich_target_rct(
+                    {**flaura, "match_score": 0.96},
+                    intervention="Osimertinib",
+                    comparator="Gefitinib",
+                    target_condition="EGFR-mutated Non-Small Cell Lung Cancer",
+                    target_outcome="Blood ketone change",
+                    target_followup_days=540.0,
+                    project_mode=pmode,
+                )
+            self.assertEqual(ctx_b2.exception.code, "PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED")
+
+        # Unlisted explicit functional outcome (`6-minute walk distance`) also mismatches FLAURA in `user_cohort` mode
+        audit_unlisted = rct_matcher.audit_study_pico4d_alignment(
+            flaura,
+            intervention="Osimertinib",
+            comparator="Gefitinib",
+            target_condition="EGFR-mutated Non-Small Cell Lung Cancer",
+            target_outcome="6-minute walk distance",
+            project_mode="user_cohort",
+        )
+        self.assertEqual(audit_unlisted["outcome_alignment"], "surrogate_or_mismatched")
+        self.assertLessEqual(audit_unlisted["effective_score_cap"], 0.48)
+
 
 class CohortIngestAndDualModePipelineTests(unittest.TestCase):
     def setUp(self):
