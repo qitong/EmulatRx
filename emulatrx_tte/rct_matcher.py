@@ -514,6 +514,7 @@ def search_candidate_rcts(
     condition: str = "",
     intervention: str = "",
     context_summary: dict | None = None,
+    forbidden_values: tuple[str, ...] = (),
     max_results: int = 6,
     timeout: float = DEFAULT_CT_TIMEOUT,
 ) -> dict:
@@ -605,6 +606,7 @@ def search_candidate_rcts(
         reranked, rank_mode = rerank_and_explain_rcts(
             top,
             context_summary or {"query": clean_query, "condition": condition, "intervention": intervention},
+            forbidden_values=forbidden_values,
         )
         return {
             "source": "clinicaltrials_gov_api_v2",
@@ -639,6 +641,7 @@ def search_candidate_rcts(
     reranked_fb, rank_mode_fb = rerank_and_explain_rcts(
         fallback_list[:max_results],
         context_summary or {"query": clean_query, "condition": condition, "intervention": intervention},
+        forbidden_values=forbidden_values,
     )
     return {
         "source": "offline_curated_catalog_fallback",

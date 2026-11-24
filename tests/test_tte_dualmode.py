@@ -161,27 +161,123 @@ class PrivacyGuardAndLLMAssistTests(unittest.TestCase):
             self.assertEqual(len(captured_requests), 1)
             sent_text = captured_requests[0].decode("utf-8")
 
-            # Assert NOT A SINGLE patient ID from the entire CSV appears in the LLM request body
+            # Assert NOT A SINGLE patient ID or raw user_note phrase appears in the LLM request body
             for sid in all_subject_ids:
                 self.assertNotIn(sid, sent_text, f"Privacy leak: {sid} found in outbound LLM payload!")
             self.assertNotIn("Hosp-2023-", sent_text)
             self.assertNotIn("ONC-880", sent_text)
-            self.assertIn("[REDACTED_ID]", sent_text)
+            self.assertNotIn("队列备注含意外患者号", sent_text)
 
-            # Parse inner user message JSON and verify only schema + aggregate stats exist
+            # Parse inner user message JSON and verify only schema + aggregate stats + whitelisted concepts exist
             outer = json.loads(sent_text)
             inner_payload = json.loads(outer["messages"][1]["content"])
             self.assertEqual(inner_payload["privacy_contract"], "schema_and_aggregates_only_zero_individual_rows")
+            self.assertIn("whitelisted_domain_concepts", inner_payload)
+            self.assertNotIn("user_note", inner_payload)
             col_names_sent = {c["name"] for c in inner_payload["columns"]}
             self.assertNotIn(id_col, col_names_sent)
             for c in inner_payload["columns"]:
                 if "distinct_categories" in c:
                     self.assertLessEqual(len(c["distinct_categories"]), 20)
 
-        # Also verify active runtime blocker raises PRIVACY_VIOLATION_BLOCKED if a raw ID slips in
+        # Also verify active runtime blocker raises PRIVACY_VIOLATION_BLOCKED if a raw ID or standalone numeric ID slips in
         with self.assertRaises(ContractError) as ctx:
             assert_llm_payload_privacy_safe(b'{"leak": "Hosp-2023-0042"}')
         self.assertEqual(ctx.exception.code, "PRIVACY_VIOLATION_BLOCKED")
+        with self.assertRaises(ContractError) as ctx_num:
+            assert_llm_payload_privacy_safe(b'{"messages":[{"role":"system","content":"sys"},{"role":"user","content":"Patient 123456789"}]}')
+        self.assertEqual(ctx_num.exception.code, "PRIVACY_VIOLATION_BLOCKED")
+
+    def test_whitelist_anonymous_placeholders_block_alice_smith_and_note_identifiers(self):
+        """Regression test for Codex review Blocking 1: non-whitelisted categories (even count>=5) become CATEGORY_LEVEL_* and raw user_note never leaves."""
+        df = pd.DataFrame(
+            {
+                "deid_id": [f"PT-{i + 1:04d}" for i in range(20)],
+                "site_group": ["Alice Smith"] * 12 + ["Bob Jones"] * 8,
+                "initiated_drug": ["Dapagliflozin"] * 10 + ["Sitagliptin"] * 10,
+                "rare_status": ["censored"] * 17 + ["death"] * 3,
+                "followup_months": [12.0 + i * 0.5 for i in range(20)],
+                "endpoint": ["censored"] * 10 + ["hf_hospitalization"] * 6 + ["cv_death"] * 4,
+            }
+        )
+        prof = profile_cohort_dataframe(df, filename="site_cohort.csv")
+
+        # Local UI profile preserves raw category labels for the user's own column mapping dropdowns
+        site_col_local = next(c for c in prof["columns"] if c["name"] == "site_group")
+        self.assertEqual(site_col_local["top_categories"][0]["value"], "Alice Smith")
+
+        captured: list[str] = []
+
+        def fake_llm(req, timeout):
+            captured.append(req.data.decode("utf-8"))
+            return _FakeHTTPResponse(
+                json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": json.dumps(
+                                        {
+                                            "domain_summary_zh": "心衰队列",
+                                            "condition_query_en": "Heart Failure",
+                                            "intervention_query_en": "Dapagliflozin",
+                                            "search_query_en": "Dapagliflozin Heart Failure",
+                                            "rankings": [{"nct_id": "NCT03036124", "score": 95, "reason_zh": "高度匹配"}],
+                                        }
+                                    )
+                                }
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+            )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "EMULATRX_LLM_API_KEY_FILE": str(Path(tempfile.gettempdir()) / "absent-key-file"),
+                "EMULATRX_LLM_API_KEY": "sk-whitelist-test",
+            },
+            clear=False,
+        ):
+            with mock.patch.object(llm_assist, "urlopen_llm", side_effect=fake_llm):
+                interp = interpret_cohort_profile(
+                    prof,
+                    user_note="Patient identifier 123456789 site lead Alice Smith 达格列净治疗心衰",
+                    forbidden_values=("Alice Smith", "Bob Jones", "123456789"),
+                )
+                self.assertEqual(interp["assist_mode"], "llm_assisted")
+
+                reranked, mode = llm_assist.rerank_and_explain_rcts(
+                    [
+                        {
+                            "nct_id": "NCT03036124",
+                            "brief_title": "DAPA-HF",
+                            "phases": ["PHASE3"],
+                            "enrollment_count": 4744,
+                            "conditions": ["Heart Failure"],
+                            "experimental_arms": ["Dapagliflozin"],
+                            "comparator_arms": ["Placebo"],
+                            "primary_outcomes": ["Worsening HF or CV Death"],
+                        }
+                    ],
+                    {"query": "Dapagliflozin Heart Failure Patient identifier 123456789 Alice Smith"},
+                    forbidden_values=("Alice Smith", "Bob Jones", "123456789"),
+                )
+                self.assertEqual(mode, "llm_assisted")
+                self.assertEqual(reranked[0]["nct_id"], "NCT03036124")
+
+        self.assertEqual(len(captured), 2)
+        for body in captured:
+            for forbidden in ("Alice Smith", "Bob Jones", "123456789", "PT-0001", "Patient identifier"):
+                self.assertNotIn(forbidden, body)
+
+        first_inner = json.loads(json.loads(captured[0])["messages"][1]["content"])
+        cols_by_name = {c["name"]: c for c in first_inner["columns"]}
+        self.assertEqual(cols_by_name["site_group"]["distinct_categories"], ["CATEGORY_LEVEL_1", "CATEGORY_LEVEL_2"])
+        # Whitelisted drugs with count=10 >= 5 stay literal; rare_status 'death' with count=3 < 5 becomes CATEGORY_LEVEL_2
+        self.assertEqual(cols_by_name["initiated_drug"]["distinct_categories"], ["Dapagliflozin", "Sitagliptin"])
+        self.assertEqual(cols_by_name["rare_status"]["distinct_categories"], ["censored", "CATEGORY_LEVEL_2"])
 
     def test_deterministic_fallback_without_llm_key_and_on_llm_network_error(self):
         env_clean = {

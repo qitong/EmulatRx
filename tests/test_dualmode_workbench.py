@@ -406,6 +406,181 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                 self.assertEqual(home_with_key.status_code, 200)
                 self.assertNotIn(secret_val, home_with_key.text)
 
+    def test_codex_privacy_counterexample_e2e_zero_leak_across_upload_note_search_draft(self):
+        """Regression test (Blocking 1): 20-row cohort with site_group='Alice Smith' & user_note='Patient identifier 123456789' leaks 0 tokens across all endpoints."""
+        rows = ["deid_id,site_group,initiated_drug,followup_months,endpoint,age_years"]
+        for i in range(20):
+            site = "Alice Smith" if i < 12 else "Bob Jones"
+            drug = "Dapagliflozin" if i % 2 == 0 else "Sitagliptin"
+            ep = "censored" if i < 10 else ("hf_hospitalization" if i < 16 else "cv_death")
+            rows.append(f"PT-{i + 1:04d},{site},{drug},{10.0 + i * 0.8:.1f},{ep},{55 + (i % 15)}")
+        csv_bytes = ("\n".join(rows) + "\n").encode("utf-8")
+
+        captured_llm_bodies: list[str] = []
+
+        def fake_llm(req, timeout):
+            body_txt = req.data.decode("utf-8")
+            captured_llm_bodies.append(body_txt)
+            if "rankings" in body_txt:
+                ans = {"rankings": [{"nct_id": "NCT03036124", "score": 97, "reason_zh": "达格列净心衰终点匹配"}]}
+            else:
+                ans = {
+                    "domain_summary_zh": "心衰观察性队列",
+                    "condition_query_en": "Heart Failure",
+                    "intervention_query_en": "Dapagliflozin",
+                    "search_query_en": "Dapagliflozin Heart Failure",
+                }
+            return _FakeHTTPResp(json.dumps({"choices": [{"message": {"content": json.dumps(ans)}}]}).encode("utf-8"))
+
+        def fake_ctgov(req, timeout):
+            return _FakeHTTPResp(json.dumps(MOCK_STUDIES).encode("utf-8"))
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "EMULATRX_LLM_API_KEY_FILE": str(self.base / "absent_secret"),
+                "EMULATRX_LLM_API_KEY": "sk-codex-regression-key",
+            },
+            clear=False,
+        ):
+            with mock.patch.object(llm_assist, "urlopen_llm", side_effect=fake_llm), mock.patch.object(
+                rct_matcher, "urlopen_ctgov", side_effect=fake_ctgov
+            ):
+                # 1. Initial upload profiling
+                up = self.client.post(
+                    "/api/sessions/upload",
+                    headers=self.web_auth,
+                    files={"file": ("alice_site.csv", csv_bytes, "text/csv")},
+                    data={"user_note": "Patient identifier 123456789 达格列净心衰"},
+                )
+                self.assertEqual(up.status_code, 200, up.text)
+                sid = up.json()["session_id"]
+                # Local browser profile keeps raw category labels for local user selection
+                site_col = next(c for c in up.json()["profile"]["columns"] if c["name"] == "site_group")
+                self.assertEqual(site_col["top_categories"][0]["value"], "Alice Smith")
+
+                # 2. Update session note with new identifier & person name
+                note_resp = self.client.post(
+                    f"/api/sessions/{sid}/note",
+                    headers=self.web_auth,
+                    json={"user_note": "Updated patient identifier 987654321 investigator Carol White 心衰"},
+                )
+                self.assertEqual(note_resp.status_code, 200, note_resp.text)
+
+                # 3. Search & LLM-rerank candidate RCTs bound to this session
+                srch = self.client.post(
+                    "/api/rcts/search",
+                    headers=self.web_auth,
+                    json={
+                        "session_id": sid,
+                        "project_mode": "user_cohort",
+                        "query": "Dapagliflozin Heart Failure",
+                        "condition": "Heart Failure",
+                        "intervention": "Dapagliflozin",
+                        "context_summary": {
+                            "domain_summary_zh": "Patient identifier 123456789 Alice Smith 达格列净心衰",
+                            "search_query_en": "Dapagliflozin Heart Failure",
+                        },
+                    },
+                )
+                self.assertEqual(srch.status_code, 200, srch.text)
+                self.assertEqual(srch.json()["ranking_mode"], "llm_assisted")
+                rct_card = srch.json()["candidates"][0]
+
+                # 4. Draft mapping aligned to selected RCT
+                draft = self.client.post(
+                    "/api/rcts/draft",
+                    headers=self.web_auth,
+                    json={"project_mode": "user_cohort", "session_id": sid, "target_rct": rct_card},
+                )
+                self.assertEqual(draft.status_code, 200, draft.text)
+
+        # Every outbound LLM request across upload, note update, and RCT rerank must contain ZERO sensitive tokens
+        self.assertGreaterEqual(len(captured_llm_bodies), 3)
+        for idx, body_str in enumerate(captured_llm_bodies):
+            for forbidden in ("Alice Smith", "Bob Jones", "Carol White", "123456789", "987654321", "PT-00"):
+                self.assertNotIn(forbidden, body_str, f"Leak '{forbidden}' in LLM call #{idx + 1}: {body_str}")
+        self.assertIn("CATEGORY_LEVEL_1", captured_llm_bodies[0])
+
+    def test_session_wipe_unconditional_run_sweep_on_corrupt_session_meta(self):
+        """Regression test (Blocking 2): corrupt session_meta.json while session dir exists still deletes all derived runs via status.json sweep."""
+        up = self.client.post(
+            "/api/sessions/upload",
+            headers=self.web_auth,
+            json={"sample_id": "cardiorenal_sglt2i"},
+        )
+        self.assertEqual(up.status_code, 200, up.text)
+        sid = up.json()["session_id"]
+        mapping = up.json()["default_mapping"]
+        mapping["bootstrap_iterations"] = 20
+
+        launched = self.client.post(
+            "/api/dual-runs",
+            headers=self.web_auth,
+            json={"project_mode": "user_cohort", "session_id": sid, "mapping": mapping},
+        )
+        self.assertEqual(launched.status_code, 202, launched.text)
+        run_id_1 = launched.json()["run_id"]
+        final = self.wait_dual_run(run_id_1)
+        self.assertEqual(final["state"], "completed")
+
+        # Create a second orphaned run directory referencing the same session_id in status.json
+        run_id_2 = "b" * 32
+        orphan_run_dir = self.service.runner.root / run_id_2
+        orphan_run_dir.mkdir(mode=0o700)
+        (orphan_run_dir / "status.json").write_text(
+            json.dumps({"run_id": run_id_2, "session_id": sid, "state": "completed"}),
+            encoding="utf-8",
+        )
+        (orphan_run_dir / "weighted_cohort.csv").write_text("id,w\n1,0.5\n", encoding="utf-8")
+
+        # Corrupt session_meta.json while session directory still exists on disk (Codex probe)
+        sess_dir = self.service.runner.sessions_root / sid
+        run_dir_1 = self.service.runner.root / run_id_1
+        (sess_dir / "session_meta.json").write_bytes(b"{corrupt_partial_json_without_run_ids")
+        self.assertTrue(sess_dir.is_dir())
+        self.assertTrue(run_dir_1.is_dir())
+        self.assertTrue(orphan_run_dir.is_dir())
+
+        wiped = self.client.delete(f"/api/sessions/{sid}", headers=self.web_auth)
+        self.assertEqual(wiped.status_code, 200, wiped.text)
+        wdata = wiped.json()
+        self.assertTrue(wdata["session_deleted"])
+        self.assertFalse(wdata["session_exists_on_disk"])
+        self.assertIn(run_id_1, wdata["purged_runs"])
+        self.assertIn(run_id_2, wdata["purged_runs"])
+        self.assertFalse(sess_dir.exists())
+        self.assertFalse(run_dir_1.exists())
+        self.assertFalse(orphan_run_dir.exists())
+
+    def test_streaming_25mb_upload_limit_returns_413_cleanly(self):
+        """Regression test (Non-blocking 1): oversized >25 MB multipart uploads abort in streaming chunks and return HTTP 413."""
+        # 1. Oversized Content-Length header rejected immediately with 413
+        resp_hdr = self.client.post(
+            "/api/sessions/upload",
+            headers={
+                **self.web_auth,
+                "Content-Type": "multipart/form-data; boundary=----OversizedBoundary",
+                "Content-Length": str(30 * 1024 * 1024),
+            },
+            content=b"------OversizedBoundary--\r\n",
+        )
+        self.assertEqual(resp_hdr.status_code, 413, resp_hdr.text)
+        self.assertEqual(resp_hdr.json()["code"], "COHORT_FILE_TOO_LARGE")
+
+        # 2. Actual >25 MB file body (within 128 KiB wire overhead so chunked upload.read(65536) loop triggers) returns 413
+        oversized_file_bytes = b"id,arm,time,event\n" + (b"1,0,12.0,0\n" * ((25 * 1024 * 1024 // 11) + 2048))
+        self.assertGreater(len(oversized_file_bytes), 25 * 1024 * 1024)
+        self.assertLess(len(oversized_file_bytes), 25 * 1024 * 1024 + 64 * 1024)
+        resp_stream = self.client.post(
+            "/api/sessions/upload",
+            headers=self.web_auth,
+            files={"file": ("huge_cohort.csv", oversized_file_bytes, "text/csv")},
+        )
+        self.assertEqual(resp_stream.status_code, 413, resp_stream.text)
+        self.assertEqual(resp_stream.json()["code"], "COHORT_FILE_TOO_LARGE")
+        self.assertIn("25 MB", resp_stream.json()["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

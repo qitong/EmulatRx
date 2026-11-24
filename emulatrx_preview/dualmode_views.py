@@ -914,6 +914,8 @@ async function executeRCTSearch(cond='', intr='') {{
       query: q,
       condition: cond,
       intervention: intr,
+      session_id: STATE.sessionId || '',
+      project_mode: STATE.mode,
       context_summary: STATE.mode === 'user_cohort' ? (STATE.interpretation || {{}}) : (STATE.pico || {{}})
     }})
   }});

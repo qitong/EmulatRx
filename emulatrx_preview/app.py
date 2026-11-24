@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlsplit
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
+from starlette.requests import Request as StarletteRequest
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Mount, Route
 
@@ -31,10 +32,23 @@ from emulatrx_tte import (
     search_candidate_rcts,
 )
 from emulatrx_tte._common import ContractError, MAX_USER_COHORT_BYTES
+from emulatrx_tte.llm_assist import extract_untrusted_Note_forbidden_tokens
 from .dualmode_views import render_dualmode_run_view, workbench_home_view
 from .tte_runner import TTERunner
 from .tte_views import cohort_view, form, report_view, result_view, review_view
 from .web_protocol import FIELD_NAMES, FormError, protocol_from_fields
+
+
+UPLOAD_READ_CHUNK_BYTES = 65536
+MAX_MULTIPART_OVERHEAD_BYTES = 128 * 1024
+
+
+class _UploadTooLargeError(Exception):
+    """Raised when an incoming multipart cohort upload exceeds the 25 MB limit."""
+
+
+def _public_interpretation(interp: dict) -> dict:
+    return {k: v for k, v in interp.items() if k != "sanitized_llm_payload"}
 
 
 NOTICE = (
@@ -111,6 +125,7 @@ def search_target_rcts(
     condition: str = "",
     intervention: str = "",
     idea_text: str = "",
+    session_id: str = "",
     max_results: int = 5,
 ) -> dict:
     pico = None
@@ -119,12 +134,14 @@ def search_target_rcts(
         query = query or pico["search_query_en"]
         condition = condition or pico["condition_query_en"]
         intervention = intervention or pico["intervention_query_en"]
+    forbidden_vals = runner.get_session_forbidden_values(session_id.strip()) if session_id.strip() else ()
     res = search_candidate_rcts(
         query,
         condition=condition,
         intervention=intervention,
         context_summary=pico,
         max_results=max(1, min(int(max_results), 8)),
+        forbidden_values=forbidden_vals,
     )
     return {"pico": pico, "llm_status": get_llm_status(), **res}
 
@@ -375,6 +392,15 @@ async def api_download_sample(request):
 async def api_upload_or_load_session(request):
     try:
         _check_same_origin(request)
+        cl_header = request.headers.get("content-length")
+        if cl_header is not None:
+            try:
+                cl_int = int(cl_header)
+            except ValueError as exc:
+                raise ContractError("INVALID_CONTENT_LENGTH", "请求头 Content-Length 格式无效。") from exc
+            if cl_int > MAX_USER_COHORT_BYTES + MAX_MULTIPART_OVERHEAD_BYTES:
+                raise _UploadTooLargeError("上传请求超过 25 MB 上限（Content-Length 超限），已拒绝接收。")
+
         ctype = request.headers.get("content-type", "").lower()
         if ctype.startswith("application/json"):
             payload = await _read_json_body(request)
@@ -390,15 +416,41 @@ async def api_upload_or_load_session(request):
                 sample_id=sample_id,
             )
         elif ctype.startswith("multipart/form-data"):
-            form_data = await request.form(max_files=1, max_fields=6, max_part_size=MAX_USER_COHORT_BYTES)
-            upload = form_data.get("file")
-            if upload is None or not hasattr(upload, "read"):
-                raise ContractError("MISSING_FILE", "请选择要上传的 CSV / TSV 队列文件。")
-            raw = await upload.read()
-            filename = getattr(upload, "filename", None) or "uploaded_cohort.csv"
-            await upload.close()
-            user_note = str(form_data.get("user_note") or "")
-            session_id = str(form_data.get("session_id") or "") or None
+            seen_wire_bytes = 0
+
+            async def bounded_receive():
+                nonlocal seen_wire_bytes
+                message = await request.receive()
+                if message.get("type") == "http.request":
+                    chunk_bytes = message.get("body", b"") or b""
+                    seen_wire_bytes += len(chunk_bytes)
+                    if seen_wire_bytes > MAX_USER_COHORT_BYTES + MAX_MULTIPART_OVERHEAD_BYTES:
+                        raise _UploadTooLargeError("流式上传数据超过 25 MB 上限，已立即中止接收。")
+                return message
+
+            bounded_req = StarletteRequest(request.scope, receive=bounded_receive)
+            form_data = await bounded_req.form(max_files=1, max_fields=6, max_part_size=64 * 1024)
+            try:
+                upload = form_data.get("file")
+                if upload is None or not hasattr(upload, "read"):
+                    raise ContractError("MISSING_FILE", "请选择要上传的 CSV / TSV 队列文件。")
+                buf = bytearray()
+                try:
+                    while True:
+                        chunk = await upload.read(UPLOAD_READ_CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        if len(buf) + len(chunk) > MAX_USER_COHORT_BYTES:
+                            raise _UploadTooLargeError("上传队列文件超过 25 MB 上限，已中止读取并清理临时缓冲。")
+                        buf.extend(chunk)
+                finally:
+                    await upload.close()
+                raw = bytes(buf)
+                filename = getattr(upload, "filename", None) or "uploaded_cohort.csv"
+                user_note = str(form_data.get("user_note") or "")
+                session_id = str(form_data.get("session_id") or "") or None
+            finally:
+                await form_data.close()
             saved = runner.save_session_cohort(raw, filename, session_id=session_id, user_note=user_note)
         else:
             raise ContractError("UNSUPPORTED_CONTENT_TYPE", "请通过文件上传表单或样表载入接口提交。")
@@ -407,20 +459,32 @@ async def api_upload_or_load_session(request):
             {
                 "session_id": saved["session_id"],
                 "profile": saved["profile"],
-                "interpretation": saved["interpretation"],
+                "interpretation": _public_interpretation(saved["interpretation"]),
                 "default_mapping": saved["default_mapping"],
                 "llm_status": get_llm_status(),
             },
             headers={"Cache-Control": "no-store"},
         )
+    except _UploadTooLargeError as exc:
+        return JSONResponse(
+            {"error": f"COHORT_FILE_TOO_LARGE: {exc}", "code": "COHORT_FILE_TOO_LARGE"},
+            status_code=413,
+            headers={"Cache-Control": "no-store"},
+        )
     except ContractError as exc:
-        return JSONResponse({"error": f"{exc.code}: {exc}", "code": exc.code}, status_code=400)
+        status_http = 413 if exc.code == "COHORT_FILE_TOO_LARGE" else 400
+        return JSONResponse(
+            {"error": f"{exc.code}: {exc}", "code": exc.code},
+            status_code=status_http,
+            headers={"Cache-Control": "no-store"},
+        )
 
 
 async def api_update_session_note(request):
     try:
         payload = await _read_json_body(request, max_bytes=16 * 1024)
         res = runner.update_session_note(request.path_params["session_id"], str(payload.get("user_note", "")))
+        res["interpretation"] = _public_interpretation(res["interpretation"])
         return JSONResponse(res, headers={"Cache-Control": "no-store"})
     except ContractError as exc:
         return JSONResponse({"error": f"{exc.code}: {exc}", "code": exc.code}, status_code=400)
@@ -432,7 +496,17 @@ async def api_delete_session(request):
         res = runner.delete_session(request.path_params["session_id"])
         return JSONResponse(res, status_code=200, headers={"Cache-Control": "no-store"})
     except ContractError as exc:
-        return JSONResponse({"error": f"{exc.code}: {exc}", "code": exc.code}, status_code=400)
+        return JSONResponse(
+            {"error": f"{exc.code}: {exc}", "code": exc.code, "session_deleted": False},
+            status_code=400,
+            headers={"Cache-Control": "no-store"},
+        )
+    except (OSError, RuntimeError) as exc:
+        return JSONResponse(
+            {"error": f"SESSION_WIPE_FAILED: {exc}", "code": "SESSION_WIPE_FAILED", "session_deleted": False},
+            status_code=500,
+            headers={"Cache-Control": "no-store"},
+        )
 
 
 async def api_parse_idea(request):
@@ -447,12 +521,29 @@ async def api_parse_idea(request):
 async def api_search_rcts(request):
     try:
         payload = await _read_json_body(request, max_bytes=64 * 1024)
+        session_id = str(payload.get("session_id", "")).strip()
+        project_mode = str(payload.get("project_mode", "")).strip()
+        forbidden_list = list(runner.get_session_forbidden_values(session_id)) if session_id else []
+        ctx_summary = payload.get("context_summary") if isinstance(payload.get("context_summary"), dict) else None
+        if session_id or project_mode == SOURCE_MODE_USER_COHORT:
+            raw_probe = " ".join(
+                [
+                    str(payload.get("query", "")),
+                    str(payload.get("condition", "")),
+                    str(payload.get("intervention", "")),
+                    json.dumps(ctx_summary or {}, ensure_ascii=False),
+                ]
+            )
+            for tok in extract_untrusted_Note_forbidden_tokens(raw_probe):
+                if tok not in forbidden_list:
+                    forbidden_list.append(tok)
         res = search_candidate_rcts(
             str(payload.get("query", "")),
             condition=str(payload.get("condition", "")),
             intervention=str(payload.get("intervention", "")),
-            context_summary=payload.get("context_summary") if isinstance(payload.get("context_summary"), dict) else None,
+            context_summary=ctx_summary,
             max_results=int(payload.get("max_results", 6)),
+            forbidden_values=tuple(forbidden_list),
         )
         return JSONResponse(res, headers={"Cache-Control": "no-store"})
     except ContractError as exc:

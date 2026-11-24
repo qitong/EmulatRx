@@ -34,6 +34,11 @@ from emulatrx_tte._common import (
     SOURCE_MODE_SYNTHETIC_ONLY,
     SOURCE_MODE_USER_COHORT,
 )
+from emulatrx_tte.llm_assist import (
+    SAFE_CONTROLLED_CLINICAL_WORDS,
+    extract_untrusted_Note_forbidden_tokens,
+    is_whitelisted_clinical_category,
+)
 from .tte_screen import screen_cohort, validate_screening_criteria
 
 
@@ -53,6 +58,53 @@ MCP_CHUNK_BYTES = 16 * 1024
 
 def _bytes(value):
     return (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def _atomic_write_bytes(target: Path, data: bytes) -> None:
+    """Atomically write bytes via a same-directory temporary file and `os.replace`."""
+    tmp = target.parent / f".{target.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, target)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def _collect_cohort_forbidden_values(df, profile: dict, user_note: str = "") -> list[str]:
+    """Collect non-whitelisted string values from cohort columns and untrusted tokens from `user_note`."""
+    seen: set[str] = set()
+    ordered: list[str] = []
+
+    def _add(tok: str) -> None:
+        s = tok.strip()
+        if len(s) < 3 or s.lower() in SAFE_CONTROLLED_CLINICAL_WORDS:
+            return
+        if s not in seen and len(ordered) < 2000:
+            seen.add(s)
+            ordered.append(s)
+
+    id_col = profile.get("id_column_guess")
+    if id_col and id_col in df.columns:
+        for val in df[id_col].dropna().astype(str).iloc[:500]:
+            _add(val)
+
+    for col in df.columns:
+        ser = df[col]
+        if str(ser.dtype) in ("object", "string", "category") or str(ser.dtype).startswith("str"):
+            vc = ser.dropna().astype(str).value_counts()
+            for raw_val, cnt in list(vc.items())[:300]:
+                val_s = str(raw_val).strip()
+                if not is_whitelisted_clinical_category(val_s, int(cnt)):
+                    _add(val_s)
+
+    for tok in extract_untrusted_Note_forbidden_tokens(user_note):
+        _add(tok)
+
+    return ordered
 
 
 def _csv_rows(path, limit=None):
@@ -151,9 +203,7 @@ class TTERunner:
         return json.loads((path / "status.json").read_text(encoding="utf-8"))
 
     def _write_status(self, path, status):
-        temp = path / ".status-new.json"
-        temp.write_bytes(_bytes(status))
-        temp.replace(path / "status.json")
+        _atomic_write_bytes(path / "status.json", _bytes(status))
 
     def cleanup(self, startup=False):
         with self._maintenance:
@@ -217,16 +267,10 @@ class TTERunner:
         df, delimiter, encoding = read_tabular_cohort_bytes(raw_bytes, filename=filename)
         input_sha = hashlib.sha256(raw_bytes).hexdigest()
 
-        # Collect up to 50 actual ID tokens from ID-like column so outbound LLM calls can double-assert 0 leakage
+        # Collect all non-whitelisted cohort strings & note identifiers so every outbound LLM call in this session enforces 0 leakage
         profile = profile_cohort_dataframe(df, filename=filename, input_sha256=input_sha)
-        id_col = profile.get("id_column_guess")
-        forbidden_tokens: tuple[str, ...] = ()
-        if id_col and id_col in df.columns:
-            forbidden_tokens = tuple(
-                str(v).strip()
-                for v in df[id_col].dropna().iloc[:50]
-                if len(str(v).strip()) >= 4
-            )
+        forbidden_list = _collect_cohort_forbidden_values(df, profile, user_note=user_note)
+        forbidden_tokens = tuple(forbidden_list)
 
         interpretation = interpret_cohort_profile(
             profile,
@@ -251,7 +295,7 @@ class TTERunner:
         raw_dir.mkdir(mode=0o700, exist_ok=True)
         safe_fname = SAFE_FILENAME_RE.sub("_", Path(filename).name).strip("_") or "cohort.csv"
         cohort_file = raw_dir / safe_fname
-        cohort_file.write_bytes(raw_bytes)
+        _atomic_write_bytes(cohort_file, raw_bytes)
 
         meta_path = sdir / "session_meta.json"
         prev_runs = []
@@ -273,10 +317,11 @@ class TTERunner:
             "updated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "run_ids": prev_runs,
         }
-        (sdir / "profile.json").write_bytes(_bytes(profile))
-        (sdir / "interpretation.json").write_bytes(_bytes(interpretation))
-        (sdir / "default_mapping.json").write_bytes(_bytes(default_mapping))
-        meta_path.write_bytes(_bytes(meta))
+        _atomic_write_bytes(sdir / "profile.json", _bytes(profile))
+        _atomic_write_bytes(sdir / "interpretation.json", _bytes(interpretation))
+        _atomic_write_bytes(sdir / "default_mapping.json", _bytes(default_mapping))
+        _atomic_write_bytes(sdir / "forbidden_tokens.json", _bytes(forbidden_list))
+        _atomic_write_bytes(meta_path, _bytes(meta))
 
         return {
             "session_id": sid,
@@ -302,56 +347,130 @@ class TTERunner:
             "default_mapping": default_mapping,
         }
 
+    def get_session_forbidden_values(self, session_id: str) -> tuple[str, ...]:
+        """Return persisted forbidden cohort/note tokens for a session (fail-safe empty tuple if session not found)."""
+        if not isinstance(session_id, str) or not SESSION_ID.fullmatch(session_id):
+            return ()
+        fpath = self.sessions_root / session_id / "forbidden_tokens.json"
+        if not fpath.is_file():
+            return ()
+        try:
+            vals = json.loads(fpath.read_text(encoding="utf-8"))
+            if isinstance(vals, list):
+                return tuple(str(v) for v in vals if isinstance(v, str) and v.strip())
+        except Exception:
+            return ()
+        return ()
+
     def update_session_note(self, session_id: str, user_note: str) -> dict:
         sess = self.get_session(session_id)
         sdir = self._session_path(session_id)
-        interp = interpret_cohort_profile(sess["profile"], user_note=user_note)
-        meta = dict(sess["meta"], user_note=(user_note or "")[:300], updated_utc=datetime.now(timezone.utc).isoformat(timespec="seconds"))
-        (sdir / "interpretation.json").write_bytes(_bytes(interp))
-        (sdir / "session_meta.json").write_bytes(_bytes(meta))
+        existing_forbidden = list(self.get_session_forbidden_values(session_id))
+        for tok in extract_untrusted_Note_forbidden_tokens(user_note):
+            if tok not in existing_forbidden and len(existing_forbidden) < 2000:
+                existing_forbidden.append(tok)
+        _atomic_write_bytes(sdir / "forbidden_tokens.json", _bytes(existing_forbidden))
+        interp = interpret_cohort_profile(
+            sess["profile"],
+            user_note=user_note,
+            forbidden_values=tuple(existing_forbidden),
+        )
+        meta = dict(
+            sess["meta"],
+            user_note=(user_note or "")[:300],
+            updated_utc=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        )
+        _atomic_write_bytes(sdir / "interpretation.json", _bytes(interp))
+        _atomic_write_bytes(sdir / "session_meta.json", _bytes(meta))
         return {"session_id": session_id, "interpretation": interp, "meta": meta}
 
     def delete_session(self, session_id: str) -> dict:
-        """Physically delete isolated session directory AND all derived user-cohort run directories."""
+        """Physically delete isolated session directory AND unconditionally sweep all derived run directories."""
         if not isinstance(session_id, str) or not SESSION_ID.fullmatch(session_id):
             raise ContractError("INVALID_SESSION_ID", "无效的会话编号。")
         sdir = self.sessions_root / session_id
         with self._maintenance:
             purged_files = 0
-            purged_runs: list[str] = []
+            candidate_run_dirs: dict[str, Path] = {}
+
+            # 1. Read run_ids recorded in session_meta.json if readable (tolerating corrupt or missing JSON)
             if sdir.is_dir() and not sdir.is_symlink():
                 try:
                     meta = json.loads((sdir / "session_meta.json").read_text(encoding="utf-8"))
-                    run_ids = meta.get("run_ids", [])
+                    if isinstance(meta, dict) and isinstance(meta.get("run_ids"), list):
+                        for rid in meta["run_ids"]:
+                            if isinstance(rid, str) and RUN_ID.fullmatch(rid):
+                                rpath = self.root / rid
+                                if os.path.lexists(rpath):
+                                    candidate_run_dirs[rid] = rpath
                 except Exception:
-                    run_ids = []
-                for rid in run_ids:
-                    if isinstance(rid, str) and RUN_ID.fullmatch(rid):
-                        rpath = self.root / rid
-                        if rpath.is_dir() and not rpath.is_symlink():
-                            purged_files += sum(1 for p in rpath.rglob("*") if p.is_file())
-                            shutil.rmtree(rpath, ignore_errors=True)
-                            purged_runs.append(rid)
-                purged_files += sum(1 for p in sdir.rglob("*") if p.is_file())
-                shutil.rmtree(sdir, ignore_errors=True)
-            else:
-                # Also sweep any run whose status.json references this session_id
-                for rpath in self.root.iterdir():
-                    if rpath.is_dir() and RUN_ID.fullmatch(rpath.name):
+                    pass
+
+            # 2. Unconditionally scan all run directories in self.root for status.json referencing session_id
+            for rpath in self.root.iterdir():
+                if rpath.name == "sessions" or not RUN_ID.fullmatch(rpath.name):
+                    continue
+                if rpath.is_dir() and not rpath.is_symlink():
+                    matches_session = False
+                    try:
+                        st = self._status(rpath)
+                        if isinstance(st, dict) and st.get("session_id") == session_id:
+                            matches_session = True
+                    except Exception:
+                        st_file = rpath / "status.json"
                         try:
-                            st = self._status(rpath)
-                        except Exception:
-                            continue
-                        if st.get("session_id") == session_id:
-                            purged_files += sum(1 for p in rpath.rglob("*") if p.is_file())
-                            shutil.rmtree(rpath, ignore_errors=True)
-                            purged_runs.append(rpath.name)
+                            if st_file.is_file() and session_id in st_file.read_text(encoding="utf-8", errors="ignore"):
+                                matches_session = True
+                        except OSError:
+                            pass
+                    if matches_session:
+                        candidate_run_dirs[rpath.name] = rpath
+
+            # 3. Physically remove every matched derived run directory
+            purged_runs: list[str] = []
+            for rid, rpath in sorted(candidate_run_dirs.items()):
+                if rpath.is_symlink():
+                    rpath.unlink()
+                    purged_files += 1
+                    purged_runs.append(rid)
+                elif rpath.is_dir():
+                    purged_files += sum(1 for p in rpath.rglob("*") if os.path.lexists(p) and not p.is_dir())
+                    shutil.rmtree(rpath)
+                    purged_runs.append(rid)
+
+            # 4. Physically remove the session directory itself
+            if sdir.is_symlink():
+                sdir.unlink()
+                purged_files += 1
+            elif sdir.is_dir():
+                purged_files += sum(1 for p in sdir.rglob("*") if os.path.lexists(p) and not p.is_dir())
+                shutil.rmtree(sdir)
+
+            # 5. Post-deletion disk verification: never report session_deleted=True if any residue remains
+            residual_runs = [rid for rid, rp in candidate_run_dirs.items() if os.path.lexists(rp)]
+            for rpath in self.root.iterdir():
+                if rpath.name == "sessions" or not RUN_ID.fullmatch(rpath.name):
+                    continue
+                if rpath.is_dir() and not rpath.is_symlink():
+                    try:
+                        if self._status(rpath).get("session_id") == session_id:
+                            residual_runs.append(rpath.name)
+                    except Exception:
+                        pass
+
+            if os.path.lexists(sdir) or residual_runs:
+                raise RuntimeError(
+                    f"SESSION_WIPE_INCOMPLETE: residual paths remain for session {session_id} "
+                    f"(session_exists={os.path.lexists(sdir)}, residual_runs={residual_runs})"
+                )
+
             return {
                 "status": "session_deleted",
+                "session_deleted": True,
                 "session_id": session_id,
                 "purged_files": purged_files,
                 "purged_runs": purged_runs,
-                "session_exists_on_disk": sdir.exists(),
+                "session_exists_on_disk": False,
             }
 
     # ------------------------------------------------------------------
@@ -511,15 +630,16 @@ class TTERunner:
             run_id = uuid.uuid4().hex
             path = self.root / run_id
             path.mkdir(mode=0o700)
-            (path / "mapping.json").write_bytes(_bytes(mapping))
+            _atomic_write_bytes(path / "mapping.json", _bytes(mapping))
             if target_rct:
-                (path / "target_rct.json").write_bytes(_bytes(target_rct))
+                _atomic_write_bytes(path / "target_rct.json", _bytes(target_rct))
 
-            # Register run_id inside session metadata so session wipe cleans up everything
-            sdir = self._session_path(session_id)
-            smeta = dict(sess["meta"])
-            smeta["run_ids"] = [*smeta.get("run_ids", []), run_id]
-            (sdir / "session_meta.json").write_bytes(_bytes(smeta))
+            # Register run_id atomically inside session metadata under maintenance lock
+            with self._maintenance:
+                sdir = self._session_path(session_id)
+                smeta = dict(sess["meta"])
+                smeta["run_ids"] = list(dict.fromkeys([*smeta.get("run_ids", []), run_id]))
+                _atomic_write_bytes(sdir / "session_meta.json", _bytes(smeta))
 
             status = {
                 "run_id": run_id,
