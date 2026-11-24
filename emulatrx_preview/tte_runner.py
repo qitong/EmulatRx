@@ -544,16 +544,51 @@ class TTERunner:
     # New Dual-Mode Run Starters (`simulated_cohort` & `user_cohort`)
     # ------------------------------------------------------------------
 
-    def resolve_user_cohort_arms(self, sess: dict, mapping: dict) -> tuple[str, str]:
+    def resolve_user_cohort_arms(
+        self,
+        sess: dict,
+        mapping: dict,
+        *,
+        intervention_override: str = "",
+        comparator_override: str = "",
+    ) -> tuple[str, str]:
         """Resolve effective (active_arm, comparator_arm) strings for dual-arm RCT alignment verification."""
-        act_raw = str(mapping.get("active_value") or "").strip()
-        comp_raw = str(mapping.get("comparator_value") or "").strip()
+        meta = sess.get("meta") or {}
         interp = sess.get("interpretation") or {}
+
+        ovr_act = (intervention_override or str(mapping.get("active_drug_label") or meta.get("override_intervention") or "")).strip()
+        ovr_comp = (comparator_override or str(mapping.get("comparator_drug_label") or meta.get("override_comparator") or "")).strip()
+
+        act_raw = ovr_act or str(mapping.get("active_value") or "").strip()
+        comp_raw = ovr_comp or str(mapping.get("comparator_value") or "").strip()
         if act_raw in ("", "0", "1", "yes", "no", "true", "false"):
-            act_raw = str(interp.get("intervention_query_en") or interp.get("active_arm_label") or act_raw).strip()
+            act_raw = str(interp.get("intervention_query_en") or act_raw).strip()
         if comp_raw in ("", "0", "1", "yes", "no", "true", "false"):
-            comp_raw = str(interp.get("comparator_query_en") or interp.get("comparator_arm_label") or comp_raw).strip()
+            comp_raw = str(interp.get("comparator_query_en") or comp_raw).strip()
         return act_raw, comp_raw
+
+    def save_session_arm_overrides(self, session_id: str, intervention: str = "", comparator: str = "") -> None:
+        """Persist researcher-supplied active/comparator drug labels for binary 0/1 user-cohort sessions."""
+        if not session_id or not SESSION_ID.fullmatch(session_id):
+            return
+        sdir = self.sessions_root / session_id
+        meta_file = sdir / "session_meta.json"
+        if not meta_file.is_file():
+            return
+        with self._maintenance:
+            try:
+                meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            except Exception:
+                return
+            changed = False
+            if intervention.strip():
+                meta["override_intervention"] = intervention.strip()[:100]
+                changed = True
+            if comparator.strip():
+                meta["override_comparator"] = comparator.strip()[:100]
+                changed = True
+            if changed:
+                _atomic_write_bytes(meta_file, _bytes(meta))
 
     def start_simulated_cohort(
         self,
@@ -579,14 +614,15 @@ class TTERunner:
             raise ContractError("INVALID_WEIGHT_METHOD", f"不支持的加权方式：{weight_method}")
 
         if target_rct and isinstance(pico, dict):
-            sim_intr = str(pico.get("intervention_query_en") or pico.get("intervention") or "").strip()
-            sim_comp = str(pico.get("comparator_query_en") or "").strip()
+            sim_intr = str(cfg.get("intervention") or pico.get("active_arm_label") or pico.get("intervention_query_en") or pico.get("intervention") or "").strip()
+            sim_comp = str(cfg.get("comparator") or pico.get("comparator_arm_label") or pico.get("comparator_query_en") or "").strip()
             if not sim_comp and pico.get("comparator_explicit") is True:
                 sim_comp = str(pico.get("comparator") or "").strip()
             target_rct = verify_and_enrich_target_rct(
                 target_rct,
                 intervention=sim_intr,
                 comparator=sim_comp,
+                project_mode=SOURCE_MODE_SIMULATED_COHORT,
                 confirm_arm_mismatch=confirm_arm_mismatch,
             )
 
@@ -638,8 +674,12 @@ class TTERunner:
         seed: int = 42,
         bootstrap_iterations: int = 80,
         weight_method: str | None = None,
+        intervention_override: str = "",
+        comparator_override: str = "",
         confirm_arm_mismatch: bool = False,
     ) -> dict:
+        if intervention_override.strip() or comparator_override.strip():
+            self.save_session_arm_overrides(session_id, intervention_override, comparator_override)
         sess = self.get_session(session_id)
         cohort_path = sess["cohort_path"]
         if not cohort_path.is_file():
@@ -654,11 +694,17 @@ class TTERunner:
             raise ContractError("INVALID_BOOTSTRAP_ITERATIONS", f"Bootstrap 次数须在 20 至 {MAX_BOOTSTRAP} 之间。")
 
         if target_rct:
-            eff_act, eff_comp = self.resolve_user_cohort_arms(sess, mapping)
+            eff_act, eff_comp = self.resolve_user_cohort_arms(
+                sess,
+                mapping,
+                intervention_override=intervention_override,
+                comparator_override=comparator_override,
+            )
             target_rct = verify_and_enrich_target_rct(
                 target_rct,
                 intervention=eff_act,
                 comparator=eff_comp,
+                project_mode=SOURCE_MODE_USER_COHORT,
                 confirm_arm_mismatch=confirm_arm_mismatch,
             )
 

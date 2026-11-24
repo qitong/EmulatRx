@@ -626,18 +626,18 @@ def translate_query_to_english(raw_query: str) -> str:
     return " ".join(parts[:8]).strip()
 
 
-def _extract_study_arm_specs(study: dict) -> tuple[list[dict], str]:
-    """Build per-arm normalized drug/class specs from `arm_groups_detail`, `experimental_arms`, `comparator_arms`, or `interventions`."""
+def _extract_study_arm_specs(study: dict) -> tuple[list[dict], str, int]:
+    """Build per-arm normalized drug/class specs strictly from declared arm groups (NEVER fabricating arms from study-level `interventions`)."""
     arm_texts: list[str] = []
     arm_labels: list[str] = []
-    details = study.get("arm_groups_detail")
-    if isinstance(details, list) and len(details) >= 2:
+    if "arm_groups_detail" in study:
+        details = study.get("arm_groups_detail") or []
         for d in details:
             if isinstance(d, dict):
                 lbl = str(d.get("label", "")).strip()
                 inames = " ".join(str(x) for x in (d.get("intervention_names") or []))
                 desc = str(d.get("description", "")).strip()
-                combined = " ".join(p for p in (lbl, inames, desc) if p)
+                combined = " ".join(p for p in (lbl, inames, desc) if p).strip()
                 if combined:
                     arm_texts.append(combined)
                     arm_labels.append(lbl or inames or "Arm")
@@ -651,27 +651,18 @@ def _extract_study_arm_specs(study: dict) -> tuple[list[dict], str]:
                 arm_texts.append(str(lbl).strip())
                 arm_labels.append(str(lbl).strip())
 
-    # Sparse record fallback: if fewer than 2 distinct arm texts, check study-level interventions list
-    if len(arm_texts) < 2:
-        for intr in study.get("interventions") or []:
-            clean_intr = str(intr).split(": ", 1)[-1].strip()
-            if clean_intr and clean_intr not in arm_texts:
-                arm_texts.append(clean_intr)
-                arm_labels.append(clean_intr)
-
+    verified_arm_count = len(arm_texts)
     specs = [normalize_intervention_spec(t) for t in arm_texts]
-    exp_disp = " / ".join((study.get("experimental_arms") or arm_labels[:1] or ["未注明"])[:2])
-    comp_disp = " / ".join((study.get("comparator_arms") or arm_labels[1:2] or ["未注明"])[:2])
-    summary_str = f"{exp_disp} vs {comp_disp}"
-    return specs, summary_str
-
-
-def _arm_matches_exact_target(arm_spec: dict, target_drugs: set[str], target_class_only: set[str], target_classes: set[str]) -> bool:
-    if target_drugs:
-        return bool(arm_spec["drug_ids"] & target_drugs)
-    if target_class_only:
-        return bool(arm_spec["drug_classes"] & target_classes)
-    return False
+    if verified_arm_count == 0:
+        pooled_intr = "、".join(str(x).split(": ", 1)[-1] for x in (study.get("interventions") or [])[:4]) or "未注明"
+        summary_str = f"未声明分组结构（仅研究级干预：{pooled_intr}）"
+    elif verified_arm_count == 1:
+        summary_str = f"单臂研究：{arm_labels[0]}（无独立对照臂）"
+    else:
+        exp_disp = " / ".join((study.get("experimental_arms") or arm_labels[:1])[:2])
+        comp_disp = " / ".join((study.get("comparator_arms") or arm_labels[1:2])[:2])
+        summary_str = f"{exp_disp} vs {comp_disp}"
+    return specs, summary_str, verified_arm_count
 
 
 def audit_study_arm_alignment(
@@ -679,11 +670,13 @@ def audit_study_arm_alignment(
     *,
     intervention: str = "",
     comparator: str = "",
+    project_mode: str = "",
 ) -> dict:
     """Deterministically verify whether a candidate RCT's distinct arms match target `intervention` and `comparator`."""
+    is_cohort_mode = str(project_mode or "").strip() == "user_cohort"
     t_spec = normalize_intervention_spec(intervention)
     c_spec = normalize_intervention_spec(comparator)
-    arm_specs, trial_arms_summary = _extract_study_arm_specs(study)
+    arm_specs, trial_arms_summary, verified_arm_count = _extract_study_arm_specs(study)
 
     pooled_drugs: set[str] = set()
     pooled_classes: set[str] = set()
@@ -695,7 +688,86 @@ def audit_study_arm_alignment(
         pooled_drugs |= ispec["drug_ids"]
         pooled_classes |= ispec["drug_classes"]
 
-    # Case A: Neither intervention nor comparator specifies a concrete drug/class
+    # Guardrail 1B: Single-arm studies (`len(armGroups) == 1`) or missing `armGroups` (`len == 0`) can NEVER be exact_dual_arm!
+    if verified_arm_count < 2:
+        expected_disp = (
+            f"{t_spec['display_label']} vs {c_spec['display_label']}"
+            if (t_spec["has_specific_agent"] or c_spec["has_specific_agent"] or is_cohort_mode)
+            else "未指定特定药物"
+        )
+        any_overlap = bool(
+            (t_spec["drug_ids"] & pooled_drugs)
+            or (c_spec["drug_ids"] & pooled_drugs)
+            or (t_spec["drug_classes"] & pooled_classes)
+            or (c_spec["drug_classes"] & pooled_classes)
+        )
+        status_code = "single_arm_or_comparator_mismatch" if (any_overlap or verified_arm_count == 1) else "unmatched_interventions"
+        cap_val = ALIGNMENT_SCORE_CAPS[status_code]
+        detail_msg = (
+            f"该注册记录仅含单臂（{trial_arms_summary}），无随机对照臂，不可作为双臂对标试验（仅供参考）。"
+            if verified_arm_count == 1
+            else f"该注册记录缺少结构化 armGroups 分组声明（{trial_arms_summary}），无法核验两臂是否独立随机分配，需显式确认。"
+        )
+        return {
+            "arm_alignment_status": status_code,
+            "arm_alignment_rank": ALIGNMENT_RANKS[status_code],
+            "arm_alignment_score_cap": cap_val,
+            "arm_alignment_label": "对照不一致 · 仅供参考",
+            "arm_alignment_detail": detail_msg,
+            "expected_arms_summary": expected_disp,
+            "trial_arms_summary": trial_arms_summary,
+            "requires_mismatch_confirmation": True,
+            "is_recommended": False,
+        }
+
+    # Guardrail 2: In `user_cohort` mode, comparative cohorts ALWAYS represent a two-arm contrast (`active` vs `comparator`).
+    # Binary 0/1 or class-only unresolved cohort arms MUST NEVER enter `single_intervention_matched` or `exact_dual_arm`!
+    if is_cohort_mode and (not t_spec["drug_ids"] or not c_spec["drug_ids"]):
+        t_lbl = t_spec["display_label"] if t_spec["has_specific_agent"] else f"未指明药物（编码 {intervention or '1'}）"
+        c_lbl = c_spec["display_label"] if c_spec["has_specific_agent"] else f"未指明对照（编码 {comparator or '0'}）"
+        expected_unresolved = f"{t_lbl} vs {c_lbl}"
+
+        # If both cohort arms at least resolved to two distinct mechanism classes (e.g. sglt2i_vs_dpp4i=1/0), allow class_dual_arm (still requires confirmation!)
+        if t_spec["drug_classes"] and c_spec["drug_classes"] and t_spec["drug_classes"] != c_spec["drug_classes"]:
+            t_only_c = t_spec["drug_classes"] - c_spec["drug_classes"]
+            c_only_c = c_spec["drug_classes"] - t_spec["drug_classes"]
+            if t_only_c and c_only_c:
+                for i, arm_i in enumerate(arm_specs):
+                    if not (arm_i["drug_classes"] & t_only_c):
+                        continue
+                    for j, arm_j in enumerate(arm_specs):
+                        if i != j and (arm_j["drug_classes"] & c_only_c) and not (arm_j["drug_classes"] & t_only_c):
+                            return {
+                                "arm_alignment_status": "class_dual_arm",
+                                "arm_alignment_rank": ALIGNMENT_RANKS["class_dual_arm"],
+                                "arm_alignment_score_cap": ALIGNMENT_SCORE_CAPS["class_dual_arm"],
+                                "arm_alignment_label": "同机制类别参考 · 需确认",
+                                "arm_alignment_detail": (
+                                    f"当前队列仅识别到药理类别「{expected_unresolved}」，试验分组为「{trial_arms_summary}」，"
+                                    "请补充具体通用名或勾选不一致知情确认框。"
+                                ),
+                                "expected_arms_summary": expected_unresolved,
+                                "trial_arms_summary": trial_arms_summary,
+                                "requires_mismatch_confirmation": True,
+                                "is_recommended": False,
+                            }
+
+        return {
+            "arm_alignment_status": "single_arm_or_comparator_mismatch",
+            "arm_alignment_rank": ALIGNMENT_RANKS["single_arm_or_comparator_mismatch"],
+            "arm_alignment_score_cap": ALIGNMENT_SCORE_CAPS["single_arm_or_comparator_mismatch"],
+            "arm_alignment_label": "对照不一致 · 仅供参考",
+            "arm_alignment_detail": (
+                f"当前自有队列分组为编码或单侧类别「{expected_unresolved}」，无法自动核验与该试验「{trial_arms_summary}」双臂一致；"
+                "请在上方补充干预/对照通用名重搜，或勾选知情确认仅借用纳排与随访窗。"
+            ),
+            "expected_arms_summary": expected_unresolved,
+            "trial_arms_summary": trial_arms_summary,
+            "requires_mismatch_confirmation": True,
+            "is_recommended": False,
+        }
+
+    # Case A: Idea/simulated mode where neither intervention nor comparator specifies a concrete drug/class
     if not t_spec["has_specific_agent"] and not c_spec["has_specific_agent"]:
         return {
             "arm_alignment_status": "unspecified",
@@ -709,12 +781,14 @@ def audit_study_arm_alignment(
             "is_recommended": True,
         }
 
-    # Case B: Single-intervention mode (idea mode without explicit comparator)
-    if t_spec["has_specific_agent"] and not c_spec["has_specific_agent"]:
+    # Case B: Single-intervention mode (STRICTLY restricted to non-cohort `idea` mode without explicit comparator)
+    if not is_cohort_mode and t_spec["has_specific_agent"] and not c_spec["has_specific_agent"]:
+        t_drugs_single = t_spec["drug_ids"]
         exact_or_class_hit = any(
-            _arm_matches_exact_target(a, t_spec["drug_ids"], t_spec["class_only_ids"], t_spec["drug_classes"])
+            (bool(t_drugs_single) and t_drugs_single.issubset(a["drug_ids"]))
+            or (not t_drugs_single and bool(t_spec["class_only_ids"]) and bool(a["drug_classes"] & t_spec["drug_classes"]))
             for a in arm_specs
-        ) or bool((t_spec["drug_ids"] & pooled_drugs) or (t_spec["class_only_ids"] and (t_spec["drug_classes"] & pooled_classes)))
+        )
         if exact_or_class_hit:
             return {
                 "arm_alignment_status": "single_intervention_matched",
@@ -739,29 +813,58 @@ def audit_study_arm_alignment(
             "is_recommended": False,
         }
 
-    # Case C: Dual-arm contrast specified (both `intervention` and `comparator` known)
+    # Case C: Dual-arm contrast specified — subtract shared background drugs/classes so shared therapy (e.g. Metformin) never masks a missing comparator!
     expected_summary = f"{t_spec['display_label']} vs {c_spec['display_label']}"
-    # Handle add-on regimens like 'Pembrolizumab + Platinum Chemo' vs 'Platinum Chemo'
-    t_core_drugs = (t_spec["drug_ids"] - c_spec["drug_ids"]) or set(t_spec["drug_ids"])
-    c_core_drugs = (c_spec["drug_ids"] - t_core_drugs) or set(c_spec["drug_ids"])
-    t_core_classes = (t_spec["drug_classes"] - c_spec["drug_classes"]) or set(t_spec["drug_classes"])
-    c_core_classes = (c_spec["drug_classes"] - t_core_classes) or set(c_spec["drug_classes"])
+    t_drugs = set(t_spec["drug_ids"])
+    c_drugs = set(c_spec["drug_ids"])
+    shared_drugs = t_drugs & c_drugs
+    t_diff_drugs = t_drugs - shared_drugs
+    c_diff_drugs = c_drugs - shared_drugs
 
     # 1. Check `exact_dual_arm` across distinct arms (i != j)
     exact_dual = False
-    for i, arm_i in enumerate(arm_specs):
-        if not _arm_matches_exact_target(arm_i, t_core_drugs, t_spec["class_only_ids"], t_core_classes):
-            continue
-        for j, arm_j in enumerate(arm_specs):
-            if i == j:
-                continue
-            # Distinct comparator arm must match comparator AND must not carry the distinguishing active drug
-            if _arm_matches_exact_target(arm_j, c_core_drugs, c_spec["class_only_ids"], c_core_classes):
-                if not (t_core_drugs and (arm_j["drug_ids"] & t_core_drugs) and not (c_spec["drug_ids"] & t_core_drugs)):
+    if t_drugs and c_drugs and (t_diff_drugs or c_diff_drugs):
+        for i, arm_a in enumerate(arm_specs):
+            arm_a_drugs = arm_a["drug_ids"]
+            if t_diff_drugs:
+                if not t_diff_drugs.issubset(arm_a_drugs):
+                    continue
+                if arm_a_drugs & c_diff_drugs:
+                    continue
+            else:
+                # Pure step-down / withdrawal design where comparator has extra agent and treatment is background-only
+                if not shared_drugs.issubset(arm_a_drugs) or (arm_a_drugs & c_diff_drugs):
+                    continue
+
+            for j, arm_b in enumerate(arm_specs):
+                if i == j:
+                    continue
+                arm_b_drugs = arm_b["drug_ids"]
+                if c_diff_drugs:
+                    # Head-to-head active comparator (e.g. Dapa+Met vs Sita+Met, or Dapa vs Sita):
+                    # Arm B MUST contain ALL distinguishing comparator drugs (`sitagliptin`) and NONE of `t_diff_drugs`!
+                    if not c_diff_drugs.issubset(arm_b_drugs):
+                        continue
+                    if arm_b_drugs & t_diff_drugs:
+                        continue
                     exact_dual = True
                     break
-        if exact_dual:
-            break
+                else:
+                    # True add-on design (e.g. Pembro+Chemo vs Chemo, or Dapa+Met vs Met):
+                    # Arm A must carry both add-on + background (`t_diff_drugs | shared_drugs`), while Arm B carries `shared_drugs` WITHOUT `t_diff_drugs` or unrequested active comparators!
+                    if not (t_diff_drugs | shared_drugs).issubset(arm_a_drugs):
+                        continue
+                    if not shared_drugs.issubset(arm_b_drugs):
+                        continue
+                    if arm_b_drugs & t_diff_drugs:
+                        continue
+                    extra_unrequested = arm_b_drugs - shared_drugs - {"placebo_soc"}
+                    if extra_unrequested:
+                        continue
+                    exact_dual = True
+                    break
+            if exact_dual:
+                break
 
     if exact_dual:
         return {
@@ -776,24 +879,23 @@ def audit_study_arm_alignment(
             "is_recommended": True,
         }
 
-    # 2. Check `class_dual_arm`: two DISTINCT drug classes matched across two DISTINCT arms (never SGLT2i vs SGLT2i for SGLT2i vs DPP-4i!)
-    distinct_target_classes = bool(t_spec["drug_classes"] and c_spec["drug_classes"] and (t_spec["drug_classes"] != c_spec["drug_classes"]))
+    # 2. Check `class_dual_arm`: subtract shared background classes so shared biguanide/chemo NEVER masks a missing comparator class!
+    shared_classes = t_spec["drug_classes"] & c_spec["drug_classes"]
+    t_diff_classes = t_spec["drug_classes"] - shared_classes
+    c_diff_classes = c_spec["drug_classes"] - shared_classes
     class_dual = False
-    if distinct_target_classes:
-        t_only_cls = t_spec["drug_classes"] - c_spec["drug_classes"]
-        c_only_cls = c_spec["drug_classes"] - t_spec["drug_classes"]
-        if t_only_cls and c_only_cls:
-            for i, arm_i in enumerate(arm_specs):
-                if not (arm_i["drug_classes"] & t_only_cls):
+    if t_diff_classes and c_diff_classes:
+        for i, arm_i in enumerate(arm_specs):
+            if not t_diff_classes.issubset(arm_i["drug_classes"]) or (arm_i["drug_classes"] & c_diff_classes):
+                continue
+            for j, arm_j in enumerate(arm_specs):
+                if i == j:
                     continue
-                for j, arm_j in enumerate(arm_specs):
-                    if i == j:
-                        continue
-                    if (arm_j["drug_classes"] & c_only_cls) and not (arm_j["drug_classes"] & t_only_cls):
-                        class_dual = True
-                        break
-                if class_dual:
+                if c_diff_classes.issubset(arm_j["drug_classes"]) and not (arm_j["drug_classes"] & t_diff_classes):
+                    class_dual = True
                     break
+            if class_dual:
+                break
 
     if class_dual:
         return {
@@ -812,11 +914,10 @@ def audit_study_arm_alignment(
         }
 
     # 3. Check `single_arm_or_comparator_mismatch` vs `unmatched_interventions`
+    distinct_target_drugs = t_diff_drugs | c_diff_drugs or (t_drugs | c_drugs)
+    distinct_target_classes = t_diff_classes | c_diff_classes or (t_spec["drug_classes"] | c_spec["drug_classes"])
     any_drug_or_class_overlap = bool(
-        (t_spec["drug_ids"] & pooled_drugs)
-        or (c_spec["drug_ids"] & pooled_drugs)
-        or (t_spec["drug_classes"] & pooled_classes)
-        or (c_spec["drug_classes"] & pooled_classes)
+        (distinct_target_drugs & pooled_drugs) or (distinct_target_classes & pooled_classes)
     )
     if any_drug_or_class_overlap:
         return {
@@ -854,18 +955,19 @@ def verify_and_enrich_target_rct(
     *,
     intervention: str = "",
     comparator: str = "",
+    project_mode: str = "",
     confirm_arm_mismatch: bool = False,
 ) -> dict | None:
-    """Fail-closed server-side alignment gate before drafting or launching a TTE run against `target_rct`.
-
-    Raises `ContractError("ARM_MISMATCH_CONFIRMATION_REQUIRED", ...)` (mapped to HTTP 422) whenever both
-    `intervention` and `comparator` are known, `arm_alignment_status != "exact_dual_arm"`, and
-    `confirm_arm_mismatch` is not explicitly True.
-    """
+    """Fail-closed server-side alignment gate before drafting or launching a TTE run against `target_rct`."""
     if not target_rct or not isinstance(target_rct, dict) or not target_rct.get("nct_id"):
         return target_rct
 
-    audit = audit_study_arm_alignment(target_rct, intervention=intervention, comparator=comparator)
+    audit = audit_study_arm_alignment(
+        target_rct,
+        intervention=intervention,
+        comparator=comparator,
+        project_mode=project_mode,
+    )
     status = audit["arm_alignment_status"]
     enriched = {
         **target_rct,
@@ -972,6 +1074,19 @@ def _normalize_api_study(study: dict, *, source: str = "clinicaltrials_gov_api_v
     allocation = str(design_info.get("allocation", "RANDOMIZED"))
     conditions = [str(c) for c in (cond_mod.get("conditions") or []) if c]
 
+    # Map study-level interventions back to their declared armGroupLabels when armGroups omitted interventionNames (NEVER fabricating new arms!)
+    interventions = []
+    linked_intr_by_arm_label: dict[str, list[str]] = {}
+    for intr in arms_mod.get("interventions") or []:
+        if isinstance(intr, dict) and intr.get("name"):
+            itype = str(intr.get("type", "DRUG")).title()
+            full_iname = f"{itype}: {intr['name']}"
+            interventions.append(full_iname)
+            for glbl in intr.get("armGroupLabels") or []:
+                gl_key = str(glbl).strip().lower()
+                if gl_key:
+                    linked_intr_by_arm_label.setdefault(gl_key, []).append(full_iname)
+
     exp_arms: list[str] = []
     comp_arms: list[str] = []
     other_arms: list[str] = []
@@ -983,6 +1098,8 @@ def _normalize_api_study(study: dict, *, source: str = "clinicaltrials_gov_api_v
         atype = str(arm.get("type", "")).upper()
         desc = str(arm.get("description", "")).strip()
         inames = [str(x).strip() for x in (arm.get("interventionNames") or []) if str(x).strip()]
+        if not inames and label.lower() in linked_intr_by_arm_label:
+            inames = list(linked_intr_by_arm_label[label.lower()])
         if not label and not inames:
             continue
         disp = label
@@ -1007,12 +1124,6 @@ def _normalize_api_study(study: dict, *, source: str = "clinicaltrials_gov_api_v
         else:
             other_arms.append(disp)
 
-    interventions = []
-    for intr in arms_mod.get("interventions") or []:
-        if isinstance(intr, dict) and intr.get("name"):
-            itype = str(intr.get("type", "DRUG")).title()
-            interventions.append(f"{itype}: {intr['name']}")
-
     if not exp_arms and other_arms:
         exp_arms.append(other_arms[0])
     if not comp_arms and len(other_arms) >= 2:
@@ -1021,12 +1132,7 @@ def _normalize_api_study(study: dict, *, source: str = "clinicaltrials_gov_api_v
         # Handle two ACTIVE_COMPARATOR arms (e.g. head-to-head active comparator trials like NCT06642272!)
         exp_arms = [comp_arms[0]]
         comp_arms = comp_arms[1:]
-    if not exp_arms and interventions:
-        exp_arms.append(interventions[0].split(": ", 1)[-1])
-    if not comp_arms:
-        comp_arms.append(
-            interventions[1].split(": ", 1)[-1] if len(interventions) >= 2 else "Standard Comparator / Control"
-        )
+    # IMPORTANT: NEVER fabricate separate experimental/comparator arms from study-level `interventions` when len(arm_groups_detail) < 2!
 
     primary_outcomes = []
     for po in (out_mod.get("primaryOutcomes") or [])[:3]:
@@ -1077,6 +1183,7 @@ def _score_and_audit_study(
     *,
     intervention: str = "",
     comparator: str = "",
+    project_mode: str = "",
 ) -> dict:
     """Compute deterministic relevance score in [0.01, 0.99], audit dual-arm alignment, and apply hard score cap."""
     haystack_title = f"{study['brief_title']} {study['official_title']}".lower()
@@ -1116,7 +1223,12 @@ def _score_and_audit_study(
     if "RANDOMIZED" in str(study.get("allocation", "")).upper():
         raw_pts += 5
 
-    audit = audit_study_arm_alignment(study, intervention=intervention, comparator=comparator)
+    audit = audit_study_arm_alignment(
+        study,
+        intervention=intervention,
+        comparator=comparator,
+        project_mode=project_mode,
+    )
     if audit["arm_alignment_status"] == "exact_dual_arm":
         raw_pts += 22
     elif audit["arm_alignment_status"] == "class_dual_arm":
@@ -1281,6 +1393,7 @@ def search_candidate_rcts(
     condition: str = "",
     intervention: str = "",
     comparator: str = "",
+    project_mode: str = "",
     context_summary: dict | None = None,
     forbidden_values: tuple[str, ...] = (),
     max_results: int = 6,
@@ -1293,8 +1406,13 @@ def search_candidate_rcts(
     nct_hit = NCT_RE.search(clean_query)
     if nct_hit and len(clean_query) <= 20:
         single = fetch_rct_by_nct(nct_hit.group(1), timeout=timeout)
-        if eff_intr or eff_comp:
-            audit = audit_study_arm_alignment(single, intervention=eff_intr, comparator=eff_comp)
+        if eff_intr or eff_comp or project_mode == "user_cohort":
+            audit = audit_study_arm_alignment(
+                single,
+                intervention=eff_intr,
+                comparator=eff_comp,
+                project_mode=project_mode,
+            )
             single = _enforce_alignment_caps_and_sort([{**single, **audit}])[0]
         return {
             "source": single["source"],
@@ -1386,6 +1504,7 @@ def search_candidate_rcts(
                             tokens,
                             intervention=eff_intr,
                             comparator=eff_comp,
+                            project_mode=project_mode,
                         )
                         live_by_nct[norm["nct_id"]] = scored
                     # Stop early once we have enough exact dual-arm matches (or enough total matches when no comparator)
@@ -1443,6 +1562,7 @@ def search_candidate_rcts(
             tokens,
             intervention=eff_intr,
             comparator=eff_comp,
+            project_mode=project_mode,
         )
         scored_fb["match_reasons"] = [
             *scored_fb["match_reasons"],

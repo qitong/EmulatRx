@@ -536,13 +536,21 @@ def workbench_home_view() -> str:
 <section id="panel-step-2" class="hidden">
   <fieldset>
     <legend>ClinicalTrials.gov 候选目标随机对照试验（Target RCT）检索与选定</legend>
-    <div class="field-grid" style="grid-template-columns:2.4fr auto">
+    <div class="field-grid" style="grid-template-columns:1.6fr 1fr 1fr auto">
       <label class="control">
-        <span>检索关键词（支持英文疾病/药物词重搜，或直接输入精确登记号如 <code>NCT03036124</code> / <code>NCT02578680</code>）</span>
+        <span>检索关键词（支持中英文疾病/药物词，或输入精确登记号如 <code>NCT03036124</code>）</span>
         <input type="text" id="rct-query-input" placeholder="例如：Dapagliflozin Heart Failure 或 NCT03036124">
       </label>
+      <label class="control">
+        <span>干预策略 (Intervention / 1代表药物)</span>
+        <input type="text" id="rct-intr-input" placeholder="如：达格列净 / Dapagliflozin">
+      </label>
+      <label class="control">
+        <span>对照策略 (Comparator / 0代表对照)</span>
+        <input type="text" id="rct-comp-input" placeholder="如：西格列汀（研究想法未限定可留空）">
+      </label>
       <div style="display:flex;align-items:flex-end">
-        <button type="button" onclick="executeRCTSearch()">重新检索 ClinicalTrials.gov</button>
+        <button type="button" onclick="executeRCTSearch()">重新检索并核验双臂</button>
       </div>
     </div>
     <div id="rct-source-banner" style="margin-top:12px"></div>
@@ -894,7 +902,9 @@ async function searchRCTsFromProfile() {{
     }});
     if (nr.ok) STATE.interpretation = (await nr.json()).interpretation;
   }}
-  document.getElementById('rct-query-input').value = STATE.interpretation.search_query_en;
+  document.getElementById('rct-query-input').value = STATE.interpretation.search_query_en || '';
+  document.getElementById('rct-intr-input').value = STATE.interpretation.intervention_query_en || '';
+  document.getElementById('rct-comp-input').value = STATE.interpretation.comparator_query_en || '';
   goStep(2);
   await executeRCTSearch(
     STATE.interpretation.condition_query_en || '',
@@ -928,7 +938,9 @@ async function parseIdeaAndSearchRCTs() {{
       </ul>
     </fieldset>
   `;
-  document.getElementById('rct-query-input').value = STATE.pico.search_query_en;
+  document.getElementById('rct-query-input').value = STATE.pico.search_query_en || '';
+  document.getElementById('rct-intr-input').value = STATE.pico.intervention_query_en || '';
+  document.getElementById('rct-comp-input').value = STATE.pico.comparator_query_en || '';
   goStep(2);
   await executeRCTSearch(
     STATE.pico.condition_query_en || '',
@@ -964,9 +976,11 @@ function onToggleMismatchConfirm(checked) {{
 async function executeRCTSearch(cond='', intr='', comp='') {{
   showError('');
   const q = document.getElementById('rct-query-input').value;
+  const intrBox = document.getElementById('rct-intr-input').value.trim();
+  const compBox = document.getElementById('rct-comp-input').value.trim();
   const ctx = STATE.mode === 'user_cohort' ? (STATE.interpretation || {{}}) : (STATE.pico || {{}});
-  const effIntr = intr || ctx.intervention_query_en || '';
-  const effComp = comp || ctx.comparator_query_en || '';
+  const effIntr = intrBox || intr || ctx.intervention_query_en || '';
+  const effComp = compBox || comp || ctx.comparator_query_en || '';
   const effCond = cond || ctx.condition_query_en || '';
   const listEl = document.getElementById('rct-cards-list');
   listEl.innerHTML = '<p>正在检索 ClinicalTrials.gov 公开注册随机对照试验并核验双臂干预对齐度…</p>';
@@ -991,9 +1005,10 @@ async function executeRCTSearch(cond='', intr='', comp='') {{
   if (cb) cb.checked = false;
   document.getElementById('rct-mismatch-confirm-box').classList.add('hidden');
 
-  // Auto-preselect #1 ONLY when it is exact_dual_arm or single_intervention_matched (NEVER preselect a mismatched trial!)
+  // Auto-preselect #1 ONLY when it is exact_dual_arm, or single_intervention_matched in idea mode!
   const firstStatus = STATE.rctCandidates[0] && STATE.rctCandidates[0].arm_alignment_status;
-  STATE.selectedRctIdx = ['exact_dual_arm', 'single_intervention_matched', 'unspecified'].includes(firstStatus) ? 0 : -1;
+  const allowPreselect = firstStatus === 'exact_dual_arm' || (STATE.mode !== 'user_cohort' && ['single_intervention_matched', 'unspecified'].includes(firstStatus));
+  STATE.selectedRctIdx = allowPreselect ? 0 : -1;
 
   const isFallback = data.source === 'offline_curated_catalog_fallback';
   document.getElementById('rct-source-banner').innerHTML = `
@@ -1073,6 +1088,8 @@ async function chooseTargetRCT(idx) {{
     showError(`所选试验 ${{rct.nct_id}} 的干预/对照臂与本研究不一致（${{rct.arm_alignment_label || rct.arm_alignment_status}}）。若仅借用其纳排与随访时间窗，请先勾选列表下方的「我已知晓该 RCT 的干预/对照臂与本研究不一致…」确认框后再继续。`);
     return;
   }}
+  const intrOvr = document.getElementById('rct-intr-input').value.trim();
+  const compOvr = document.getElementById('rct-comp-input').value.trim();
   const resp = await fetch('/api/rcts/draft', {{
     method: 'POST',
     headers: {{ 'Content-Type': 'application/json' }},
@@ -1081,6 +1098,8 @@ async function chooseTargetRCT(idx) {{
       session_id: STATE.sessionId,
       target_rct: rct,
       pico: STATE.pico,
+      intervention: intrOvr,
+      comparator: compOvr,
       confirm_arm_mismatch: STATE.confirmArmMismatch
     }})
   }});
@@ -1302,6 +1321,8 @@ async function launchUserCohortRun() {{
       session_id: STATE.sessionId,
       mapping: mapping,
       target_rct: STATE.selectedRct,
+      intervention: document.getElementById('rct-intr-input').value.trim(),
+      comparator: document.getElementById('rct-comp-input').value.trim(),
       confirm_arm_mismatch: STATE.confirmArmMismatch
     }})
   }});
@@ -1333,6 +1354,8 @@ async function launchSimulatedRun() {{
       target_rct: STATE.selectedRct,
       pico: STATE.pico,
       sim_config: simConfig,
+      intervention: document.getElementById('rct-intr-input').value.trim(),
+      comparator: document.getElementById('rct-comp-input').value.trim(),
       confirm_arm_mismatch: STATE.confirmArmMismatch
     }})
   }});

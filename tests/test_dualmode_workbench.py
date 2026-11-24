@@ -955,6 +955,271 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                 self.assertIn("对照不一致参考声明", final["rendered_html"])
                 self.assertIn("arm_alignment_warning", final["audit_report_markdown"])
 
+    def test_round4_probes_1a_1b_binary_01_cohort_and_idea_llm_hallucinated_comparator(self):
+        """E2E regression for all 4 Codex Round-4 probes: 1A shared background, 1B <2 armGroups, 2 binary 0/1 cohort, 3 idea LLM comparator."""
+        round4_ctgov_payload = {
+            "studies": [
+                # NCT06642272: Empagliflozin vs Dapagliflozin
+                {
+                    "protocolSection": {
+                        "identificationModule": {"nctId": "NCT06642272", "briefTitle": "Empagliflozin vs Dapagliflozin in T2DM"},
+                        "statusModule": {"overallStatus": "RECRUITING"},
+                        "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE4"], "enrollmentInfo": {"count": 800}, "designInfo": {"allocation": "RANDOMIZED"}},
+                        "conditionsModule": {"conditions": ["Type 2 Diabetes"]},
+                        "armsInterventionsModule": {
+                            "armGroups": [
+                                {"label": "Empagliflozin 10 mg", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Empagliflozin"]},
+                                {"label": "Dapagliflozin 10 mg", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Dapagliflozin"]},
+                            ],
+                            "interventions": [{"name": "Empagliflozin", "type": "DRUG"}, {"name": "Dapagliflozin", "type": "DRUG"}],
+                        },
+                        "outcomesModule": {"primaryOutcomes": [{"measure": "HF or CV Death", "timeFrame": "12 months"}]},
+                    }
+                },
+                # NCT09990001: Dapagliflozin + Metformin vs Metformin (missing Sitagliptin!)
+                {
+                    "protocolSection": {
+                        "identificationModule": {"nctId": "NCT09990001", "briefTitle": "Dapagliflozin + Metformin vs Metformin Alone"},
+                        "statusModule": {"overallStatus": "COMPLETED"},
+                        "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE3"], "enrollmentInfo": {"count": 600}, "designInfo": {"allocation": "RANDOMIZED"}},
+                        "conditionsModule": {"conditions": ["Type 2 Diabetes"]},
+                        "armsInterventionsModule": {
+                            "armGroups": [
+                                {"label": "Dapagliflozin + Metformin", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Dapagliflozin", "Drug: Metformin"]},
+                                {"label": "Metformin + Placebo", "type": "PLACEBO_COMPARATOR", "interventionNames": ["Drug: Metformin", "Drug: Placebo"]},
+                            ],
+                            "interventions": [{"name": "Dapagliflozin", "type": "DRUG"}, {"name": "Metformin", "type": "DRUG"}],
+                        },
+                        "outcomesModule": {"primaryOutcomes": [{"measure": "Composite", "timeFrame": "12 months"}]},
+                    }
+                },
+                # NCT09990002: Single-arm Dapagliflozin + Sitagliptin (`len(armGroups) == 1`)
+                {
+                    "protocolSection": {
+                        "identificationModule": {"nctId": "NCT09990002", "briefTitle": "Single-Arm Dapagliflozin + Sitagliptin"},
+                        "statusModule": {"overallStatus": "COMPLETED"},
+                        "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE2"], "enrollmentInfo": {"count": 120}},
+                        "conditionsModule": {"conditions": ["Type 2 Diabetes"]},
+                        "armsInterventionsModule": {
+                            "armGroups": [
+                                {"label": "Dapagliflozin + Sitagliptin Fixed Combo", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Dapagliflozin", "Drug: Sitagliptin"]}
+                            ],
+                            "interventions": [{"name": "Dapagliflozin", "type": "DRUG"}, {"name": "Sitagliptin", "type": "DRUG"}],
+                        },
+                        "outcomesModule": {"primaryOutcomes": [{"measure": "HbA1c", "timeFrame": "6 months"}]},
+                    }
+                },
+                # NCT01095653: True head-to-head Dapagliflozin + Metformin vs Sitagliptin + Metformin
+                {
+                    "protocolSection": {
+                        "identificationModule": {"nctId": "NCT01095653", "briefTitle": "Dapagliflozin + Metformin vs Sitagliptin + Metformin"},
+                        "statusModule": {"overallStatus": "COMPLETED"},
+                        "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE3"], "enrollmentInfo": {"count": 1450}, "designInfo": {"allocation": "RANDOMIZED"}},
+                        "conditionsModule": {"conditions": ["Type 2 Diabetes"]},
+                        "armsInterventionsModule": {
+                            "armGroups": [
+                                {"label": "Dapagliflozin 10 mg + Metformin", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Dapagliflozin", "Drug: Metformin"]},
+                                {"label": "Sitagliptin 100 mg + Metformin", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Sitagliptin", "Drug: Metformin"]},
+                            ],
+                            "interventions": [{"name": "Dapagliflozin", "type": "DRUG"}, {"name": "Sitagliptin", "type": "DRUG"}, {"name": "Metformin", "type": "DRUG"}],
+                        },
+                        "outcomesModule": {"primaryOutcomes": [{"measure": "Cardiorenal Composite", "timeFrame": "12 months"}]},
+                    }
+                },
+                # NCT03036124: Dapagliflozin vs Placebo in Heart Failure
+                {
+                    "protocolSection": {
+                        "identificationModule": {"nctId": "NCT03036124", "briefTitle": "Dapagliflozin vs Placebo in Heart Failure (DAPA-HF)"},
+                        "statusModule": {"overallStatus": "COMPLETED"},
+                        "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE3"], "enrollmentInfo": {"count": 4744}, "designInfo": {"allocation": "RANDOMIZED"}},
+                        "conditionsModule": {"conditions": ["Heart Failure"]},
+                        "armsInterventionsModule": {
+                            "armGroups": [
+                                {"label": "Dapagliflozin 10 mg", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Dapagliflozin"]},
+                                {"label": "Matching Placebo", "type": "PLACEBO_COMPARATOR", "interventionNames": ["Drug: Placebo"]},
+                            ],
+                            "interventions": [{"name": "Dapagliflozin", "type": "DRUG"}, {"name": "Placebo", "type": "DRUG"}],
+                        },
+                        "outcomesModule": {"primaryOutcomes": [{"measure": "Worsening HF or CV Death", "timeFrame": "18 months"}]},
+                    }
+                },
+            ]
+        }
+
+        def fake_ctgov(req, timeout):
+            return _FakeHTTPResp(json.dumps(round4_ctgov_payload).encode("utf-8"))
+
+        # Mock LLM that hallucinates `comparator_query_en="Sitagliptin"` even on a single-intervention idea!
+        def fake_llm_hallucinate_comp(req, timeout):
+            body_txt = req.data.decode("utf-8")
+            if "idea_text" in body_txt:
+                ans = {
+                    "population": "心力衰竭患者",
+                    "intervention": "达格列净 (Dapagliflozin)",
+                    "comparator": "西格列汀 (Sitagliptin)",
+                    "primary_outcome": "心衰恶化住院或心血管死亡",
+                    "competing_event": "非心血管竞争死亡",
+                    "condition_query_en": "Heart Failure",
+                    "intervention_query_en": "Dapagliflozin",
+                    "comparator_query_en": "Sitagliptin",
+                    "search_query_en": "Dapagliflozin Sitagliptin Heart Failure",
+                }
+            elif "public_reference_context" in body_txt:
+                ans = {"rankings": [{"nct_id": "NCT06642272", "match_score": 0.91, "recommended": True, "reason_zh": "测试重排"}]}
+            else:
+                ans = {
+                    "domain_summary_zh": "SGLT2队列",
+                    "condition_query_en": "Type 2 Diabetes",
+                    "intervention_query_en": "Dapagliflozin",
+                    "comparator_query_en": "Empagliflozin",
+                    "search_query_en": "Dapagliflozin Type 2 Diabetes",
+                }
+            return _FakeHTTPResp(json.dumps({"choices": [{"message": {"content": json.dumps(ans, ensure_ascii=False)}}]}).encode("utf-8"))
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "EMULATRX_LLM_API_KEY_FILE": str(self.base / "absent_secret"),
+                "EMULATRX_LLM_API_KEY": "sk-round4-test",
+                "EMULATRX_OFFLINE_RCT_CATALOG": "0",
+            },
+            clear=False,
+        ):
+            with mock.patch.object(llm_assist, "urlopen_llm", side_effect=fake_llm_hallucinate_comp), mock.patch.object(
+                rct_matcher, "urlopen_ctgov", side_effect=fake_ctgov
+            ):
+                # --- Probe 1A & 1B E2E: Cohort `Dapagliflozin_Plus_Metformin` vs `Sitagliptin_Plus_Metformin` ---
+                combo_rows = ["deid_id,initiated_drug,followup_months,endpoint,age_years"]
+                for i in range(20):
+                    drug = "Dapagliflozin_Plus_Metformin" if i % 2 == 0 else "Sitagliptin_Plus_Metformin"
+                    ep = "hf_hospitalization" if i < 7 else ("cv_death" if i < 11 else "censored")
+                    combo_rows.append(f"PT-{i + 1:04d},{drug},{8.0 + i * 0.9:.1f},{ep},{54 + (i % 14)}")
+                up_combo = self.client.post(
+                    "/api/sessions/upload",
+                    headers=self.web_auth,
+                    files={"file": ("combo_met.csv", ("\n".join(combo_rows) + "\n").encode("utf-8"), "text/csv")},
+                )
+                self.assertEqual(up_combo.status_code, 200, up_combo.text)
+                sid_combo = up_combo.json()["session_id"]
+
+                srch_combo = self.client.post(
+                    "/api/rcts/search",
+                    headers=self.web_auth,
+                    json={"session_id": sid_combo, "project_mode": "user_cohort", "query": "Dapagliflozin Sitagliptin"},
+                )
+                self.assertEqual(srch_combo.status_code, 200)
+                by_nct = {c["nct_id"]: c for c in srch_combo.json()["candidates"]}
+                # True combo head-to-head gets exact_dual_arm; Dapa+Met vs Met AND 1-arm combo both get <=0.45 & 422!
+                self.assertEqual(by_nct["NCT01095653"]["arm_alignment_status"], "exact_dual_arm")
+                for bad_id in ("NCT09990001", "NCT09990002"):
+                    self.assertEqual(by_nct[bad_id]["arm_alignment_status"], "single_arm_or_comparator_mismatch")
+                    self.assertLessEqual(by_nct[bad_id]["match_score"], 0.45)
+                    self.assertFalse(by_nct[bad_id]["is_recommended"])
+                    r_bad = self.client.post(
+                        "/api/rcts/draft",
+                        headers=self.web_auth,
+                        json={"project_mode": "user_cohort", "session_id": sid_combo, "target_rct": by_nct[bad_id]},
+                    )
+                    self.assertEqual(r_bad.status_code, 422, r_bad.text)
+                    self.assertEqual(r_bad.json()["error_code"], "ARM_MISMATCH_CONFIRMATION_REQUIRED")
+
+                # --- Probe 2 E2E: Anonymous binary `treatment_sglt2_user = 0/1` CSV ---
+                bin_rows = ["deid_id,treatment_sglt2_user,followup_months,endpoint,age_years"]
+                for i in range(20):
+                    arm_01 = 1 if i % 2 == 0 else 0
+                    ep = "hf_hospitalization" if i < 7 else ("cv_death" if i < 11 else "censored")
+                    bin_rows.append(f"PT-{i + 1:04d},{arm_01},{8.0 + i * 0.9:.1f},{ep},{52 + (i % 15)}")
+                up_bin = self.client.post(
+                    "/api/sessions/upload",
+                    headers=self.web_auth,
+                    files={"file": ("sglt2_01.csv", ("\n".join(bin_rows) + "\n").encode("utf-8"), "text/csv")},
+                )
+                self.assertEqual(up_bin.status_code, 200, up_bin.text)
+                sid_bin = up_bin.json()["session_id"]
+
+                srch_bin = self.client.post(
+                    "/api/rcts/search",
+                    headers=self.web_auth,
+                    json={"session_id": sid_bin, "project_mode": "user_cohort", "query": "SGLT2 inhibitor"},
+                )
+                self.assertEqual(srch_bin.status_code, 200)
+                bin_nct066 = next(c for c in srch_bin.json()["candidates"] if c["nct_id"] == "NCT06642272")
+                # Must NEVER be single_intervention_matched or recommended on a 0/1 user_cohort!
+                self.assertNotEqual(bin_nct066["arm_alignment_status"], "single_intervention_matched")
+                self.assertFalse(bin_nct066["is_recommended"])
+                self.assertLessEqual(bin_nct066["match_score"], 0.45)
+
+                draft_bin_422 = self.client.post(
+                    "/api/rcts/draft",
+                    headers=self.web_auth,
+                    json={"project_mode": "user_cohort", "session_id": sid_bin, "target_rct": bin_nct066},
+                )
+                self.assertEqual(draft_bin_422.status_code, 422, draft_bin_422.text)
+                self.assertEqual(draft_bin_422.json()["error_code"], "ARM_MISMATCH_CONFIRMATION_REQUIRED")
+
+                # When researcher explicitly declares `1 = 达格列净` and `0 = 西格列汀`, NCT01095653 succeeds while NCT06642272 still 422s!
+                draft_bin_still_422 = self.client.post(
+                    "/api/rcts/draft",
+                    headers=self.web_auth,
+                    json={
+                        "project_mode": "user_cohort",
+                        "session_id": sid_bin,
+                        "target_rct": bin_nct066,
+                        "intervention": "达格列净",
+                        "comparator": "西格列汀",
+                    },
+                )
+                self.assertEqual(draft_bin_still_422.status_code, 422)
+
+                draft_bin_exact_ok = self.client.post(
+                    "/api/rcts/draft",
+                    headers=self.web_auth,
+                    json={
+                        "project_mode": "user_cohort",
+                        "session_id": sid_bin,
+                        "target_rct": by_nct["NCT01095653"],
+                        "intervention": "达格列净",
+                        "comparator": "西格列汀",
+                    },
+                )
+                self.assertEqual(draft_bin_exact_ok.status_code, 200, draft_bin_exact_ok.text)
+                self.assertEqual(draft_bin_exact_ok.json()["target_rct"]["arm_alignment_status"], "exact_dual_arm")
+
+                # --- Probe 3 E2E: Single-intervention idea ignores LLM-hallucinated comparator ---
+                parsed_idea = self.client.post(
+                    "/api/idea/parse",
+                    headers=self.web_auth,
+                    json={"idea_text": "评估达格列净在心衰患者中的心肾获益"},
+                )
+                self.assertEqual(parsed_idea.status_code, 200, parsed_idea.text)
+                pico_single = parsed_idea.json()["pico"]
+                self.assertFalse(pico_single["comparator_explicit"])
+                self.assertEqual(pico_single["comparator_query_en"], "")
+                self.assertNotIn("Sitagliptin", pico_single["search_query_en"])
+
+                srch_idea = self.client.post(
+                    "/api/rcts/search",
+                    headers=self.web_auth,
+                    json={
+                        "project_mode": "simulated_cohort",
+                        "query": pico_single["search_query_en"],
+                        "condition": pico_single["condition_query_en"],
+                        "intervention": pico_single["intervention_query_en"],
+                        "context_summary": pico_single,
+                    },
+                )
+                self.assertEqual(srch_idea.status_code, 200)
+                dapa_hf = next(c for c in srch_idea.json()["candidates"] if c["nct_id"] == "NCT03036124")
+                self.assertEqual(dapa_hf["arm_alignment_status"], "single_intervention_matched")
+                self.assertTrue(dapa_hf["is_recommended"])
+
+                draft_idea_ok = self.client.post(
+                    "/api/rcts/draft",
+                    headers=self.web_auth,
+                    json={"project_mode": "simulated_cohort", "target_rct": dapa_hf, "pico": pico_single},
+                )
+                self.assertEqual(draft_idea_ok.status_code, 200, draft_idea_ok.text)
+
 
 if __name__ == "__main__":
     unittest.main()

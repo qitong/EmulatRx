@@ -642,6 +642,126 @@ class RCTMatcherTests(unittest.TestCase):
         self.assertFalse(mismatch_c["is_recommended"])
         self.assertEqual(mismatch_c["arm_alignment_label"], "对照不一致 · 仅供参考")
 
+    def test_round4_shared_background_drug_and_single_or_missing_armgroups_audit(self):
+        """Round-4 Probes 1A & 1B: shared background Metformin never masks missing Sitagliptin, and <2 armGroups never fabricate arms."""
+        # Probe 1A: Cohort is `Dapagliflozin + Metformin` vs `Sitagliptin + Metformin`
+        rct_missing_sita = {
+            "nct_id": "NCT09990001",
+            "brief_title": "Dapagliflozin Plus Metformin Versus Metformin Monotherapy",
+            "experimental_arms": ["Dapagliflozin + Metformin"],
+            "comparator_arms": ["Metformin + Placebo"],
+            "interventions": ["Drug: Dapagliflozin", "Drug: Metformin", "Drug: Placebo"],
+        }
+        audit_1a_bad = rct_matcher.audit_study_arm_alignment(
+            rct_missing_sita,
+            intervention="Dapagliflozin + Metformin",
+            comparator="Sitagliptin + Metformin",
+            project_mode="user_cohort",
+        )
+        self.assertEqual(audit_1a_bad["arm_alignment_status"], "single_arm_or_comparator_mismatch")
+        self.assertLessEqual(audit_1a_bad["arm_alignment_score_cap"], 0.45)
+        self.assertFalse(audit_1a_bad["is_recommended"])
+        self.assertTrue(audit_1a_bad["requires_mismatch_confirmation"])
+
+        rct_true_combo = {
+            "nct_id": "NCT01095653",
+            "brief_title": "Dapagliflozin + Metformin vs Sitagliptin + Metformin",
+            "experimental_arms": ["Dapagliflozin 10 mg + Metformin"],
+            "comparator_arms": ["Sitagliptin 100 mg + Metformin"],
+            "interventions": ["Drug: Dapagliflozin", "Drug: Sitagliptin", "Drug: Metformin"],
+        }
+        audit_1a_ok = rct_matcher.audit_study_arm_alignment(
+            rct_true_combo,
+            intervention="Dapagliflozin + Metformin",
+            comparator="Sitagliptin + Metformin",
+            project_mode="user_cohort",
+        )
+        self.assertEqual(audit_1a_ok["arm_alignment_status"], "exact_dual_arm")
+        self.assertTrue(audit_1a_ok["is_recommended"])
+        self.assertFalse(audit_1a_ok["requires_mismatch_confirmation"])
+
+        # True add-on cohort (`Dapagliflozin + Metformin` vs `Metformin`) DOES match `rct_missing_sita`!
+        audit_addon_ok = rct_matcher.audit_study_arm_alignment(
+            rct_missing_sita,
+            intervention="Dapagliflozin + Metformin",
+            comparator="Metformin",
+            project_mode="user_cohort",
+        )
+        self.assertEqual(audit_addon_ok["arm_alignment_status"], "exact_dual_arm")
+
+        # Probe 1B-1: Single-arm combination trial (`len(armGroups) == 1` with both drugs in `interventions`)
+        raw_single_arm_api = {
+            "protocolSection": {
+                "identificationModule": {"nctId": "NCT09990002", "briefTitle": "Single-Arm Fixed-Dose Dapagliflozin + Sitagliptin Study"},
+                "statusModule": {"overallStatus": "COMPLETED"},
+                "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE2"], "designInfo": {"allocation": "NON_RANDOMIZED"}},
+                "conditionsModule": {"conditions": ["Type 2 Diabetes"]},
+                "armsInterventionsModule": {
+                    "armGroups": [
+                        {"label": "Fixed-Dose Dapagliflozin + Sitagliptin", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Dapagliflozin", "Drug: Sitagliptin"]}
+                    ],
+                    "interventions": [{"name": "Dapagliflozin", "type": "DRUG"}, {"name": "Sitagliptin", "type": "DRUG"}],
+                },
+                "outcomesModule": {"primaryOutcomes": [{"measure": "HbA1c change", "timeFrame": "24 weeks"}]},
+            }
+        }
+        norm_single = rct_matcher._normalize_api_study(raw_single_arm_api)
+        self.assertEqual(len(norm_single["arm_groups_detail"]), 1)
+        self.assertEqual(norm_single["comparator_arms"], [])
+        audit_1b_single = rct_matcher.audit_study_arm_alignment(
+            norm_single,
+            intervention="Dapagliflozin",
+            comparator="Sitagliptin",
+            project_mode="user_cohort",
+        )
+        self.assertEqual(audit_1b_single["arm_alignment_status"], "single_arm_or_comparator_mismatch")
+        self.assertLessEqual(audit_1b_single["arm_alignment_score_cap"], 0.45)
+        self.assertFalse(audit_1b_single["is_recommended"])
+        with self.assertRaises(ContractError) as ctx_1b1:
+            rct_matcher.verify_and_enrich_target_rct(
+                norm_single,
+                intervention="Dapagliflozin",
+                comparator="Sitagliptin",
+                project_mode="user_cohort",
+                confirm_arm_mismatch=False,
+            )
+        self.assertEqual(ctx_1b1.exception.code, "ARM_MISMATCH_CONFIRMATION_REQUIRED")
+
+        # Probe 1B-2: Sparse registry record with `0` armGroups and 2 study-level interventions
+        raw_zero_armgroups_api = {
+            "protocolSection": {
+                "identificationModule": {"nctId": "NCT09990003", "briefTitle": "Unlinked Dapagliflozin and Sitagliptin Study"},
+                "statusModule": {"overallStatus": "COMPLETED"},
+                "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE3"]},
+                "conditionsModule": {"conditions": ["Type 2 Diabetes"]},
+                "armsInterventionsModule": {
+                    "armGroups": [],
+                    "interventions": [{"name": "Dapagliflozin", "type": "DRUG"}, {"name": "Sitagliptin", "type": "DRUG"}],
+                },
+                "outcomesModule": {"primaryOutcomes": [{"measure": "HbA1c", "timeFrame": "24 weeks"}]},
+            }
+        }
+        norm_zero = rct_matcher._normalize_api_study(raw_zero_armgroups_api)
+        self.assertEqual(len(norm_zero["arm_groups_detail"]), 0)
+        audit_1b_zero = rct_matcher.audit_study_arm_alignment(
+            norm_zero,
+            intervention="Dapagliflozin",
+            comparator="Sitagliptin",
+            project_mode="user_cohort",
+        )
+        self.assertNotEqual(audit_1b_zero["arm_alignment_status"], "exact_dual_arm")
+        self.assertLessEqual(audit_1b_zero["arm_alignment_score_cap"], 0.45)
+        self.assertFalse(audit_1b_zero["is_recommended"])
+        with self.assertRaises(ContractError) as ctx_1b2:
+            rct_matcher.verify_and_enrich_target_rct(
+                norm_zero,
+                intervention="Dapagliflozin",
+                comparator="Sitagliptin",
+                project_mode="user_cohort",
+                confirm_arm_mismatch=False,
+            )
+        self.assertEqual(ctx_1b2.exception.code, "ARM_MISMATCH_CONFIRMATION_REQUIRED")
+
 
 class CohortIngestAndDualModePipelineTests(unittest.TestCase):
     def setUp(self):

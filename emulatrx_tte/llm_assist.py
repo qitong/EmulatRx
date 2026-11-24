@@ -755,34 +755,85 @@ def _extract_deterministic_terms(text: str) -> dict:
     }
 
 
-def parse_research_idea_pico(idea_text: str) -> dict:
-    """Parse free-text clinical research idea (no-data simulated mode) into structured PICO + dual-arm search terms."""
+IDEA_CONTRAST_RE = re.compile(
+    r"(?:\bvs\.?\b|\bversus\b|compared\s+with|compared\s+to|对比|对照|相比|相较于|比较.{1,30}与)",
+    re.IGNORECASE,
+)
+
+
+def parse_research_idea_pico(idea_text: str, *, explicit_comparator: str = "") -> dict:
+    """Parse free-text clinical research idea (no-data simulated mode) into structured PICO + dual-arm search terms.
+
+    `comparator_explicit` is computed strictly deterministically from user-supplied text/inputs so LLM
+    hallucinations can never invent an unmentioned active comparator on single-intervention research ideas.
+    """
+    from .rct_matcher import DRUG_CLASS_LEXICON, normalize_intervention_spec
+
     clean_idea = (idea_text or "").strip()
     if not clean_idea:
         raise ContractError("EMPTY_IDEA", "请输入临床研究想法或选择上方示例。")
 
     det = _extract_deterministic_terms(clean_idea)
     det_intr_en = det["interventions_en"][0] if det["interventions_en"] else (det["extra_en"][0] if det["extra_en"] else "")
+
+    user_comp_clean = (explicit_comparator or "").strip()
     det_comp_en = ""
-    if det["comparators_en"]:
-        det_comp_en = det["comparators_en"][0]
-    elif len(det["interventions_en"]) > 1:
-        det_comp_en = det["interventions_en"][1]
-    comparator_explicit = bool(det_comp_en)
+    active_arm_full_en = det_intr_en
+    comparator_arm_full_en = ""
+
+    contrast_parts = IDEA_CONTRAST_RE.split(clean_idea, maxsplit=1)
+    if len(contrast_parts) == 2 and not user_comp_clean:
+        left_spec = normalize_intervention_spec(contrast_parts[0])
+        right_spec = normalize_intervention_spec(contrast_parts[1])
+        if left_spec["en_terms"]:
+            active_arm_full_en = " + ".join(left_spec["en_terms"][:3])
+            diff_left = [t for t in left_spec["en_terms"] if t not in right_spec["en_terms"]]
+            det_intr_en = (diff_left or left_spec["en_terms"])[0]
+        if right_spec["en_terms"]:
+            comparator_arm_full_en = " + ".join(right_spec["en_terms"][:3])
+            det_comp_en = right_spec["en_terms"][0]
+
+    if user_comp_clean:
+        cspec = normalize_intervention_spec(user_comp_clean)
+        det_comp_en = cspec["en_terms"][0] if cspec["en_terms"] else user_comp_clean
+        comparator_arm_full_en = " + ".join(cspec["en_terms"][:3]) if cspec["en_terms"] else user_comp_clean
+        comparator_explicit = True
+    else:
+        if not det_comp_en:
+            if det["comparators_en"]:
+                det_comp_en = det["comparators_en"][0]
+            elif len(det["interventions_en"]) > 1:
+                det_comp_en = det["interventions_en"][1]
+        has_contrast_cue = bool(IDEA_CONTRAST_RE.search(clean_idea))
+        distinct_mentioned_agents = list(dict.fromkeys([*det["interventions_en"], *det["comparators_en"]]))
+        comparator_explicit = bool(det_comp_en) and (len(distinct_mentioned_agents) >= 2 or has_contrast_cue)
+        if not comparator_explicit:
+            det_comp_en = ""
+            comparator_arm_full_en = ""
+        elif not comparator_arm_full_en:
+            comparator_arm_full_en = det_comp_en
 
     fallback_pico = {
         "population": "、".join(det["conditions_zh"]) if det["conditions_zh"] else f"目标临床人群（源自描述：{clean_idea[:48]}）",
         "intervention": det["interventions_zh"][0] if det["interventions_zh"] else (
             det["extra_en"][0] if det["extra_en"] else "试验暴露策略（Active Arm）"
         ),
-        "comparator": det["comparators_zh"][0] if det["comparators_zh"] else (
-            det["interventions_zh"][1] if len(det["interventions_zh"]) > 1 else "阳性对照或标准治疗（Comparator Arm）"
+        "comparator": user_comp_clean or (
+            det["comparators_zh"][0]
+            if (comparator_explicit and det["comparators_zh"])
+            else (
+                det["interventions_zh"][1]
+                if (comparator_explicit and len(det["interventions_zh"]) > 1)
+                else "未限定特定对照药（安慰剂 / 标准治疗均可对标）"
+            )
         ),
         "primary_outcome": det["outcomes_zh"][0] if det["outcomes_zh"] else "主要临床终点事件（时间至事件结局）",
         "competing_event": "非目标疾病特异死亡 / 其他原因竞争死亡（编码 2）",
         "condition_query_en": " ".join(det["conditions_en"][:2]),
         "intervention_query_en": det_intr_en,
         "comparator_query_en": det_comp_en,
+        "active_arm_label": active_arm_full_en,
+        "comparator_arm_label": comparator_arm_full_en,
         "comparator_explicit": comparator_explicit,
         "search_query_en": " ".join(
             dict.fromkeys(
@@ -811,23 +862,64 @@ def parse_research_idea_pico(idea_text: str) -> dict:
         for k in (
             "population",
             "intervention",
-            "comparator",
             "primary_outcome",
             "competing_event",
             "condition_query_en",
             "intervention_query_en",
-            "comparator_query_en",
             "search_query_en",
         ):
             val = llm_out.get(k)
             if isinstance(val, str) and val.strip():
                 merged[k] = val.strip()
-        raw_llm_comp = str(llm_out.get("comparator_query_en") or "").strip().lower()
-        if raw_llm_comp in ("", "any", "none", "unspecified", "n/a", "standard comparator") and not det_comp_en:
-            merged["comparator_query_en"] = ""
-            merged["comparator_explicit"] = False
+
+        # Deterministic grounding lock: ONLY accept an LLM comparator if the user's own idea_text grounded a comparator!
+        if user_comp_clean:
+            merged["comparator_query_en"] = det_comp_en
+            merged["comparator"] = user_comp_clean
+            merged["comparator_explicit"] = True
+        elif comparator_explicit:
+            llm_comp = str(llm_out.get("comparator_query_en") or "").strip()
+            merged["comparator_query_en"] = llm_comp or det_comp_en
+            if isinstance(llm_out.get("comparator"), str) and llm_out["comparator"].strip():
+                merged["comparator"] = llm_out["comparator"].strip()
+            merged["comparator_explicit"] = True
         else:
-            merged["comparator_explicit"] = bool(merged.get("comparator_query_en"))
+            # Check if user's raw text had an explicit contrast cue with an unlisted drug token matching llm_out
+            llm_comp_cand = str(llm_out.get("comparator_query_en") or "").strip()
+            grounded_unlisted = False
+            if llm_comp_cand and IDEA_CONTRAST_RE.search(clean_idea):
+                idea_low = clean_idea.lower()
+                # Verify at least one lexicon alias or >=4-char token from llm_comp_cand literally appears in clean_idea
+                for _, en_q, _, _, _, aliases in DRUG_CLASS_LEXICON:
+                    if en_q.lower() in llm_comp_cand.lower() and any(a.lower() in idea_low for a in aliases):
+                        grounded_unlisted = True
+                        break
+                if not grounded_unlisted:
+                    for tok in re.findall(r"[A-Za-z]{4,}", llm_comp_cand):
+                        if tok.lower() in idea_low and tok.lower() not in (det_intr_en or "").lower():
+                            grounded_unlisted = True
+                            break
+            if grounded_unlisted:
+                merged["comparator_query_en"] = llm_comp_cand
+                merged["comparator_explicit"] = True
+                if isinstance(llm_out.get("comparator"), str) and llm_out["comparator"].strip():
+                    merged["comparator"] = llm_out["comparator"].strip()
+            else:
+                # Discard LLM-hallucinated comparator (e.g. 'Sitagliptin' when user only wrote '评估达格列净在心衰患者中的心肾获益')
+                hallucinated = str(llm_out.get("comparator_query_en") or "").strip()
+                merged["comparator_query_en"] = ""
+                merged["comparator_arm_label"] = ""
+                merged["comparator_explicit"] = False
+                merged["comparator"] = fallback_pico["comparator"]
+                if hallucinated and len(hallucinated) >= 3:
+                    merged["search_query_en"] = re.sub(
+                        rf"\b{re.escape(hallucinated)}\b",
+                        "",
+                        merged["search_query_en"],
+                        flags=re.IGNORECASE,
+                    ).strip()
+                    merged["search_query_en"] = re.sub(r"\s+", " ", merged["search_query_en"]).strip() or fallback_pico["search_query_en"]
+
         merged["assist_mode"] = "llm_assisted"
         return merged
 
@@ -968,13 +1060,11 @@ def interpret_cohort_profile(
             val = llm_out.get(k)
             if isinstance(val, str) and val.strip():
                 fallback_res[k] = val.strip()
-        # Lock deterministically verified cohort active & comparator drugs so LLM never drops the comparator arm
-        if det_intr_en:
-            fallback_res["intervention_query_en"] = det_intr_en
-        if det_comp_en:
-            fallback_res["comparator_query_en"] = det_comp_en
-            if det_comp_en.lower() not in fallback_res["search_query_en"].lower():
-                fallback_res["search_query_en"] = f"{det_intr_en} {det_comp_en} {fallback_res['condition_query_en']}".strip()
+        # Lock deterministically verified cohort active & comparator drugs; NEVER let LLM invent an unresolved 0/1 cohort arm!
+        fallback_res["intervention_query_en"] = det_intr_en
+        fallback_res["comparator_query_en"] = det_comp_en
+        if det_comp_en and det_comp_en.lower() not in fallback_res["search_query_en"].lower():
+            fallback_res["search_query_en"] = f"{det_intr_en} {det_comp_en} {fallback_res['condition_query_en']}".strip()
         fallback_res["assist_mode"] = "llm_assisted"
 
     return fallback_res

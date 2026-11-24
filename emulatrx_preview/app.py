@@ -173,6 +173,7 @@ def search_target_rcts(
         condition=condition,
         intervention=intervention,
         comparator=comparator,
+        project_mode=SOURCE_MODE_USER_COHORT if sid else SOURCE_MODE_SIMULATED_COHORT,
         context_summary=ctx_summary,
         max_results=max(1, min(int(max_results), 8)),
         forbidden_values=forbidden_vals,
@@ -262,6 +263,8 @@ def start_user_cohort_tte(
     session_id: str,
     mapping: dict | None = None,
     nct_id: str = "",
+    intervention: str = "",
+    comparator: str = "",
     weight_method: str = "overlap",
     seed: int = 42,
     bootstrap_iterations: int = 80,
@@ -277,6 +280,8 @@ def start_user_cohort_tte(
         seed=seed,
         bootstrap_iterations=bootstrap_iterations,
         weight_method=weight_method,
+        intervention_override=intervention,
+        comparator_override=comparator,
         confirm_arm_mismatch=confirm_arm_mismatch,
     )
 
@@ -551,7 +556,10 @@ async def api_delete_session(request):
 async def api_parse_idea(request):
     try:
         payload = await _read_json_body(request, max_bytes=32 * 1024)
-        pico = parse_research_idea_pico(str(payload.get("idea_text", "")))
+        pico = parse_research_idea_pico(
+            str(payload.get("idea_text", "")),
+            explicit_comparator=str(payload.get("comparator", "")),
+        )
         return JSONResponse({"pico": pico, "llm_status": get_llm_status()}, headers={"Cache-Control": "no-store"})
     except ContractError as exc:
         return JSONResponse({"error": f"{exc.code}: {exc}", "code": exc.code}, status_code=400)
@@ -561,7 +569,14 @@ async def api_search_rcts(request):
     try:
         payload = await _read_json_body(request, max_bytes=64 * 1024)
         session_id = str(payload.get("session_id", "")).strip()
-        project_mode = str(payload.get("project_mode", "")).strip()
+        project_mode = str(payload.get("project_mode", "")).strip() or (
+            SOURCE_MODE_USER_COHORT if session_id else ""
+        )
+        intr_in = str(payload.get("intervention", "")).strip()
+        comp_in = str(payload.get("comparator", "")).strip()
+        if session_id and (intr_in or comp_in):
+            runner.save_session_arm_overrides(session_id, intr_in, comp_in)
+
         forbidden_list = list(runner.get_session_forbidden_values(session_id)) if session_id else []
         ctx_summary = payload.get("context_summary") if isinstance(payload.get("context_summary"), dict) else None
         if session_id and ctx_summary is None:
@@ -574,8 +589,8 @@ async def api_search_rcts(request):
                 [
                     str(payload.get("query", "")),
                     str(payload.get("condition", "")),
-                    str(payload.get("intervention", "")),
-                    str(payload.get("comparator", "")),
+                    intr_in,
+                    comp_in,
                     json.dumps(ctx_summary or {}, ensure_ascii=False),
                 ]
             )
@@ -585,8 +600,9 @@ async def api_search_rcts(request):
         res = search_candidate_rcts(
             str(payload.get("query", "")),
             condition=str(payload.get("condition", "")),
-            intervention=str(payload.get("intervention", "")),
-            comparator=str(payload.get("comparator", "")),
+            intervention=intr_in,
+            comparator=comp_in,
+            project_mode=project_mode,
             context_summary=ctx_summary,
             max_results=int(payload.get("max_results", 6)),
             forbidden_values=tuple(forbidden_list),
@@ -604,16 +620,27 @@ async def api_draft_mapping_or_protocol(request):
         if not target_rct and str(payload.get("nct_id", "")).strip():
             target_rct = fetch_rct_by_nct(str(payload["nct_id"]).strip())
         confirm_mismatch = bool(payload.get("confirm_arm_mismatch") is True)
+        intr_ovr = str(payload.get("intervention", "")).strip()
+        comp_ovr = str(payload.get("comparator", "")).strip()
 
         if pmode == SOURCE_MODE_USER_COHORT:
-            sess = runner.get_session(str(payload.get("session_id", "")))
+            session_id = str(payload.get("session_id", ""))
+            if intr_ovr or comp_ovr:
+                runner.save_session_arm_overrides(session_id, intr_ovr, comp_ovr)
+            sess = runner.get_session(session_id)
             mapping = recommend_column_mapping(sess["profile"], target_rct=target_rct)
             if target_rct:
-                eff_act, eff_comp = runner.resolve_user_cohort_arms(sess, mapping)
+                eff_act, eff_comp = runner.resolve_user_cohort_arms(
+                    sess,
+                    mapping,
+                    intervention_override=intr_ovr,
+                    comparator_override=comp_ovr,
+                )
                 target_rct = verify_and_enrich_target_rct(
                     target_rct,
                     intervention=eff_act,
                     comparator=eff_comp,
+                    project_mode=SOURCE_MODE_USER_COHORT,
                     confirm_arm_mismatch=confirm_mismatch,
                 )
             return JSONResponse(
@@ -622,15 +649,17 @@ async def api_draft_mapping_or_protocol(request):
             )
         if pmode == SOURCE_MODE_SIMULATED_COHORT:
             pico = payload.get("pico") if isinstance(payload.get("pico"), dict) else None
-            if target_rct and isinstance(pico, dict):
-                sim_intr = str(pico.get("intervention_query_en") or pico.get("intervention") or "").strip()
-                sim_comp = str(pico.get("comparator_query_en") or "").strip()
-                if not sim_comp and pico.get("comparator_explicit") is True:
-                    sim_comp = str(pico.get("comparator") or "").strip()
+            if target_rct and (isinstance(pico, dict) or intr_ovr or comp_ovr):
+                pico_d = pico or {}
+                sim_intr = intr_ovr or str(pico_d.get("active_arm_label") or pico_d.get("intervention_query_en") or pico_d.get("intervention") or "").strip()
+                sim_comp = comp_ovr or str(pico_d.get("comparator_arm_label") or pico_d.get("comparator_query_en") or "").strip()
+                if not sim_comp and pico_d.get("comparator_explicit") is True:
+                    sim_comp = str(pico_d.get("comparator") or "").strip()
                 target_rct = verify_and_enrich_target_rct(
                     target_rct,
                     intervention=sim_intr,
                     comparator=sim_comp,
+                    project_mode=SOURCE_MODE_SIMULATED_COHORT,
                     confirm_arm_mismatch=confirm_mismatch,
                 )
             proto, dgp = build_simulated_protocol_and_dgp(target_rct=target_rct, pico=pico)
@@ -649,9 +678,13 @@ async def _launch_dual_run_payload(payload: dict, forced_mode: str | None = None
     if not target_rct and str(payload.get("nct_id", "")).strip():
         target_rct = fetch_rct_by_nct(str(payload["nct_id"]).strip())
     confirm_mismatch = bool(payload.get("confirm_arm_mismatch") is True)
+    intr_ovr = str(payload.get("intervention", "")).strip()
+    comp_ovr = str(payload.get("comparator", "")).strip()
 
     if pmode == SOURCE_MODE_USER_COHORT:
         session_id = str(payload.get("session_id", ""))
+        if intr_ovr or comp_ovr:
+            runner.save_session_arm_overrides(session_id, intr_ovr, comp_ovr)
         sess = runner.get_session(session_id)
         mapping = payload.get("mapping")
         if mapping is None:
@@ -662,13 +695,22 @@ async def _launch_dual_run_payload(payload: dict, forced_mode: str | None = None
             session_id,
             mapping,
             target_rct=target_rct,
+            intervention_override=intr_ovr,
+            comparator_override=comp_ovr,
             confirm_arm_mismatch=confirm_mismatch,
         )
     elif pmode == SOURCE_MODE_SIMULATED_COHORT:
         pico = payload.get("pico") if isinstance(payload.get("pico"), dict) else None
         if pico is None and str(payload.get("idea_text", "")).strip():
-            pico = parse_research_idea_pico(str(payload["idea_text"]))
-        sim_config = payload.get("sim_config") if isinstance(payload.get("sim_config"), dict) else {}
+            pico = parse_research_idea_pico(
+                str(payload["idea_text"]),
+                explicit_comparator=comp_ovr,
+            )
+        sim_config = dict(payload.get("sim_config")) if isinstance(payload.get("sim_config"), dict) else {}
+        if intr_ovr:
+            sim_config["intervention"] = intr_ovr
+        if comp_ovr:
+            sim_config["comparator"] = comp_ovr
         status = runner.start_simulated_cohort(
             target_rct=target_rct,
             pico=pico,
