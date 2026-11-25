@@ -40,12 +40,22 @@ class MultiUserAppTests(unittest.TestCase):
         base = Path(self.temp.name)
         (base / "web").write_text("w" * 40, encoding="utf-8")
         (base / "agent").write_text("a" * 40, encoding="utf-8")
+        self.user_tokens = {
+            name: (f"{index:02d}{name}" + "K" * 40)[:40]
+            for index, name in enumerate(
+                ["dr_zhang", "dr_li", "dr_alias", *[f"user_{i:02d}" for i in range(1, 11)]],
+                start=1,
+            )
+        }
+        (base / "user_tokens.json").write_text(json.dumps(self.user_tokens), encoding="utf-8")
         patch = mock.patch.dict(
             os.environ,
             {
                 "EMULATRX_RUNS_DIR": str(base / "runs"),
                 "EMULATRX_WEB_PASSWORD_FILE": str(base / "web"),
                 "EMULATRX_MCP_TOKEN_FILE": str(base / "agent"),
+                "EMULATRX_MCP_USER_TOKENS_FILE": str(base / "user_tokens.json"),
+                "EMULATRX_DEV_TRUST_UNBOUND_USER_HEADER": "0",
                 "EMULATRX_ALLOWED_HOSTS": "testserver",
                 "EMULATRX_OFFLINE_RCT_CATALOG": "1",
                 "EMULATRX_CODE_COMMIT": "b" * 40,
@@ -63,13 +73,24 @@ class MultiUserAppTests(unittest.TestCase):
         self.service = importlib.reload(app)
         self.runs = Path(self.service.runner.root)
         self.mcp_auth = {"Authorization": "Bearer " + "a" * 40, "Accept": "application/json, text/event-stream"}
+        self.web_auth = {"Authorization": "Basic " + base64.b64encode(b"preview:" + b"w" * 40).decode()}
         self.client = TestClient(self.service.app)
         self.client.__enter__()
         self.addCleanup(self.client.__exit__, None, None, None)
         self.http_lock = threading.Lock()
 
+    def _authorization(self, headers) -> str:
+        headers = headers or {}
+        if "Authorization" in headers:
+            return headers["Authorization"]
+        user = headers.get("X-EmulatRx-User") or headers.get("X-WorkBuddy-User")
+        token = self.user_tokens.get(user) if user else None
+        if not token:
+            token = "a" * 40
+        return "Bearer " + token
+
     def mcp_call(self, name, arguments, headers=None, rpc_id=1):
-        merged = dict(self.mcp_auth)
+        merged = {"Accept": "application/json, text/event-stream", "Authorization": self._authorization(headers)}
         if headers:
             merged.update(headers)
         with self.http_lock:
@@ -85,7 +106,7 @@ class MultiUserAppTests(unittest.TestCase):
         return json.loads(payload["result"]["content"][0]["text"])
 
     def mcp_error(self, name, arguments, headers=None) -> str:
-        merged = dict(self.mcp_auth)
+        merged = {"Accept": "application/json, text/event-stream", "Authorization": self._authorization(headers)}
         if headers:
             merged.update(headers)
         with self.http_lock:
@@ -218,7 +239,9 @@ class MultiUserAppTests(unittest.TestCase):
             headers={**self.mcp_auth, "X-EmulatRx-User": ""},
             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
         )
-        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertEqual(listed.status_code, 400, listed.text)
+        self.assertEqual(listed.json()["code"], "INVALID_USER_NAMESPACE")
+        self.assertEqual(listed.json()["error_code"], "INVALID_USER_NAMESPACE")
         too_long = "a" * 64
         for raw in ("../root", "a/b", "bad space", too_long, ".", ".."):
             response = self.client.post(
@@ -318,6 +341,164 @@ class MultiUserAppTests(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("INVALID_USER_NAMESPACE", completed.stderr + completed.stdout)
 
+    def test_credentials_are_bound_to_one_namespace(self):
+        bound = self.mcp_call(
+            "ingest_cohort_session",
+            {"csv_text": _tiny_csv("B"), "filename": "bound.csv"},
+            headers={"Authorization": "Bearer " + self.user_tokens["dr_zhang"]},
+        )
+        self.assertEqual(bound["user_namespace"], "dr_zhang")
+        self.assertTrue((self.runs / "users" / "dr_zhang" / "sessions" / bound["session_id"]).is_dir())
+        matched = self.mcp_call(
+            "ingest_cohort_session",
+            {"session_id": bound["session_id"]},
+            headers={"Authorization": "Bearer " + self.user_tokens["dr_zhang"], "X-EmulatRx-User": "dr_zhang"},
+        )
+        self.assertEqual(matched["session_id"], bound["session_id"])
+
+        shared = self.mcp_call(
+            "ingest_cohort_session",
+            {"csv_text": _tiny_csv("S"), "filename": "shared.csv"},
+        )
+        self.assertEqual(shared["user_namespace"], "default")
+        self.assertTrue((self.runs / "sessions" / shared["session_id"]).is_dir())
+        explicit_default = self.client.post(
+            "/mcp",
+            headers={**self.mcp_auth, "X-EmulatRx-User": "default"},
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        )
+        self.assertEqual(explicit_default.status_code, 200, explicit_default.text)
+
+        spoofs = (
+            {"Authorization": "Bearer " + self.user_tokens["dr_li"], "X-EmulatRx-User": "dr_zhang", "Accept": "application/json, text/event-stream"},
+            {**self.mcp_auth, "X-EmulatRx-User": "dr_zhang"},
+            {**self.mcp_auth, "X-EmulatRx-User": "dr_zhang"},
+            {**self.web_auth, "X-EmulatRx-User": "dr_zhang"},
+        )
+        paths = ("/mcp", "/mcp", "/api/workbench/bootstrap", "/api/workbench/bootstrap")
+        methods = ("post", "post", "get", "get")
+        for headers, path, method in zip(spoofs, paths, methods):
+            response = getattr(self.client, method)(
+                path,
+                headers=headers,
+                **({"json": {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}} if method == "post" else {}),
+            )
+            self.assertEqual(response.status_code, 403, response.text)
+            payload = response.json()
+            self.assertEqual(payload["error"], "USER_NAMESPACE_MISMATCH: token is bound to a different user namespace")
+            self.assertEqual(payload["code"], "USER_NAMESPACE_MISMATCH")
+            self.assertEqual(payload["error_code"], "USER_NAMESPACE_MISMATCH")
+
+    def test_live_http11_blank_header_is_rejected(self):
+        import socket
+
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        env = os.environ.copy()
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "emulatrx_preview.app:app",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+                "--log-level",
+                "warning",
+            ],
+            cwd=Path(__file__).resolve().parents[1],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        logs: list[str] = []
+
+        def _drain():
+            if proc.stdout is None:
+                return
+            for line in proc.stdout:
+                logs.append(line)
+
+        threading.Thread(target=_drain, daemon=True).start()
+
+        def _stop():
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=5)
+            if proc.stdout is not None:
+                proc.stdout.close()
+
+        self.addCleanup(_stop)
+        deadline = time.time() + 20
+        started = False
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                self.fail("".join(logs))
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                    started = True
+                    break
+            except OSError:
+                time.sleep(0.1)
+        self.assertTrue(started, "uvicorn did not accept a loopback connection")
+
+        def exchange(raw: bytes) -> tuple[int, dict]:
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+                sock.sendall(raw)
+                chunks = []
+                while True:
+                    piece = sock.recv(8192)
+                    if not piece:
+                        break
+                    chunks.append(piece)
+            payload = b"".join(chunks)
+            status = int(payload.split(b" ", 2)[1])
+            body = payload.partition(b"\r\n\r\n")[2]
+            return status, json.loads(body.decode("utf-8"))
+
+        def request(path: str, header_lines: list[str]) -> bytes:
+            lines = [
+                f"GET {path} HTTP/1.1",
+                f"Host: 127.0.0.1:{port}",
+                "Accept: application/json",
+                "Connection: close",
+                *header_lines,
+                "",
+                "",
+            ]
+            return "\r\n".join(lines).encode("ascii")
+
+        basic = "Basic " + base64.b64encode(b"preview:" + b"w" * 40).decode("ascii")
+        blank, blank_body = exchange(
+            request("/api/workbench/bootstrap", ["Authorization: " + basic, "X-EmulatRx-User:    "])
+        )
+        self.assertEqual(blank, 400, blank_body)
+        self.assertEqual(blank_body["code"], "INVALID_USER_NAMESPACE")
+        self.assertEqual(blank_body["error_code"], "INVALID_USER_NAMESPACE")
+
+        lisi = "Bearer " + self.user_tokens["dr_li"]
+        shared = "Bearer " + "a" * 40
+        cases = (
+            (lisi, "/api/workbench/bootstrap"),
+            (shared, "/api/workbench/bootstrap"),
+            (basic, "/api/workbench/bootstrap"),
+        )
+        for authorization, path in cases:
+            status, body = exchange(
+                request(path, ["Authorization: " + authorization, "X-EmulatRx-User: dr_zhang"])
+            )
+            self.assertEqual(status, 403, body)
+            self.assertEqual(body["code"], "USER_NAMESPACE_MISMATCH")
+            self.assertEqual(body["error_code"], "USER_NAMESPACE_MISMATCH")
+            self.assertEqual(body["error"], "USER_NAMESPACE_MISMATCH: token is bound to a different user namespace")
+
+        omitted, omitted_body = exchange(request("/api/workbench/bootstrap", ["Authorization: " + lisi]))
+        self.assertEqual(omitted, 200, omitted_body)
+
 
 class Round2ReviewFixTests(unittest.TestCase):
     """Cleanup race, raw namespace headers, missing-session 404, and CCW run reads."""
@@ -328,12 +509,16 @@ class Round2ReviewFixTests(unittest.TestCase):
         base = Path(self.temp.name)
         (base / "web").write_text("w" * 40, encoding="utf-8")
         (base / "agent").write_text("a" * 40, encoding="utf-8")
+        self.user_tokens = {"dr_zhang": "z" * 40, "dr_li": "l" * 40}
+        (base / "user_tokens.json").write_text(json.dumps(self.user_tokens), encoding="utf-8")
         patch = mock.patch.dict(
             os.environ,
             {
                 "EMULATRX_RUNS_DIR": str(base / "runs"),
                 "EMULATRX_WEB_PASSWORD_FILE": str(base / "web"),
                 "EMULATRX_MCP_TOKEN_FILE": str(base / "agent"),
+                "EMULATRX_MCP_USER_TOKENS_FILE": str(base / "user_tokens.json"),
+                "EMULATRX_DEV_TRUST_UNBOUND_USER_HEADER": "0",
                 "EMULATRX_ALLOWED_HOSTS": "testserver",
                 "EMULATRX_OFFLINE_RCT_CATALOG": "1",
                 "EMULATRX_CODE_COMMIT": "b" * 40,
@@ -351,6 +536,8 @@ class Round2ReviewFixTests(unittest.TestCase):
         self.client.__enter__()
         self.addCleanup(self.client.__exit__, None, None, None)
         self.web_auth = {"Authorization": "Basic " + base64.b64encode(b"preview:" + b"w" * 40).decode()}
+        self.zhang_auth = {"Authorization": "Bearer " + self.user_tokens["dr_zhang"]}
+        self.li_auth = {"Authorization": "Bearer " + self.user_tokens["dr_li"]}
 
     def _asgi_status(self, path: str, headers: list[tuple[bytes, bytes]], method: str = "GET") -> int:
         sent: list[dict] = []
@@ -377,13 +564,19 @@ class Round2ReviewFixTests(unittest.TestCase):
         asyncio.run(self.service.app(scope, receive, send))
         return next(message["status"] for message in sent if message["type"] == "http.response.start")
 
-    def test_raw_header_whitespace_is_rejected_and_empty_is_default(self):
-        from emulatrx_preview.user_context import InvalidUserNamespace, coerce_user_namespace, namespace_from_headers
+    def test_raw_header_whitespace_and_blank_are_rejected(self):
+        from emulatrx_preview.user_context import InvalidUserNamespace, coerce_user_namespace, namespace_from_headers, presented_user_namespace
 
         self.assertEqual(coerce_user_namespace(None), "default")
         self.assertEqual(coerce_user_namespace(""), "default")
         self.assertEqual(namespace_from_headers({}), "default")
-        self.assertEqual(namespace_from_headers({b"x-emulatrx-user": b""}), "default")
+        self.assertIsNone(presented_user_namespace([]))
+        with self.assertRaises(InvalidUserNamespace):
+            namespace_from_headers({b"x-emulatrx-user": b""})
+        with self.assertRaises(InvalidUserNamespace):
+            presented_user_namespace([(b"x-emulatrx-user", b"dr_zhang"), (b"x-emulatrx-user", b"dr_li")])
+        with self.assertRaises(InvalidUserNamespace):
+            presented_user_namespace([(b"x-emulatrx-user", b"dr_zhang"), (b"x-workbuddy-user", b"dr_li")])
         for raw in ("   ", "\t", " dr_zhang", "dr_zhang ", "bad space"):
             with self.assertRaises(InvalidUserNamespace):
                 coerce_user_namespace(raw)
@@ -404,7 +597,40 @@ class Round2ReviewFixTests(unittest.TestCase):
                 "/api/workbench/bootstrap",
                 [(b"authorization", basic), (b"host", b"testserver"), (b"x-emulatrx-user", b"")],
             ),
+            400,
+        )
+        self.assertEqual(
+            self._asgi_status(
+                "/api/workbench/bootstrap",
+                [(b"authorization", basic), (b"host", b"testserver")],
+            ),
             200,
+        )
+        self.assertEqual(
+            self._asgi_status(
+                "/api/workbench/bootstrap",
+                [(b"authorization", basic), (b"host", b"testserver"), (b"x-emulatrx-user", b"default")],
+            ),
+            200,
+        )
+        self.assertEqual(
+            self._asgi_status(
+                "/api/workbench/bootstrap",
+                [(b"authorization", basic), (b"host", b"testserver"), (b"x-emulatrx-user", b"dr_zhang")],
+            ),
+            403,
+        )
+        self.assertEqual(
+            self._asgi_status(
+                "/api/workbench/bootstrap",
+                [
+                    (b"authorization", basic),
+                    (b"host", b"testserver"),
+                    (b"x-emulatrx-user", b"dr_zhang"),
+                    (b"x-emulatrx-user", b"dr_li"),
+                ],
+            ),
+            400,
         )
         self.assertEqual(
             self._asgi_status(
@@ -439,16 +665,22 @@ class Round2ReviewFixTests(unittest.TestCase):
             saved = runner.save_session_cohort(_tiny_csv("Z").encode("utf-8"), "z.csv")
         finally:
             CURRENT_USER_NAMESPACE.reset(token)
-        foreign = self.client.delete(
+        web_spoof = self.client.delete(
             f"/api/sessions/{saved['session_id']}",
             headers={**self.web_auth, "X-EmulatRx-User": "dr_li"},
+        )
+        self.assertEqual(web_spoof.status_code, 403, web_spoof.text)
+        self.assertEqual(web_spoof.json()["code"], "USER_NAMESPACE_MISMATCH")
+        foreign = self.client.delete(
+            f"/api/sessions/{saved['session_id']}",
+            headers={**self.li_auth, "X-EmulatRx-User": "dr_li"},
         )
         self.assertEqual(foreign.status_code, 404, foreign.text)
         self.assertEqual(foreign.json()["code"], "SESSION_NOT_FOUND")
         self.assertTrue((runner.root / "users" / "dr_zhang" / "sessions" / saved["session_id"]).is_dir())
         own = self.client.delete(
             f"/api/sessions/{saved['session_id']}",
-            headers={**self.web_auth, "X-EmulatRx-User": "dr_zhang"},
+            headers=self.zhang_auth,
         )
         self.assertEqual(own.status_code, 200, own.text)
 
@@ -468,22 +700,25 @@ class Round2ReviewFixTests(unittest.TestCase):
         run_id = status["run_id"]
         anonymous = self.client.get(f"/api/dual-runs/{run_id}", headers=self.web_auth)
         self.assertEqual(anonymous.status_code, 404, anonymous.text)
-        fetched = self.client.get(
+        web_named = self.client.get(
             f"/api/dual-runs/{run_id}",
             headers={**self.web_auth, "X-EmulatRx-User": "dr_zhang"},
         )
+        self.assertEqual(web_named.status_code, 403, web_named.text)
+        self.assertEqual(web_named.json()["code"], "USER_NAMESPACE_MISMATCH")
+        fetched = self.client.get(f"/api/dual-runs/{run_id}", headers=self.zhang_auth)
         self.assertEqual(fetched.status_code, 200, fetched.text)
         body = fetched.json()
         self.assertEqual(body["kind"], "grace_period_ccw")
         self.assertNotIn("normalized_protocol", body)
         self.assertIn("ccw-report-body", body["report_html"])
         self.assertNotIn("rendered_html", body)
-        page = self.client.get(f"/runs/{run_id}", headers={**self.web_auth, "X-EmulatRx-User": "dr_zhang"})
+        page = self.client.get(f"/runs/{run_id}", headers={**self.zhang_auth, "X-EmulatRx-User": "dr_zhang"})
         self.assertEqual(page.status_code, 200, page.text)
         self.assertIn("ccw-report-body", page.text)
         artifact = self.client.get(
             f"/runs/{run_id}/artifacts/ccw_preview_report.html",
-            headers={**self.web_auth, "X-EmulatRx-User": "dr_zhang"},
+            headers={**self.zhang_auth, "X-EmulatRx-User": "dr_zhang"},
         )
         self.assertEqual(artifact.status_code, 200, artifact.text)
         self.assertIn("ccw-report-body", artifact.text)
@@ -499,6 +734,45 @@ class Round2ReviewFixTests(unittest.TestCase):
         quiet_get = self.client.get(f"/api/dual-runs/{quiet['run_id']}", headers=self.web_auth)
         self.assertEqual(quiet_get.status_code, 200, quiet_get.text)
         self.assertNotIn("report_html", quiet_get.json())
+
+    def test_user_token_map_rejects_reserved_duplicate_and_shared_secrets(self):
+        import importlib
+
+        from emulatrx_preview import app as app_module
+
+        base = Path(self.temp.name)
+        cases = (
+            ({"users": "u" * 40}, "users"),
+            ({"zhangsan": "t" * 40, "lisi": "t" * 40}, "pairwise"),
+            ({"zhangsan": "w" * 40}, "web password"),
+            ({"zhangsan": "a" * 40}, "EMULATRX_MCP_TOKEN_FILE"),
+            ({"zhangsan": "short"}, "32..256"),
+        )
+        try:
+            for payload, needle in cases:
+                (base / "bad.json").write_text(json.dumps(payload), encoding="utf-8")
+                with mock.patch.dict(os.environ, {"EMULATRX_MCP_USER_TOKENS_FILE": str(base / "bad.json")}):
+                    with self.assertRaises(RuntimeError) as raised:
+                        importlib.reload(app_module)
+                    self.assertIn(needle, str(raised.exception))
+            (base / "good.json").write_text(
+                json.dumps({"default": "d" * 40, "zhangsan": "t" * 40}),
+                encoding="utf-8",
+            )
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "EMULATRX_MCP_USER_TOKENS_FILE": str(base / "good.json"),
+                    "EMULATRX_MCP_TOKEN_FILE": "",
+                },
+            ):
+                reloaded = importlib.reload(app_module)
+            self.assertIsNone(reloaded.MCP_TOKEN)
+            self.assertEqual(set(reloaded.MCP_USER_TOKENS), {"default", "zhangsan"})
+            self.assertIn(("default", "user"), {(row[0], row[2]) for row in reloaded._BEARER_ROWS})
+            self.assertNotIn(("default", "shared"), {(row[0], row[2]) for row in reloaded._BEARER_ROWS})
+        finally:
+            importlib.reload(app_module)
 
 
 class SlotEnvTests(unittest.TestCase):

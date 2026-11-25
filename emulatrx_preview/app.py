@@ -38,7 +38,7 @@ from emulatrx_tte.llm_assist import extract_untrusted_Note_forbidden_tokens
 from .dualmode_views import render_dualmode_run_view, workbench_home_view
 from .mcp_tools import register_tools
 from .tte_runner import TTERunner
-from .user_context import CURRENT_USER_NAMESPACE, InvalidUserNamespace, namespace_from_headers
+from .user_context import CURRENT_USER_NAMESPACE, InvalidUserNamespace, USER_NAMESPACE_RE, presented_user_namespace
 from .tte_views import cohort_view, form, report_view, result_view, review_view
 from .web_protocol import FIELD_NAMES, FormError, protocol_from_fields
 
@@ -46,7 +46,6 @@ from .web_protocol import FIELD_NAMES, FormError, protocol_from_fields
 UPLOAD_READ_CHUNK_BYTES = 65536
 MAX_MULTIPART_OVERHEAD_BYTES = 128 * 1024
 _UPLOAD_TICKET_PATH = re.compile(r"^/api/sessions/upload-ticket/[A-Za-z0-9_-]{16,128}\Z")
-_RUN_NAMESPACE_PATH = re.compile(r"^/runs/[0-9a-f]{32}(?:/artifacts(?:/.*)?)?\Z")
 
 
 class _UploadTooLargeError(Exception):
@@ -84,20 +83,76 @@ DEPENDENCY_COMMIT = os.environ.get("EMULATRX_TTE_DEPENDENCY_COMMIT", "developmen
 runner = TTERunner(os.environ.get("EMULATRX_RUNS_DIR", "/tmp/emulatrx-tte-preview-runs"))
 
 
-def _read_secret(name):
+def _is_token_material(value) -> bool:
+    return isinstance(value, str) and 32 <= len(value) <= 256 and all(32 <= ord(ch) <= 126 for ch in value)
+
+
+def _read_secret(name, *, required=True):
     path = os.environ.get(name)
     if not path:
-        raise RuntimeError(f"{name} is required")
+        if required:
+            raise RuntimeError(f"{name} is required")
+        return None
     value = Path(path).read_text(encoding="utf-8").strip()
-    if len(value) < 32 or len(value) > 256 or not value.isascii():
-        raise RuntimeError(f"{name} must contain 32..256 ASCII characters")
+    if not _is_token_material(value):
+        raise RuntimeError(f"{name} must contain 32..256 printable ASCII characters")
     return value
 
 
+def _load_mcp_user_tokens() -> dict[str, str]:
+    """Load ``EMULATRX_MCP_USER_TOKENS_FILE`` when it is set.
+
+    Keys are user namespaces. ``default`` is accepted only because it appears
+    explicitly in the file. ``users`` is reserved for the parent directory.
+    Token values are pairwise-distinct printable ASCII and must not match the
+    web password or the shared MCP token (checked after both are loaded).
+    """
+    path = os.environ.get("EMULATRX_MCP_USER_TOKENS_FILE")
+    if not path:
+        return {}
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"EMULATRX_MCP_USER_TOKENS_FILE is not valid UTF-8 JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("EMULATRX_MCP_USER_TOKENS_FILE must be a JSON object of namespace to token")
+    tokens: dict[str, str] = {}
+    for key, value in payload.items():
+        if (
+            not isinstance(key, str)
+            or key == "users"
+            or USER_NAMESPACE_RE.fullmatch(key) is None
+        ):
+            raise RuntimeError(
+                "EMULATRX_MCP_USER_TOKENS_FILE keys must match "
+                "^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$ and must not be the reserved namespace 'users' "
+                "('default' is allowed only when it is an explicit key)"
+            )
+        if not _is_token_material(value):
+            raise RuntimeError(
+                f"EMULATRX_MCP_USER_TOKENS_FILE token for {key!r} must be 32..256 printable ASCII characters"
+            )
+        if value in tokens.values():
+            raise RuntimeError("EMULATRX_MCP_USER_TOKENS_FILE tokens must be pairwise distinct")
+        tokens[key] = value
+    return tokens
+
+
 WEB_PASSWORD = _read_secret("EMULATRX_WEB_PASSWORD_FILE")
-MCP_TOKEN = _read_secret("EMULATRX_MCP_TOKEN_FILE")
-if secrets.compare_digest(WEB_PASSWORD, MCP_TOKEN):
+MCP_USER_TOKENS = _load_mcp_user_tokens()
+MCP_TOKEN = _read_secret("EMULATRX_MCP_TOKEN_FILE", required=not bool(MCP_USER_TOKENS))
+if MCP_TOKEN is not None and secrets.compare_digest(WEB_PASSWORD, MCP_TOKEN):
     raise RuntimeError("web and MCP credentials must differ")
+for _bound_ns, _user_token in MCP_USER_TOKENS.items():
+    if secrets.compare_digest(_user_token, WEB_PASSWORD):
+        raise RuntimeError(f"per-user MCP token for {_bound_ns!r} must not equal the web password")
+    if MCP_TOKEN is not None and secrets.compare_digest(_user_token, MCP_TOKEN):
+        raise RuntimeError(f"per-user MCP token for {_bound_ns!r} must not equal EMULATRX_MCP_TOKEN_FILE")
+
+# kind is "user" (bound to that map key) or "shared" (EMULATRX_MCP_TOKEN_FILE, namespace "default" only).
+_BEARER_ROWS = tuple((ns, token, "user") for ns, token in MCP_USER_TOKENS.items())
+if MCP_TOKEN is not None:
+    _BEARER_ROWS = (*_BEARER_ROWS, ("default", MCP_TOKEN, "shared"))
 
 allowed_hosts = [
     item.strip()
@@ -911,6 +966,102 @@ inner = Starlette(
 )
 
 
+class _UserNamespaceMismatch(Exception):
+    """Credential and ``X-EmulatRx-User`` name different namespaces."""
+
+
+def _fixed_digest_equal(presented: bytes, expected: str) -> bool:
+    """Compare a presented bearer secret to one stored token without returning early on length."""
+    expected_b = expected.encode("ascii")
+    same_length = len(presented) == len(expected_b)
+    left = presented[:256].ljust(256, b"\x00")
+    right = expected_b[:256].ljust(256, b"\x00")
+    return bool(secrets.compare_digest(left, right) and same_length)
+
+
+def _match_bearer(authorization: bytes) -> tuple[str, str] | None:
+    """Return ``(kind, bound_namespace)`` after comparing every configured bearer token.
+
+    The scan does not stop at the first hit, so a match against an earlier
+    colleague does not shorten the comparison work. ``kind`` is ``user`` for
+    ``EMULATRX_MCP_USER_TOKENS_FILE`` and ``shared`` for ``EMULATRX_MCP_TOKEN_FILE``.
+    """
+    prefix = b"Bearer "
+    prefix_ok = len(authorization) >= len(prefix) and secrets.compare_digest(authorization[: len(prefix)], prefix)
+    presented = authorization[len(prefix) :] if prefix_ok else b""
+    found: tuple[str, str] | None = None
+    for namespace, token, kind in _BEARER_ROWS:
+        matched = _fixed_digest_equal(presented, token)
+        if prefix_ok and matched and found is None:
+            found = (kind, namespace)
+    return found
+
+
+def _basic_password_ok(authorization: bytes) -> bool:
+    scheme = b""
+    user = ""
+    password = ""
+    try:
+        scheme, encoded = authorization.split(b" ", 1)
+        decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
+        user, password = decoded.split(":", 1)
+    except (ValueError, UnicodeError):
+        pass
+    password_ok = secrets.compare_digest(password, WEB_PASSWORD)
+    return bool(password_ok and scheme.lower() == b"basic" and user == "preview")
+
+
+def _accepts_user_bearer(path: str) -> bool:
+    return path.startswith("/api/") or path == "/runs" or path.startswith("/runs/")
+
+
+def _trust_unbound_user_header() -> bool:
+    # Default off. Production and the preview container must not set this:
+    # it lets the shared MCP token select a namespace it is not bound to.
+    return os.environ.get("EMULATRX_DEV_TRUST_UNBOUND_USER_HEADER") == "1"
+
+
+def _namespace_for_credential(raw_headers, bound_ns: str, *, allow_unbound_header: bool) -> str:
+    presented = presented_user_namespace(raw_headers)
+    if presented is None:
+        return bound_ns
+    if presented == bound_ns or allow_unbound_header:
+        return presented
+    raise _UserNamespaceMismatch
+
+
+def _invalid_namespace_response(exc: InvalidUserNamespace) -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": str(exc),
+            "code": "INVALID_USER_NAMESPACE",
+            "error_code": "INVALID_USER_NAMESPACE",
+        },
+        status_code=400,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _namespace_mismatch_response() -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": "USER_NAMESPACE_MISMATCH: token is bound to a different user namespace",
+            "code": "USER_NAMESPACE_MISMATCH",
+            "error_code": "USER_NAMESPACE_MISMATCH",
+        },
+        status_code=403,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _unauthorized(challenge: bytes) -> JSONResponse:
+    return JSONResponse(
+        {"error": "authentication required"},
+        status_code=401,
+        headers={"WWW-Authenticate": challenge.decode("ascii"), "Cache-Control": "no-store"},
+    )
+
+
 class AuthenticationGate:
     def __init__(self, app):
         self.app = app
@@ -919,48 +1070,35 @@ class AuthenticationGate:
         path = scope.get("path") or ""
         if scope["type"] != "http" or path == "/healthz" or _UPLOAD_TICKET_PATH.fullmatch(path):
             return await self.app(scope, receive, send)
-        headers = {key.lower(): value for key, value in scope.get("headers", [])}
-        authorization = headers.get(b"authorization", b"")
-        if scope["path"].startswith("/mcp"):
-            expected = b"Bearer " + MCP_TOKEN.encode("ascii")
-            valid = secrets.compare_digest(authorization, expected)
-            challenge = b"Bearer"
+        raw_headers = list(scope.get("headers") or [])
+        authorization = b""
+        for key, value in raw_headers:
+            if key.lower() == b"authorization":
+                authorization = value
+                break
+        bearer = _match_bearer(authorization)
+        is_mcp = path.startswith("/mcp")
+        if is_mcp:
+            if bearer is None:
+                return await _unauthorized(b"Bearer")(scope, receive, send)
+            kind, bound_ns = bearer
+            allow_unbound = kind == "shared" and _trust_unbound_user_header()
         else:
-            try:
-                scheme, encoded = authorization.split(b" ", 1)
-                decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
-                user, password = decoded.split(":", 1)
-                valid = (
-                    scheme.lower() == b"basic"
-                    and user == "preview"
-                    and secrets.compare_digest(password, WEB_PASSWORD)
-                )
-            except (ValueError, UnicodeError):
-                valid = False
-            challenge = b'Basic realm="EmulatRx synthetic TTE preview"'
-        if not valid:
-            response = JSONResponse(
-                {"error": "authentication required"},
-                status_code=401,
-                headers={"WWW-Authenticate": challenge.decode("ascii"), "Cache-Control": "no-store"},
-            )
-            return await response(scope, receive, send)
-        if path.startswith("/mcp") or path.startswith("/api/") or _RUN_NAMESPACE_PATH.fullmatch(path):
-            try:
-                namespace = namespace_from_headers(headers)
-            except InvalidUserNamespace as exc:
-                response = JSONResponse(
-                    {
-                        "error": str(exc),
-                        "code": "INVALID_USER_NAMESPACE",
-                        "error_code": "INVALID_USER_NAMESPACE",
-                    },
-                    status_code=400,
-                    headers={"Cache-Control": "no-store"},
-                )
-                return await response(scope, receive, send)
-        else:
-            namespace = "default"
+            basic_ok = _basic_password_ok(authorization)
+            if bearer is not None and _accepts_user_bearer(path):
+                kind, bound_ns = bearer
+                allow_unbound = kind == "shared" and _trust_unbound_user_header()
+            elif basic_ok:
+                kind, bound_ns = "basic", "default"
+                allow_unbound = False
+            else:
+                return await _unauthorized(b'Basic realm="EmulatRx synthetic TTE preview"')(scope, receive, send)
+        try:
+            namespace = _namespace_for_credential(raw_headers, bound_ns, allow_unbound_header=allow_unbound)
+        except InvalidUserNamespace as exc:
+            return await _invalid_namespace_response(exc)(scope, receive, send)
+        except _UserNamespaceMismatch:
+            return await _namespace_mismatch_response()(scope, receive, send)
         token = CURRENT_USER_NAMESPACE.set(namespace)
         try:
             return await self.app(scope, receive, send)

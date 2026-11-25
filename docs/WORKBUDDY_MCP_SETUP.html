@@ -25,11 +25,23 @@
 <body>
 <main>
   <h1>WorkBuddy 多用户 MCP</h1>
-  <p class="lede">让最多约十名分析者同时调用同一套 EmulatRx HTTP MCP，每个人的队列和运行落在自己的目录里。省略用户头时行为与原来的单用户服务相同。</p>
+  <p class="lede">让最多约十名分析者同时调用同一套 EmulatRx HTTP MCP，每个人的队列和运行落在自己的目录里。共享令牌在省略用户头时仍与原来的单用户服务相同；同事自己的令牌即使不带用户头，也只进入自己的目录。</p>
 
   <h2>1. 用户是谁</h2>
-  <p>已认证的 <code>/mcp</code> 和 <code>/api/*</code> 读取请求头 <code>X-EmulatRx-User</code>。只有这个头不存在时，才读取 <code>X-WorkBuddy-User</code>。两个头都给了，以 <code>X-EmulatRx-User</code> 为准。</p>
-  <p>合法名字是 1–63 个字符，匹配 <code>^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$</code>，并且不能是 <code>.</code>、<code>..</code> 或带斜杠的路径。省略、空字符串会落到 <code>default</code>。不合法的值在进入工具之前返回 HTTP 400：</p>
+  <p>每个同事使用自己的 Bearer 令牌。可选环境变量 <code>EMULATRX_MCP_USER_TOKENS_FILE</code> 指向一份 UTF-8 JSON（建议权限 <code>0400</code>，例如 <code>/run/secrets/mcp_user_tokens.json</code>），把令牌固定到数据目录：</p>
+  <pre>{
+  "zhangsan": "&lt;32 到 256 位可打印 ASCII 令牌&gt;",
+  "lisi": "&lt;另一枚不同的令牌&gt;"
+}</pre>
+  <p>键必须匹配 <code>^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$</code>。<code>users</code> 是目录名，不能当作用户。<code>default</code> 只有写进这份文件时才表示显式映射。令牌两两不同，并且不能等于 Web 密码或共享 <code>MCP_TOKEN</code>。<code>EMULATRX_MCP_TOKEN_FILE</code> 仍然表示只绑定 <code>default</code> 的共享令牌；提供了用户令牌文件之后，它可以不设，也可以和用户令牌文件同时存在。</p>
+  <p>令牌比对会走完全部条目（<code>secrets.compare_digest</code>），不会在第一次命中后提前返回。省略 <code>X-EmulatRx-User</code> 时，请求落在这枚令牌绑定的命名空间，所以 WorkBuddy 可以不发送用户头。如果头存在，可选别名 <code>X-WorkBuddy-User</code> 只在主头不存在时才读取；头的值必须和令牌绑定的名字一致。用 lisi 的令牌发送 <code>X-EmulatRx-User: zhangsan</code> 会得到 HTTP 403：</p>
+  <pre>{
+  "error": "USER_NAMESPACE_MISMATCH: token is bound to a different user namespace",
+  "code": "USER_NAMESPACE_MISMATCH",
+  "error_code": "USER_NAMESPACE_MISMATCH"
+}</pre>
+  <p>共享 <code>MCP_TOKEN</code> 只能进入 <code>default</code>（省略头，或显式 <code>X-EmulatRx-User: default</code>）。拿这枚共享令牌声明任何其他用户，同样是 <code>403 USER_NAMESPACE_MISMATCH</code>。共享 Web Basic（<code>preview:&lt;WEB_PASSWORD&gt;</code>）也只能进入 <code>default</code>，不能读取、导出或删除 <code>users/&lt;user&gt;/</code> 里的队列。<code>/api/*</code> 和 <code>/runs/*</code> 接受对应用户的 Bearer 令牌，也接受 Web Basic；<code>/mcp</code> 只接受 Bearer。</p>
+  <p>合法名字是 1–63 个字符，匹配 <code>^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$</code>，并且不能是 <code>.</code>、<code>..</code> 或带斜杠的路径。头完全不发送时，使用令牌绑定的命名空间（共享令牌和 Web Basic 都是 <code>default</code>）。头一旦出现，空字节、只含空白（HTTP/1.1 会先剥掉可选空白，<code>uvicorn</code> / <code>h11</code> 交给 ASGI 的是 <code>b""</code>）、重复或互相矛盾的用户头，都在进入工具之前返回 HTTP 400：</p>
   <pre>{
   "error": "INVALID_USER_NAMESPACE: ...",
   "code": "INVALID_USER_NAMESPACE",
@@ -76,7 +88,7 @@ EMULATRX_SLOT_WAIT_SECONDS=60</pre>
     <li><code>get_tte_result_summary</code> 在门禁通过时给出 <code>tier_1_unadjusted_crude</code>、<code>tier_2_conventional_ps</code>（含 <code>psm_1to1</code> 与 <code>simple_iptw</code>）、<code>tier_3_target_trial_emulation</code> 和 <code>what_tte_controlled_beyond_psm</code>。</li>
     <li><code>export_tte_artifact</code> 读取 <code>dualmode_report.html</code> 或 <code>audit_report.md</code>。</li>
   </ol>
-  <p>HTTP MCP 仍使用 <code>Authorization: Bearer &lt;MCP_TOKEN&gt;</code>。用户头不能代替令牌。</p>
+  <p>HTTP MCP 使用 <code>Authorization: Bearer &lt;该用户的令牌&gt;</code>。用户头不能代替令牌，也不能把共享 Web 密码或共享 <code>MCP_TOKEN</code> 带进别人的目录。生产环境和预览容器不要设置 <code>EMULATRX_DEV_TRUST_UNBOUND_USER_HEADER</code>（默认关闭）；打开后共享 MCP 令牌可以自行挑选命名空间。</p>
 </main>
 </body>
 </html>
