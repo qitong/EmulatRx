@@ -1410,8 +1410,25 @@ class CohortIngestAndDualModePipelineTests(unittest.TestCase):
         self.assertEqual(combo["regimen_mode"], "all")
         self.assertEqual(set(combo["drug_ids"]), {"sitagliptin", "glimepiride"})
         choice = rct_matcher.normalize_intervention_spec("Gefitinib or Erlotinib")
-        self.assertEqual(choice["regimen_mode"], "any")
-        self.assertEqual(set(choice["alternative_sets"]), {("gefitinib",), ("erlotinib",)})
+        self.assertEqual(set(choice["drug_ids"]), {"gefitinib", "erlotinib"})
+        self.assertEqual(
+            set(rct_matcher.normalize_intervention_spec("AZD9291 + placebo Erlotinib / placebo Gefitinib")["drug_ids"]) - {"placebo_soc"},
+            {"osimertinib"},
+        )
+        self.assertEqual(
+            set(rct_matcher.normalize_intervention_spec("Erlotinib or Gefitinib + placebo AZD9291")["drug_ids"]) - {"placebo_soc"},
+            {"erlotinib", "gefitinib"},
+        )
+        for code_name, canonical in (
+            ("AZD9291", "osimertinib"),
+            ("AZD-9291", "osimertinib"),
+            ("BI-1356", "linagliptin"),
+            ("MK-0431", "sitagliptin"),
+            ("BMS-512148", "dapagliflozin"),
+            ("BI-10773", "empagliflozin"),
+            ("MK-3475", "pembrolizumab"),
+        ):
+            self.assertIn(canonical, rct_matcher.normalize_intervention_spec(code_name)["drug_ids"], code_name)
 
         carolina = rct_matcher._normalize_api_study(load("NCT01243424"))
         self.assertIn("linagliptin, glimepiride placebo", carolina["experimental_arms"][0])
@@ -1447,7 +1464,7 @@ class CohortIngestAndDualModePipelineTests(unittest.TestCase):
         self.assertIn("Placebo Erlotinib", " ".join(flaura["experimental_arms"]))
         self.assertIn("Gefitinib", flaura["comparator_arms"][0])
         self.assertIn("Erlotinib", flaura["comparator_arms"][0])
-        for comparator in ("Gefitinib", "吉非替尼", "Gefitinib or Erlotinib"):
+        for comparator in ("Gefitinib or Erlotinib", "吉非替尼/厄洛替尼"):
             audit_flaura = rct_matcher.audit_study_pico4d_alignment(
                 flaura,
                 intervention="Osimertinib",
@@ -1460,22 +1477,61 @@ class CohortIngestAndDualModePipelineTests(unittest.TestCase):
             self.assertEqual(audit_flaura["arm_alignment_status"], "exact_dual_arm", comparator)
             self.assertEqual(audit_flaura["overall_alignment_status"], "protocol_aligned", comparator)
             self.assertTrue(audit_flaura["is_recommended"], comparator)
+        for narrow in ("Gefitinib", "吉非替尼"):
+            audit_narrow = rct_matcher.audit_study_pico4d_alignment(
+                flaura,
+                intervention="Osimertinib",
+                comparator=narrow,
+                target_condition="EGFR-Mutated Non-Small Cell Lung Cancer",
+                target_outcome="Progression-Free Survival and Overall Survival",
+                target_followup_days=540.0,
+                project_mode="user_cohort",
+            )
+            self.assertEqual(audit_narrow["arm_alignment_status"], "class_dual_arm", narrow)
+            self.assertLessEqual(audit_narrow["effective_score_cap"], 0.72, narrow)
+            self.assertFalse(audit_narrow["is_recommended"], narrow)
+            self.assertTrue(audit_narrow["requires_mismatch_confirmation"], narrow)
+            with self.assertRaises(ContractError) as narrow_ctx:
+                rct_matcher.verify_and_enrich_target_rct(
+                    flaura,
+                    intervention="Osimertinib",
+                    comparator=narrow,
+                    target_condition="EGFR-Mutated Non-Small Cell Lung Cancer",
+                    target_outcome="Progression-Free Survival and Overall Survival",
+                    target_followup_days=540.0,
+                    project_mode="user_cohort",
+                )
+            self.assertEqual(narrow_ctx.exception.code, "ARM_MISMATCH_CONFIRMATION_REQUIRED", narrow)
+        curated_flaura = next(r for r in rct_matcher.OFFLINE_CURATED_RCTS if r["nct_id"] == "NCT02296125")
+        self.assertEqual(
+            rct_matcher.audit_study_arm_alignment(
+                curated_flaura,
+                intervention="Osimertinib",
+                comparator="Gefitinib",
+                project_mode="user_cohort",
+            )["arm_alignment_status"],
+            "exact_dual_arm",
+        )
+        from emulatrx_tte.sample_cohorts import SAMPLE_COHORT_SPECS
+
+        self.assertEqual(SAMPLE_COHORT_SPECS["nsclc_egfr_flaura"]["comparator_intervention_en"], "Gefitinib or Erlotinib")
         scored_flaura = rct_matcher._score_and_audit_study(
             flaura,
-            ["Osimertinib", "Gefitinib", "EGFR", "Lung"],
+            ["Osimertinib", "Gefitinib", "Erlotinib", "EGFR", "Lung"],
             intervention="Osimertinib",
-            comparator="Gefitinib",
+            comparator="Gefitinib or Erlotinib",
             target_condition="EGFR-Mutated Non-Small Cell Lung Cancer",
             target_outcome="Progression-Free Survival and Overall Survival",
             target_followup_days=540.0,
             project_mode="user_cohort",
         )
         self.assertGreaterEqual(scored_flaura["match_score"], 0.85)
+        self.assertEqual(scored_flaura["arm_alignment_status"], "exact_dual_arm")
         with self.assertRaises(ContractError) as orr_ctx:
             rct_matcher.verify_and_enrich_target_rct(
                 flaura,
                 intervention="Osimertinib",
-                comparator="Gefitinib",
+                comparator="Gefitinib or Erlotinib",
                 target_condition="EGFR-Mutated Non-Small Cell Lung Cancer",
                 target_outcome="ORR",
                 target_followup_days=540.0,

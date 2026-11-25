@@ -44,16 +44,16 @@ STUDY_FIELDS = (
 # Tuple layout: (canonical_id, en_query_term, drug_class, zh_display, is_class_generic, aliases)
 DRUG_CLASS_LEXICON: tuple[tuple[str, str, str, str, bool, tuple[str, ...]], ...] = (
     # SGLT2 inhibitors
-    ("dapagliflozin", "Dapagliflozin", "sglt2i", "达格列净 (Dapagliflozin)", False, ("dapagliflozin", "farxiga", "forxiga", "bms-512148", "达格列净")),
-    ("empagliflozin", "Empagliflozin", "sglt2i", "恩格列净 (Empagliflozin)", False, ("empagliflozin", "jardiance", "bi 10773", "bi-10773", "恩格列净")),
+    ("dapagliflozin", "Dapagliflozin", "sglt2i", "达格列净 (Dapagliflozin)", False, ("dapagliflozin", "farxiga", "forxiga", "bms-512148", "bms 512148", "bms512148", "达格列净")),
+    ("empagliflozin", "Empagliflozin", "sglt2i", "恩格列净 (Empagliflozin)", False, ("empagliflozin", "jardiance", "bi 10773", "bi-10773", "bi10773", "恩格列净")),
     ("canagliflozin", "Canagliflozin", "sglt2i", "卡格列净 (Canagliflozin)", False, ("canagliflozin", "invokana", "卡格列净")),
     ("ertugliflozin", "Ertugliflozin", "sglt2i", "埃格列净 (Ertugliflozin)", False, ("ertugliflozin", "steglatro", "埃格列净")),
     ("sotagliflozin", "Sotagliflozin", "sglt2i", "索格列净 (Sotagliflozin)", False, ("sotagliflozin", "索格列净")),
     ("henagliflozin", "Henagliflozin", "sglt2i", "恒格列净 (Henagliflozin)", False, ("henagliflozin", "恒格列净")),
     ("sglt2i", "SGLT2 inhibitor", "sglt2i", "SGLT2 抑制剂", True, ("sglt2i", "sglt-2", "sglt2 inhibitor", "sglt2 inhibitors", "sglt2", "列净类")),
     # DPP-4 inhibitors
-    ("sitagliptin", "Sitagliptin", "dpp4i", "西格列汀 (Sitagliptin)", False, ("sitagliptin", "januvia", "mk-0431", "西格列汀")),
-    ("linagliptin", "Linagliptin", "dpp4i", "利格列汀 (Linagliptin)", False, ("linagliptin", "tradjenta", "trajenta", "利格列汀")),
+    ("sitagliptin", "Sitagliptin", "dpp4i", "西格列汀 (Sitagliptin)", False, ("sitagliptin", "januvia", "mk-0431", "mk 0431", "mk0431", "西格列汀")),
+    ("linagliptin", "Linagliptin", "dpp4i", "利格列汀 (Linagliptin)", False, ("linagliptin", "tradjenta", "trajenta", "bi-1356", "bi 1356", "bi1356", "利格列汀")),
     ("saxagliptin", "Saxagliptin", "dpp4i", "沙格列汀 (Saxagliptin)", False, ("saxagliptin", "onglyza", "沙格列汀")),
     ("vildagliptin", "Vildagliptin", "dpp4i", "维格列汀 (Vildagliptin)", False, ("vildagliptin", "galvus", "维格列汀")),
     ("alogliptin", "Alogliptin", "dpp4i", "阿格列汀 (Alogliptin)", False, ("alogliptin", "nesina", "阿格列汀")),
@@ -82,14 +82,14 @@ DRUG_CLASS_LEXICON: tuple[tuple[str, str, str, str, bool, tuple[str, ...]], ...]
     ("edoxaban", "Edoxaban", "doac", "艾多沙班 (Edoxaban)", False, ("edoxaban", "savaysa", "艾多沙班")),
     ("warfarin", "Warfarin", "vka", "华法林 (Warfarin)", False, ("warfarin", "coumadin", "vitamin k antagonist", "华法林")),
     # Oncology EGFR-TKIs
-    ("osimertinib", "Osimertinib", "egfr_tki", "奥希替尼 (Osimertinib)", False, ("osimertinib", "tagrisso", "azd9291", "奥希替尼")),
+    ("osimertinib", "Osimertinib", "egfr_tki", "奥希替尼 (Osimertinib)", False, ("osimertinib", "tagrisso", "azd9291", "azd-9291", "azd 9291", "奥希替尼")),
     ("gefitinib", "Gefitinib", "egfr_tki", "吉非替尼 (Gefitinib)", False, ("gefitinib", "iressa", "吉非替尼")),
     ("erlotinib", "Erlotinib", "egfr_tki", "厄洛替尼 (Erlotinib)", False, ("erlotinib", "tarceva", "厄洛替尼")),
     ("afatinib", "Afatinib", "egfr_tki", "阿法替尼 (Afatinib)", False, ("afatinib", "gilotrif", "阿法替尼")),
     ("aumolertinib", "Aumolertinib", "egfr_tki", "阿美替尼 (Aumolertinib)", False, ("aumolertinib", "almonertinib", "阿美替尼")),
     ("furmonertinib", "Furmonertinib", "egfr_tki", "伏美替尼 (Furmonertinib)", False, ("furmonertinib", "伏美替尼")),
     # Oncology PD-1 / PD-L1 immune checkpoint inhibitors
-    ("pembrolizumab", "Pembrolizumab", "pd1_pdl1", "帕博利珠单抗 (Pembrolizumab)", False, ("pembrolizumab", "keytruda", "mk-3475", "帕博利珠单抗")),
+    ("pembrolizumab", "Pembrolizumab", "pd1_pdl1", "帕博利珠单抗 (Pembrolizumab)", False, ("pembrolizumab", "keytruda", "mk-3475", "mk 3475", "mk3475", "帕博利珠单抗")),
     ("nivolumab", "Nivolumab", "pd1_pdl1", "纳武利尤单抗 (Nivolumab)", False, ("nivolumab", "opdivo", "纳武利尤单抗")),
     ("atezolizumab", "Atezolizumab", "pd1_pdl1", "阿替利珠单抗 (Atezolizumab)", False, ("atezolizumab", "tecentriq", "阿替利珠单抗")),
     ("durvalumab", "Durvalumab", "pd1_pdl1", "度伐利尤单抗 (Durvalumab)", False, ("durvalumab", "imfinzi", "度伐利尤单抗")),
@@ -953,19 +953,6 @@ def _active_regimen(spec: dict) -> tuple[str, list[frozenset]]:
     return mode, unique
 
 
-def _regimens_equal(left: dict, right: dict) -> bool:
-    """Match conjunctive sets by equality, and investigator-choice OR arms when the cohort drug is one alternative."""
-    left_mode, left_sets = _active_regimen(left)
-    right_mode, right_sets = _active_regimen(right)
-    if left_mode == "all" and right_mode == "all":
-        return left_sets == right_sets
-    if left_mode == "any" and right_mode == "any":
-        return set(left_sets) == set(right_sets)
-    if left_mode == "any" and right_mode == "all":
-        return len(right_sets) == 1 and right_sets[0] in left_sets
-    return False
-
-
 def _merge_arm_part_specs(parts: list[str]) -> dict:
     """Merge an arm label with its intervention items, treating same-class listed agents without `+`/`and` as OR."""
     specs = [normalize_intervention_spec(part) for part in parts if part and part.strip()]
@@ -1287,16 +1274,16 @@ def audit_study_arm_alignment(
                     continue
                 arm_b_drugs = set(arm_b["drug_ids"]) - {"placebo_soc"}
                 arm_b_is_placebo = "placebo_soc" in arm_b["drug_ids"]
-                if t_core_drugs and c_core_drugs and not _regimens_equal(t_spec, c_spec):
-                    if _regimens_equal(arm_a, t_spec) and _regimens_equal(arm_b, c_spec):
+                if t_core_drugs and c_core_drugs and t_core_drugs != c_core_drugs:
+                    if arm_a_drugs == t_core_drugs and arm_b_drugs == c_core_drugs:
                         exact_dual = True
                         break
                 elif t_core_drugs and not c_core_drugs and c_is_placebo:
-                    if _regimens_equal(arm_a, t_spec) and len(arm_b_drugs) == 0 and arm_b_is_placebo:
+                    if arm_a_drugs == t_core_drugs and len(arm_b_drugs) == 0 and arm_b_is_placebo:
                         exact_dual = True
                         break
                 elif not t_core_drugs and t_is_placebo and c_core_drugs:
-                    if len(arm_a_drugs) == 0 and arm_a_is_placebo and _regimens_equal(arm_b, c_spec):
+                    if len(arm_a_drugs) == 0 and arm_a_is_placebo and arm_b_drugs == c_core_drugs:
                         exact_dual = True
                         break
             if exact_dual:
@@ -1351,14 +1338,43 @@ def audit_study_arm_alignment(
             "is_recommended": False,
         }
 
+    # 1c. Same-class investigator-choice pool: Gefitinib-only vs {Gefitinib, Erlotinib} is class_dual_arm,
+    #     while an extra drug from a different class (Sitagliptin + Glimepiride) stays a hard mismatch.
+    same_class_pool = False
+    if (
+        not t_spec["class_only_ids"]
+        and not c_spec["class_only_ids"]
+        and t_core_drugs
+        and c_core_drugs
+        and t_core_drugs != c_core_drugs
+    ):
+        for i, arm_i in enumerate(arm_specs):
+            arm_i_drugs = set(arm_i["drug_ids"]) - {"placebo_soc"}
+            for j, arm_j in enumerate(arm_specs):
+                if i == j:
+                    continue
+                arm_j_drugs = set(arm_j["drug_ids"]) - {"placebo_soc"}
+                if arm_i_drugs != t_core_drugs or not (c_core_drugs < arm_j_drugs):
+                    continue
+                if arm_j_drugs & (t_core_drugs - c_core_drugs):
+                    continue
+                extra = arm_j_drugs - c_core_drugs
+                extra_mechs = {_drug_mechanism(drug) for drug in extra}
+                narrow_mechs = {_drug_mechanism(drug) for drug in c_core_drugs}
+                if extra and narrow_mechs and extra_mechs <= narrow_mechs:
+                    same_class_pool = True
+                    break
+            if same_class_pool:
+                break
+
     # 2. Check `class_dual_arm`: subtract shared background classes and reject asymmetric extra active classes/drugs
     t_core_classes = set(t_spec["drug_classes"]) - {"placebo_soc"}
     c_core_classes = set(c_spec["drug_classes"]) - {"placebo_soc"}
     shared_classes = t_core_classes & c_core_classes
     t_diff_classes = t_core_classes - shared_classes
     c_diff_classes = c_core_classes - shared_classes
-    class_dual = False
-    if t_diff_classes and c_diff_classes:
+    class_dual = same_class_pool
+    if not class_dual and t_diff_classes and c_diff_classes:
         for i, arm_i in enumerate(arm_specs):
             arm_i_classes = set(arm_i["drug_classes"]) - {"placebo_soc"}
             arm_i_drugs = set(arm_i["drug_ids"]) - {"placebo_soc"}
