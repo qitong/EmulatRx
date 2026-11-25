@@ -1361,6 +1361,7 @@ CLINICAL_OUTCOME_DOMAINS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "全因死亡",
             "肿瘤特异死亡",
             "死亡风险",
+            "os",
         ),
     ),
     (
@@ -1389,6 +1390,9 @@ CLINICAL_OUTCOME_DOMAINS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "疾病进展",
             "肿瘤进展",
             "复发",
+            "pfs",
+            "dfs",
+            "efs",
         ),
     ),
     (
@@ -1500,6 +1504,38 @@ SURROGATE_OUTCOME_DOMAINS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "药代动力学",
             "生物等效性",
             "不良事件",
+        ),
+    ),
+    (
+        "lab_inflammatory_tumor_marker",
+        "实验室/肿瘤标志物",
+        (
+            "crp",
+            "c-reactive protein",
+            "cea",
+            "ldh",
+            "psa",
+            "alt",
+            "ast",
+            "bnp",
+            "nt-probnp",
+            "esr",
+            "il-6",
+            "interleukin-6",
+        ),
+    ),
+    (
+        "tumor_response_rate",
+        "肿瘤缓解率",
+        (
+            "orr",
+            "objective response rate",
+            "overall response rate",
+            "complete response",
+            "dcr",
+            "disease control rate",
+            "dor",
+            "duration of response",
         ),
     ),
 )
@@ -1619,6 +1655,25 @@ def extract_condition_domains(raw_text: str) -> set[str]:
     return matched
 
 
+def _short_abbrev_hits(token: str, text: str) -> bool:
+    """Word-boundary match for short ASCII abbreviations (and hyphenated lab codes).
+
+    ``orr`` must not hit ``correct`` or ``hemorrhage``; ``il-6`` stays exact.
+    """
+    compact = re.sub(r"[^a-z0-9]", "", token)
+    if token.isascii() and " " not in token and 2 <= len(compact) <= 4:
+        return re.search(rf"\b{re.escape(token)}\b", text) is not None
+    return False
+
+
+def _trigger_hits(token: str, text: str) -> bool:
+    if _short_abbrev_hits(token, text):
+        return True
+    if token.isascii() and " " not in token and 2 <= len(re.sub(r"[^a-z0-9]", "", token)) <= 4:
+        return False
+    return token in text
+
+
 def classify_outcome_domains(raw_text: str) -> tuple[set[str], set[str]]:
     """Classify outcome measure text into (clinical_hard_domains, surrogate_biomarker_domains)."""
     if not raw_text or not raw_text.strip():
@@ -1628,29 +1683,35 @@ def classify_outcome_domains(raw_text: str) -> tuple[set[str], set[str]]:
     surr: set[str] = set()
     for cid, _, triggers in CLINICAL_OUTCOME_DOMAINS:
         for trig in triggers:
-            tl = trig.lower()
-            if tl.isascii() and tl.isalpha() and len(tl) <= 4:
-                if re.search(rf"(?<![a-z0-9]){re.escape(tl)}(?![a-z0-9])", low):
-                    clin.add(cid)
-                    break
-            elif tl in low:
+            if _trigger_hits(trig.lower(), low):
                 clin.add(cid)
                 break
+    # Standalone time-to-event abbreviations, including bare ``OS`` with no extra context words.
     if re.search(r"\b(?:pfs|dfs|efs)\b", low):
         clin.add("oncology_progression")
-    if re.search(r"\bos\b", low) and any(k in low for k in ("survival", "cancer", "tumor", "month", "recist")):
+    if re.search(r"\bos\b", low):
         clin.add("mortality_os")
+    if re.search(r"\bhhf\b", low) or re.search(r"\bmace\b", low) or "cv death" in low:
+        clin.add("hf_cv_composite")
+    if re.search(r"\b(?:esrd|eskd)\b", low):
+        clin.add("renal_hard_endpoint")
 
     for sid, _, triggers in SURROGATE_OUTCOME_DOMAINS:
         for trig in triggers:
-            tl = trig.lower()
-            if tl.isascii() and tl.isalpha() and len(tl) <= 4:
-                if re.search(rf"(?<![a-z0-9]){re.escape(tl)}(?![a-z0-9])", low):
-                    surr.add(sid)
-                    break
-            elif tl in low:
+            if _trigger_hits(trig.lower(), low):
                 surr.add(sid)
                 break
+    if re.search(r"\b(?:crp|cea|ldh|psa|alt|ast|bnp|esr)\b", low) or re.search(r"\bil-6\b", low) or "c-reactive protein" in low or "nt-probnp" in low:
+        surr.add("lab_inflammatory_tumor_marker")
+    if (
+        re.search(r"\b(?:orr|dcr|dor)\b", low)
+        or "objective response rate" in low
+        or "overall response rate" in low
+        or "complete response" in low
+        or "disease control rate" in low
+        or "duration of response" in low
+    ):
+        surr.add("tumor_response_rate")
     return clin, surr
 
 
@@ -1755,7 +1816,7 @@ def audit_study_pico4d_alignment(
         str(so.get("measure", so) if isinstance(so, dict) else so) for so in sec_list
     )
     prim_clin, prim_surr = classify_outcome_domains(prim_measures)
-    sec_clin, _ = classify_outcome_domains(sec_measures)
+    sec_clin, sec_surr = classify_outcome_domains(sec_measures)
 
     pk_primary_hit = bool(
         (PK_BIOMARKER_DESIGN_RE.search(prim_measures) and not prim_clin)
@@ -1902,6 +1963,8 @@ def audit_study_pico4d_alignment(
             out_tone = "bad"
     elif target_surr:
         # Symmetric explicit surrogate/biomarker target_outcome comparison across BOTH user_cohort and simulated_cohort modes!
+        # Tumor-response abbreviations (ORR/DCR/DOR) are shrinkage surrogates, never survival endpoints:
+        # a hit only in secondaryOutcomes is at most secondary_only (cap 0.65), never protocol_aligned.
         if is_cohort_mode and prim_surr and not prim_clin:
             outcome_alignment = "surrogate_or_mismatched"
             outcome_cap = 0.48
@@ -1914,6 +1977,12 @@ def audit_study_pico4d_alignment(
             out_pill_zh = "主要终点: 指标一致"
             out_tone = "ok"
             out_detail = f"主要终点匹配所查询指标（{prim_measures[:68]}）。"
+        elif target_surr & sec_surr:
+            outcome_alignment = "secondary_only"
+            outcome_cap = 0.65
+            out_pill_zh = "主要终点: 仅次要终点匹配"
+            out_tone = "warn"
+            out_detail = f"主要终点未覆盖所指定替代指标「{raw_target_out[:36]}」，仅次要终点包含该指标（上限 65%）。"
         else:
             outcome_alignment = "surrogate_or_mismatched"
             outcome_cap = 0.48
@@ -1921,48 +1990,64 @@ def audit_study_pico4d_alignment(
             out_tone = "bad"
             out_detail = f"主要终点（{prim_measures[:68]}）与所指定的目标结局「{raw_target_out[:40]}」不一致（上限 48%）。"
     elif not is_generic_placeholder:
-        # Explicit unlisted target_outcome: perform normalized keyword comparison against primary/secondary outcomes
+        # Explicit unlisted target_outcome. Empty or unmatched tokens fail closed:
+        # never treat a missing keyword list as "matched" just because the RCT has a clinical primary.
+        _outcome_kw_stop = GENERIC_OPAQUE_OUTCOME_WORDS | {
+            "in",
+            "of",
+            "to",
+            "at",
+            "by",
+            "or",
+            "on",
+            "vs",
+            "rate",
+            "time",
+            "change",
+            "level",
+            "from",
+            "baseline",
+            "risk",
+            "incidence",
+            "composite",
+            "first",
+            "occurrence",
+            "week",
+            "weeks",
+            "month",
+            "months",
+            "year",
+            "years",
+            "变化",
+            "发生率",
+            "风险",
+            "基线",
+            "复合",
+        }
         out_kw_tokens = [
             w.lower()
-            for w in re.findall(r"[A-Za-z]{4,}|[\u4e00-\u9fff]{2,}", raw_target_out)
-            if w.lower() not in GENERIC_OPAQUE_OUTCOME_WORDS
-            and w.lower()
-            not in {
-                "change",
-                "from",
-                "baseline",
-                "rate",
-                "risk",
-                "incidence",
-                "composite",
-                "first",
-                "occurrence",
-                "week",
-                "weeks",
-                "month",
-                "months",
-                "year",
-                "years",
-                "变化",
-                "发生率",
-                "风险",
-                "基线",
-                "复合",
-            }
+            for w in re.findall(r"[A-Za-z0-9]{2,}|[\u4e00-\u9fff]{2,}", raw_target_out)
+            if w.lower() not in _outcome_kw_stop
         ]
+
+        def _kw_hit(token: str, text: str) -> bool:
+            if token.isascii() and len(token) <= 4:
+                return re.search(rf"\b{re.escape(token)}\b", text) is not None
+            return token in text
+
         if is_cohort_mode and prim_surr and not prim_clin:
             outcome_alignment = "surrogate_or_mismatched"
             outcome_cap = 0.48
             out_pill_zh = f"主要终点: 替代指标({surr_short})"
             out_tone = "bad"
             out_detail = f"该试验主要终点仅为短期替代指标「{surr_short}」（上限 48%）。"
-        elif is_minimal_clinical_placeholder or (not out_kw_tokens and bool(prim_clin)) or any(k in prim_low for k in out_kw_tokens):
+        elif out_kw_tokens and any(_kw_hit(k, prim_low) for k in out_kw_tokens):
             outcome_alignment = "matched"
             outcome_cap = 1.0
             out_pill_zh = "主要终点: 临床终点一致"
             out_tone = "ok"
             out_detail = f"主要终点匹配目标结局关键词（{prim_measures[:68] or '临床终点'}）。"
-        elif any(k in sec_low for k in out_kw_tokens):
+        elif out_kw_tokens and any(_kw_hit(k, sec_low) for k in out_kw_tokens):
             outcome_alignment = "secondary_only"
             outcome_cap = 0.65
             out_pill_zh = "主要终点: 仅次要终点匹配"

@@ -1127,6 +1127,84 @@ class RCTMatcherTests(unittest.TestCase):
         self.assertEqual(audit_unlisted["outcome_alignment"], "surrogate_or_mismatched")
         self.assertLessEqual(audit_unlisted["effective_score_cap"], 0.48)
 
+    def test_round8_short_explicit_outcomes_fail_closed_against_flaura(self):
+        """Round-8: ORR/CRP/CEA/LDH/PSA never certify FLAURA; bare OS/PFS still align; short tokens use word boundaries."""
+        flaura = next(r for r in rct_matcher.OFFLINE_CURATED_RCTS if r["nct_id"] == "NCT02296125")
+        pico = dict(
+            intervention="Osimertinib",
+            comparator="Gefitinib",
+            target_condition="EGFR-mutated Non-Small Cell Lung Cancer",
+            target_followup_days=540.0,
+            project_mode="user_cohort",
+        )
+        clin_os, surr_os = rct_matcher.classify_outcome_domains("OS")
+        self.assertIn("mortality_os", clin_os)
+        self.assertNotIn("tumor_response_rate", surr_os)
+        clin_pfs, _ = rct_matcher.classify_outcome_domains("PFS")
+        self.assertIn("oncology_progression", clin_pfs)
+        _, surr_bleed = rct_matcher.classify_outcome_domains("Corrected calcium and major hemorrhage")
+        self.assertNotIn("tumor_response_rate", surr_bleed)
+        _, surr_orr = rct_matcher.classify_outcome_domains("ORR")
+        self.assertEqual(surr_orr, {"tumor_response_rate"})
+
+        for good_out in ("OS", "PFS"):
+            audit_ok = rct_matcher.audit_study_pico4d_alignment(flaura, target_outcome=good_out, **pico)
+            self.assertEqual(audit_ok["outcome_alignment"], "matched", good_out)
+            self.assertEqual(audit_ok["overall_alignment_status"], "protocol_aligned", good_out)
+            self.assertTrue(audit_ok["is_recommended"], good_out)
+            self.assertEqual(audit_ok["effective_score_cap"], 1.0, good_out)
+            enriched = rct_matcher.verify_and_enrich_target_rct(
+                {**flaura, "match_score": 0.99},
+                target_outcome=good_out,
+                **pico,
+            )
+            self.assertEqual(enriched["match_score"], 0.99)
+            self.assertTrue(enriched["is_recommended"])
+
+        for bad_out in ("ORR", "CRP", "CEA", "LDH", "PSA"):
+            audit_bad = rct_matcher.audit_study_pico4d_alignment(flaura, target_outcome=bad_out, **pico)
+            self.assertEqual(audit_bad["outcome_alignment"], "surrogate_or_mismatched", bad_out)
+            self.assertNotEqual(audit_bad["overall_alignment_status"], "protocol_aligned", bad_out)
+            self.assertFalse(audit_bad["is_recommended"], bad_out)
+            self.assertLessEqual(audit_bad["effective_score_cap"], 0.48, bad_out)
+            with self.assertRaises(ContractError) as ctx_bad:
+                rct_matcher.verify_and_enrich_target_rct(
+                    {**flaura, "match_score": 0.99},
+                    target_outcome=bad_out,
+                    **pico,
+                )
+            self.assertEqual(ctx_bad.exception.code, "PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED")
+
+        # ORR listed only as a secondary tumor-response surrogate is at most secondary_only, never protocol_aligned.
+        flaura_sec_orr = {
+            **flaura,
+            "secondary_outcomes": [
+                {"measure": "Overall Survival (OS)", "timeFrame": "Up to 36 months"},
+                {"measure": "Objective Response Rate (ORR) per RECIST 1.1", "timeFrame": "18 months"},
+            ],
+        }
+        audit_sec = rct_matcher.audit_study_pico4d_alignment(flaura_sec_orr, target_outcome="ORR", **pico)
+        self.assertEqual(audit_sec["outcome_alignment"], "secondary_only")
+        self.assertLessEqual(audit_sec["effective_score_cap"], 0.65)
+        self.assertNotEqual(audit_sec["overall_alignment_status"], "protocol_aligned")
+        self.assertFalse(audit_sec["is_recommended"])
+
+        # Unlisted 3-letter token must not substring-match inside a longer word.
+        decoy = {
+            **flaura,
+            "primary_outcomes": [{"measure": "Corrected hemorrhage control at week 12", "timeFrame": "12 weeks"}],
+            "secondary_outcomes": [],
+        }
+        audit_decoy = rct_matcher.audit_study_pico4d_alignment(decoy, target_outcome="ZZZ", **pico)
+        self.assertEqual(audit_decoy["outcome_alignment"], "surrogate_or_mismatched")
+        self.assertFalse(audit_decoy["is_recommended"])
+        hit = {
+            **decoy,
+            "primary_outcomes": [{"measure": "Change in ZZZ biomarker", "timeFrame": "12 weeks"}],
+        }
+        audit_hit = rct_matcher.audit_study_pico4d_alignment(hit, target_outcome="ZZZ", **pico)
+        self.assertEqual(audit_hit["outcome_alignment"], "matched")
+
 
 class CohortIngestAndDualModePipelineTests(unittest.TestCase):
     def setUp(self):

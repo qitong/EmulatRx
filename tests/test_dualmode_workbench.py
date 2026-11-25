@@ -2115,6 +2115,156 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
             for forbidden_tok in ("Alice", "Smith", "987654321", "PT-ONC-"):
                 self.assertNotIn(forbidden_tok, p_str)
 
+    def test_round8_short_surrogate_outcomes_422_and_os_pfs_still_pass(self):
+        """Round-8 E2E: ORR/CRP/CEA/LDH/PSA vs FLAURA stay unconfirmed 422 with score clamped below a mocked DeepSeek 0.99; OS and PFS still draft and run."""
+        csv_lines = ["patient_key,arm_drug,time_days,os_event,age,ecog"]
+        for i in range(30):
+            drug = "Osimertinib" if i % 2 == 0 else "Gefitinib"
+            csv_lines.append(
+                f"PT-R8-{i + 1:03d},{drug},{150 + (i * 23) % 520},{1 if i % 3 == 0 else 0},{50 + ((i * 7) % 22)},{(i // 2) % 2}"
+            )
+        custom_csv = ("\n".join(csv_lines) + "\n").encode("utf-8")
+
+        def fake_llm(req, timeout):
+            raw_str = req.data.decode("utf-8")
+            if "public_reference_context" in raw_str:
+                ans = {
+                    "rankings": [
+                        {"nct_id": "NCT02296125", "match_score": 0.99, "recommended": True, "reason_zh": "DeepSeek 高分仍须服从终点硬上限"},
+                    ]
+                }
+            else:
+                ans = {
+                    "domain_summary_zh": "EGFR 突变非小细胞肺癌",
+                    "condition_query_en": "EGFR-Mutated Non-Small Cell Lung Cancer",
+                    "intervention_query_en": "Osimertinib",
+                    "comparator_query_en": "Gefitinib",
+                    "outcome_query_en": "Overall Survival",
+                    "search_query_en": "Osimertinib Gefitinib EGFR Non-Small Cell Lung Cancer",
+                }
+            return _FakeHTTPResp(json.dumps({"choices": [{"message": {"content": json.dumps(ans, ensure_ascii=False)}}]}).encode("utf-8"))
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "EMULATRX_LLM_API_KEY_FILE": str(self.base / "absent_secret"),
+                "EMULATRX_LLM_API_KEY": "sk-round8-test",
+                "EMULATRX_OFFLINE_RCT_CATALOG": "1",
+            },
+            clear=False,
+        ):
+            with mock.patch.object(llm_assist, "urlopen_llm", side_effect=fake_llm):
+                up = self.client.post(
+                    "/api/sessions/upload",
+                    headers=self.web_auth,
+                    files={"file": ("egfr_nsclc_r8.csv", custom_csv, "text/csv")},
+                    data={"user_note": "EGFR-mutated non-small cell lung cancer, overall survival"},
+                )
+                self.assertEqual(up.status_code, 200, up.text)
+                sid = up.json()["session_id"]
+                mapping = up.json()["default_mapping"]
+                mapping["eligibility_criteria"] = []
+                mapping["max_abs_smd"] = 0.65
+                mapping["min_ess_ratio"] = 0.10
+                mapping["bootstrap_iterations"] = 20
+                flaura = next(r for r in rct_matcher.OFFLINE_CURATED_RCTS if r["nct_id"] == "NCT02296125")
+
+                for bad_out in ("ORR", "CRP", "CEA", "LDH", "PSA"):
+                    srch = self.client.post(
+                        "/api/rcts/search",
+                        headers=self.web_auth,
+                        json={
+                            "session_id": sid,
+                            "project_mode": "user_cohort",
+                            "query": "Osimertinib Gefitinib EGFR Non-Small Cell Lung Cancer",
+                            "condition": "EGFR-mutated Non-Small Cell Lung Cancer",
+                            "intervention": "Osimertinib",
+                            "comparator": "Gefitinib",
+                            "outcome": bad_out,
+                        },
+                    )
+                    self.assertEqual(srch.status_code, 200, srch.text)
+                    card = next(c for c in srch.json()["candidates"] if c["nct_id"] == "NCT02296125")
+                    self.assertNotEqual(card["overall_alignment_status"], "protocol_aligned", bad_out)
+                    self.assertFalse(card["is_recommended"], bad_out)
+                    self.assertLessEqual(card["match_score"], 0.48, bad_out)
+                    self.assertEqual(card.get("ranking_mode"), "llm_assisted", bad_out)
+
+                    for endpoint, body in (
+                        (
+                            "/api/rcts/draft",
+                            {
+                                "project_mode": "user_cohort",
+                                "session_id": sid,
+                                "target_rct": flaura,
+                                "condition": "EGFR-mutated Non-Small Cell Lung Cancer",
+                                "intervention": "Osimertinib",
+                                "comparator": "Gefitinib",
+                                "outcome": bad_out,
+                            },
+                        ),
+                        (
+                            "/api/dual-runs",
+                            {
+                                "project_mode": "user_cohort",
+                                "session_id": sid,
+                                "mapping": mapping,
+                                "target_rct": flaura,
+                                "condition": "EGFR-mutated Non-Small Cell Lung Cancer",
+                                "intervention": "Osimertinib",
+                                "comparator": "Gefitinib",
+                                "outcome": bad_out,
+                            },
+                        ),
+                    ):
+                        blocked = self.client.post(endpoint, headers=self.web_auth, json=body)
+                        self.assertEqual(blocked.status_code, 422, f"{bad_out} {endpoint} -> {blocked.text}")
+                        self.assertEqual(blocked.json()["error_code"], "PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED")
+
+                for good_out in ("OS", "PFS"):
+                    srch_ok = self.client.post(
+                        "/api/rcts/search",
+                        headers=self.web_auth,
+                        json={
+                            "session_id": sid,
+                            "project_mode": "user_cohort",
+                            "query": "Osimertinib Gefitinib EGFR Non-Small Cell Lung Cancer",
+                            "condition": "EGFR-mutated Non-Small Cell Lung Cancer",
+                            "intervention": "Osimertinib",
+                            "comparator": "Gefitinib",
+                            "outcome": good_out,
+                        },
+                    )
+                    self.assertEqual(srch_ok.status_code, 200, srch_ok.text)
+                    card_ok = next(c for c in srch_ok.json()["candidates"] if c["nct_id"] == "NCT02296125")
+                    self.assertEqual(card_ok["overall_alignment_status"], "protocol_aligned", good_out)
+                    self.assertTrue(card_ok["is_recommended"], good_out)
+                    draft_ok = self.client.post(
+                        "/api/rcts/draft",
+                        headers=self.web_auth,
+                        json={
+                            "project_mode": "user_cohort",
+                            "session_id": sid,
+                            "target_rct": card_ok,
+                            "outcome": good_out,
+                        },
+                    )
+                    self.assertEqual(draft_ok.status_code, 200, f"{good_out} draft -> {draft_ok.text}")
+                    run_ok = self.client.post(
+                        "/api/dual-runs",
+                        headers=self.web_auth,
+                        json={
+                            "project_mode": "user_cohort",
+                            "session_id": sid,
+                            "mapping": mapping,
+                            "target_rct": card_ok,
+                            "outcome": good_out,
+                        },
+                    )
+                    self.assertEqual(run_ok.status_code, 202, f"{good_out} dual-runs -> {run_ok.text}")
+                    finished = self.wait_dual_run(run_ok.json()["run_id"])
+                    self.assertEqual(finished["state"], "completed", finished)
+
 
 if __name__ == "__main__":
     unittest.main()

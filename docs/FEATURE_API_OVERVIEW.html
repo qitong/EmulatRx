@@ -331,17 +331,17 @@
         <tr>
           <td><strong><code>validate</code></strong><br><small><code>synthetic-contract.yml</code></small></td>
           <td><code>python -m unittest discover -s tests -p 'test_demo_contract.py' -v</code><br><code>python -m unittest discover -s tests -p 'test_synthetic_demo.py' -v</code><br><code>python -m unittest discover -s tests -p 'test_public_metadata.py' -v</code></td>
-          <td><strong>标准库零依赖契约层（26 项）</strong>：模板校验、合成复现与公开试验 12 键来源收据边界。</td>
+          <td><strong>标准库零依赖契约层（26 项：<code>test_demo_contract.py</code> 11 + <code>test_synthetic_demo.py</code> 7 + <code>test_public_metadata.py</code> 8）</strong>：模板校验、合成复现与公开试验 12 键来源收据边界。</td>
         </tr>
         <tr>
           <td><strong><code>tte-foundation</code></strong><br><small><code>synthetic-contract.yml</code></small></td>
           <td><code>PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -p 'test_tte_*.py' -v</code></td>
-          <td><strong>白盒数学解析基准与对抗性因果探针层（46 项：<code>test_tte_foundation.py</code> + <code>test_tte_competing_risks.py</code> + <code>test_tte_ccw.py</code> + <code>test_tte_dualmode.py</code>）</strong>：双指数竞争风险解析真值、协变量依赖删失 Fine–Gray 联合 IPCW 得分方程与稳健方差 oracle、P1 双侧宽限期 CCW 零效应消偏/保护效应恢复/<code>X_tv</code> 时变协变量/截尾前极值阻断、五维 PICO-T 对齐（<code>NCT03959501</code>、<code>NCT00842556</code>、<code>Exclusion Criteria</code> 陷阱、肿瘤 <code>EGFR</code> 突变与肾脏 <code>CKD</code> 消歧、<code>user_cohort</code> 对称终点核验、CAROLINA/FLAURA 正对照）及三层 LLM 隐私脱敏单测。</td>
+          <td><strong>白盒数学解析基准与对抗性因果探针层（43 项：<code>test_tte_foundation.py</code> + <code>test_tte_competing_risks.py</code> + <code>test_tte_ccw.py</code> + <code>test_tte_dualmode.py</code>）</strong>：双指数竞争风险解析真值、协变量依赖删失 Fine–Gray 联合 IPCW 得分方程与稳健方差 oracle、P1 双侧宽限期 CCW 零效应消偏/保护效应恢复/<code>X_tv</code> 时变协变量/截尾前极值阻断、五维 PICO-T 对齐（<code>NCT03959501</code>、<code>NCT00842556</code>、<code>Exclusion Criteria</code> 陷阱、肿瘤 <code>EGFR</code> 突变与肾脏 <code>CKD</code> 消歧、<code>user_cohort</code> 对称终点核验、显式短缩写 <code>ORR</code>/<code>CRP</code>/<code>CEA</code>/<code>LDH</code>/<code>PSA</code> 对 FLAURA 失败关闭、<code>OS</code>/<code>PFS</code> 仍对齐、CAROLINA/FLAURA 正对照）及三层 LLM 隐私脱敏单测。</td>
         </tr>
         <tr>
           <td><strong><code>service</code></strong><br><small><code>preview-service.yml</code></small></td>
           <td><code>PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -p 'test_preview_service.py' -v</code><br><code>PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -p 'test_dualmode_workbench.py' -v</code></td>
-          <td><strong>公开入口黑盒契约层（17 项，全仓合计 89 项 Web / REST / MCP）</strong>：通过本地 <code>127.0.0.1</code> 回环模拟 OpenAI 兼容网关与公开 <code>NCT*</code> 夹具，端到端验证双入口运行及 HTML 报告/JSON/CSV/manifest 下载 <code>200</code>、Web Basic 与 MCP Bearer 鉴权隔离 <code>401</code>、<code>25 MB</code> 流式超限 <code>413</code>、Step 2 <code>condition</code>/<code>outcome</code> 覆写持久化及双臂/四维方案偏离 <code>422</code>、<code>DELETE /api/cohorts/{id}</code> 物理清除后 <code>404</code> 及 MCP 全工具契约。</td>
+          <td><strong>公开入口黑盒契约层（22 项：<code>test_preview_service.py</code> 8 + <code>test_dualmode_workbench.py</code> 14；<code>discover -s tests</code> 全仓合计 91 项 Web / REST / MCP）</strong>：通过本地 <code>127.0.0.1</code> 回环模拟 OpenAI 兼容网关与公开 <code>NCT*</code> 夹具，端到端验证双入口运行及 HTML 报告/JSON/CSV/manifest 下载 <code>200</code>、Web Basic 与 MCP Bearer 鉴权隔离 <code>401</code>、<code>25 MB</code> 流式超限 <code>413</code>、Step 2 <code>condition</code>/<code>outcome</code> 覆写持久化及双臂/四维方案偏离 <code>422</code>（含未确认的 <code>ORR</code>/<code>CRP</code>/<code>CEA</code>/<code>LDH</code>/<code>PSA</code>）、<code>DELETE /api/cohorts/{id}</code> 物理清除后 <code>404</code> 及 MCP 全工具契约。</td>
         </tr>
         <tr>
           <td><strong><code>arm64-image</code></strong><br><small><code>preview-service.yml</code></small></td>
