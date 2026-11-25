@@ -106,6 +106,11 @@ class ClinicalLadderOracleTests(unittest.TestCase):
         self.assertLessEqual(tier2["simple_iptw"]["iptw_rd"], -0.10)
         self.assertLess(tier2["psm_1to1"]["post_psm_max_abs_smd"], 0.10)
         self.assertAlmostEqual(tier3["tte_rd"], 0.0, delta=0.05)
+        self.assertEqual(tier3["tte_retained_n"], 2000)
+        self.assertGreater(tier3["tte_ess"], 50.0)
+        self.assertGreater(tier3["tte_ess_ratio"], 0.0)
+        self.assertLessEqual(tier3["tte_ess_ratio"], 2.0)
+        self.assertGreater(tier3["tte_ess"], tier3["tte_ess_ratio"])
         immortal = next(
             item
             for item in estimates["what_tte_controlled_beyond_psm"]["extra_tte_controls"]

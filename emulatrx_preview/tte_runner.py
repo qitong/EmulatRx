@@ -380,7 +380,15 @@ class TTERunner:
             raise ContractError("UPLOAD_TICKET_EXPIRED", "upload ticket expired")
         return self.save_session_cohort(raw, str(record.get("filename") or "cohort.csv"), session_id=record["session_id"])
 
-    def adopt_ccw_directory(self, source: Path, *, gate_status: str, seed: int, case_count: int) -> dict:
+    def adopt_ccw_directory(
+        self,
+        source: Path,
+        *,
+        gate_status: str,
+        seed: int,
+        case_count: int,
+        session_id: str | None = None,
+    ) -> dict:
         """Publish a finished CCW directory under the preview run root so status and artifact tools can read it."""
         self.cleanup()
         run_id = uuid.uuid4().hex
@@ -405,6 +413,10 @@ class TTERunner:
             "started_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "finished_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
+        if session_id:
+            if not isinstance(session_id, str) or not SESSION_ID.fullmatch(session_id):
+                raise ContractError("INVALID_SESSION_ID", "无效的会话编号。")
+            status["session_id"] = session_id
         self._write_status(dest, status)
         return status
 

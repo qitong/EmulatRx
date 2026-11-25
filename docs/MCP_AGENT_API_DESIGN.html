@@ -496,7 +496,7 @@
         </div>
         <p class="tool-desc">运行双侧宽限期治疗克隆–删失–加权（CCW）引擎：分臂独立稳定化 IPCW（支持 <code>X_tv</code> 期前时变混杂）、截尾前正值性熔断、克隆前患者级聚类 Bootstrap 重拟合，并同步输出「朴素事后分组不朽时间假阳性曲线」定量对照。</p>
         <div class="io-box">
-          <div class="io-row"><span class="io-lbl">输入：</span><code>ccw_protocol</code>, <code>synthetic_scenario</code>（<code>null_effect</code> | <code>protective_effect</code> 或自定义 DGP 参数）, <code>seed</code>, <code>bootstrap_replicates</code></div>
+          <div class="io-row"><span class="io-lbl">输入：</span><code>ccw_protocol</code>, <code>synthetic_scenario</code>（<code>null_effect</code> | <code>protective_effect</code> 或自定义 DGP 参数）, <code>seed</code>, <code>bootstrap_replicates</code>, 可选 <code>session_id</code>（写入 <code>status.json</code>，供 <code>delete_cohort_session</code> 一并清除）</div>
           <div class="io-row"><span class="io-lbl">输出：</span><code>run_id</code>、<code>gate_status</code>、各时点 <code>ccw_rd</code> vs <code>naive_immortal_biased_rd</code> vs <code>truth_rd</code> 对照</div>
         </div>
       </div>

@@ -108,13 +108,17 @@ def detect_missing_clinical_semantics_from_profile(profile: dict) -> dict:
     return detect_missing_clinical_semantics(frame, profile)
 
 
-def _remediation(failures: list[dict]) -> list[dict]:
+_STATIC_ESS_HINT = "有效样本量过低。减少极端权重协变量，或改用 overlap 并检查组别样本量。"
+_CCW_ESS_HINT = "克隆后有效样本不足。延长随访或增大合成样本量后再预检。"
+
+
+def _remediation(failures: list[dict], *, is_ccw: bool = False) -> list[dict]:
+    """Map gate codes to Chinese hints. Static propensity ESS and CCW cloning ESS share a code but not a hint."""
     hints = {
         "POSITIVITY_VIOLATION": "缩小极不平衡的基线协变量，或放宽方案里的 positivity_epsilon 后再预检。",
-        "ESS_RATIO_BELOW_MIN": "有效样本量过低。减少极端权重协变量，或改用 overlap 并检查组别样本量。",
+        "ESS_RATIO_BELOW_MIN": _CCW_ESS_HINT if is_ccw else _STATIC_ESS_HINT,
         "SMD_EXCEEDS_MAX": "加权后仍有协变量 |SMD| 超门限。从方案里去掉该协变量或改用更能重叠的加权。",
         "POST_GRACE_SMD_EXCEEDS_MAX": "宽限期后克隆人群仍不平衡。检查时变协变量是否期后测量，或放宽 max_post_grace_smd。",
-        "ESS_RATIO_BELOW_MIN": "克隆后有效样本不足。延长随访或增大合成样本量后再预检。",
     }
     out = []
     for failure in failures or []:
@@ -356,7 +360,10 @@ def register_tools(mcp, runner, *, transport: str = "http", allow_ingest_dirs: l
             "overall_alignment_status": audit.get("overall_alignment_status"),
             "requires_confirmation": bool(audit.get("requires_mismatch_confirmation")),
             "required_confirmation_flag": (
-                "confirm_arm_mismatch" if audit.get("arm_alignment_status") not in (None, "exact_dual_arm", "aligned") and audit.get("requires_mismatch_confirmation") else "confirm_protocol_mismatch"
+                "confirm_arm_mismatch"
+                if audit.get("requires_mismatch_confirmation")
+                or audit.get("arm_alignment_status") not in (None, "exact_dual_arm", "single_intervention_matched", "unspecified", "aligned")
+                else "confirm_protocol_mismatch"
             ),
             "divergence_explanation_zh": audit.get("protocol_alignment_warning") or audit.get("arm_alignment_warning") or "",
         }
@@ -655,6 +662,7 @@ def register_tools(mcp, runner, *, transport: str = "http", allow_ingest_dirs: l
         seed: int = 42,
         cases: int = 800,
         bootstrap_replicates: int = 20,
+        session_id: str = "",
     ) -> dict:
         protocol = ccw_protocol or json.loads(_read_repo_text("examples", "tte_grace_period_ccw_v1.json"))
         dgp = {"true_log_hr_event1": 0.0, "true_log_hr_event2": 0.0} if synthetic_scenario == "null_effect" else (
@@ -672,7 +680,13 @@ def register_tools(mcp, runner, *, transport: str = "http", allow_ingest_dirs: l
                 bootstrap_iterations=int(bootstrap_replicates),
                 dgp_params=dgp,
             )
-            status = runner.adopt_ccw_directory(out, gate_status="passed" if code == 0 else "blocked", seed=int(seed), case_count=int(cases))
+            status = runner.adopt_ccw_directory(
+                out,
+                gate_status="passed" if code == 0 else "blocked",
+                seed=int(seed),
+                case_count=int(cases),
+                session_id=session_id or None,
+            )
         return {"run_id": status["run_id"], "gate_status": status["gate_status"], "state": status["state"], "run_type": "grace_period_ccw", "engine_status": result.get("status")}
 
     def _status_payload(run_id: str) -> dict:
@@ -756,7 +770,7 @@ def register_tools(mcp, runner, *, transport: str = "http", allow_ingest_dirs: l
                 "evidence_boundary_notice": notice,
                 "gate_status": gate or "blocked",
                 "diagnostics": diagnostics,
-                "remediation_hints": _remediation(failures),
+                "remediation_hints": _remediation(failures, is_ccw=kind == "grace_period_ccw"),
                 "estimates_omitted_reason": "gate_status is not passed; tier-3 and other point estimates are omitted",
                 "clinical_comparison_ladder": None,
                 "what_tte_controlled_beyond_psm": None,

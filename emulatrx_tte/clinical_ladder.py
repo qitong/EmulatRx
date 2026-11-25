@@ -854,6 +854,45 @@ def attach_static_ladder(estimates: dict, *, frame, protocol: dict, diagnostics:
     return bundle
 
 
+def _ccw_person_ess(diagnostics: dict, retained_n: int) -> tuple[float | None, float | None]:
+    """Return (person-count ESS, ESS/N ratio). Counts stay in people, never a bare ratio."""
+    summary = diagnostics.get("post_grace_entry_summary") or {}
+    arm_counts: list[float] = []
+    for key in ("strategy_1_ess", "strategy_0_ess"):
+        value = summary.get(key)
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            arm_counts.append(number)
+    uncensored = 0.0
+    for key in ("strategy_1_uncensored_n", "strategy_0_uncensored_n"):
+        try:
+            number = float(summary.get(key) or 0.0)
+        except (TypeError, ValueError):
+            number = 0.0
+        if math.isfinite(number) and number > 0.0:
+            uncensored += number
+    ratio_fallback = summary.get("strategy_1_ess_ratio")
+    try:
+        ratio_fallback_f = float(ratio_fallback)
+    except (TypeError, ValueError):
+        ratio_fallback_f = None
+    if ratio_fallback_f is not None and not math.isfinite(ratio_fallback_f):
+        ratio_fallback_f = None
+    if arm_counts:
+        ess_count = sum(arm_counts)
+        denom = uncensored if uncensored > 0.0 else float(retained_n)
+        ess_ratio = (ess_count / denom) if denom > 0.0 else ratio_fallback_f
+    elif ratio_fallback_f is not None and retained_n > 0:
+        ess_count = ratio_fallback_f * float(retained_n)
+        ess_ratio = ratio_fallback_f
+    else:
+        return None, _r(ratio_fallback_f, 6)
+    return _r(ess_count, 4), _r(ess_ratio, 6)
+
+
 def attach_ccw_ladder(
     estimates: dict,
     *,
@@ -870,6 +909,8 @@ def attach_ccw_ladder(
     horizons = estimates.get("horizon_estimates") or []
     primary = horizons[-1]
     horizon = float(primary["horizon_day"])
+    retained_n = int(np.asarray(ever_initiated).size)
+    tte_ess, tte_ess_ratio = _ccw_person_ess(diagnostics, retained_n)
     tier3 = {
         "tte_cif_treated": _r(primary["strategy_1_initiate_within_grace"]["CIF_1"]),
         "tte_cif_comparator": _r(primary["strategy_0_never_initiate"]["CIF_1"]),
@@ -884,8 +925,9 @@ def attach_ccw_ladder(
         "evalue_point": _r(((primary.get("evalue_rr_cif_event1") or {}) if isinstance(primary.get("evalue_rr_cif_event1"), dict) else {}).get("point_estimate"), 4),
         "evalue_ci_bound": _r(((primary.get("evalue_rr_cif_event1") or {}) if isinstance(primary.get("evalue_rr_cif_event1"), dict) else {}).get("ci_limit_closer_to_null"), 4),
         "weighting_scheme": "bilateral_clone_censor_weight",
-        "tte_retained_n": int(np.asarray(ever_initiated).size),
-        "tte_ess": _r((diagnostics.get("post_grace_entry_summary") or {}).get("strategy_1_ess_ratio"), 6),
+        "tte_retained_n": retained_n,
+        "tte_ess": tte_ess,
+        "tte_ess_ratio": tte_ess_ratio,
         "post_tte_max_abs_smd": _r((diagnostics.get("post_grace_entry_summary") or {}).get("max_weighted_abs_smd"), 6),
         "source": "ccw_engine",
     }

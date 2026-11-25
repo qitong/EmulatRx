@@ -2579,7 +2579,6 @@ def verify_and_enrich_target_rct(
     )
     status = audit["arm_alignment_status"]
     overall_status = audit["overall_alignment_status"]
-    confirmed = bool(confirm_arm_mismatch or confirm_protocol_mismatch)
     enriched = {
         **target_rct,
         **audit,
@@ -2590,8 +2589,21 @@ def verify_and_enrich_target_rct(
         enriched["match_score"] = round(min(norm_sc, audit["effective_score_cap"]), 2)
         enriched["match_score_pct"] = int(round(enriched["match_score"] * 100))
 
-    if audit["requires_mismatch_confirmation"]:
-        if not confirmed:
+    # Arm mismatches and protocol-only mismatches use different flags.
+    # `unspecified` idea-mode arms are not an arm mismatch. When arms and another
+    # PICO-T dimension diverge together, confirm_arm_mismatch unlocks the reference
+    # frame (existing NCT06642272 regressions pass only that flag). Protocol-only
+    # divergence (exact_dual_arm / single_intervention_matched, e.g. NCT03959501 and
+    # NCT00842556) requires confirm_protocol_mismatch and is not unlocked by
+    # confirm_arm_mismatch. No existing regression relies on the arm flag alone
+    # for those two studies.
+    arm_mismatch = bool(audit["requires_mismatch_confirmation"]) or status not in (
+        "exact_dual_arm",
+        "single_intervention_matched",
+        "unspecified",
+    )
+    if arm_mismatch:
+        if not confirm_arm_mismatch:
             raise ContractError(
                 "ARM_MISMATCH_CONFIRMATION_REQUIRED",
                 (
@@ -2610,17 +2622,17 @@ def verify_and_enrich_target_rct(
         enriched["protocol_alignment_warning"] = arm_warn
     elif overall_status != "protocol_aligned":
         div_summary = "；".join(audit["diverged_dimensions"])
-        if not confirmed:
+        if not confirm_protocol_mismatch:
             raise ContractError(
                 "PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED",
                 (
                     f"PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED: 目标 RCT（{target_rct['nct_id']}）虽干预药物匹配，"
                     f"但在 PICO-T 关键方案维度上与当前研究存在偏离（overall_alignment_status={overall_status}）：{div_summary}。"
-                    "Pass confirm_protocol_mismatch=true (or confirm_arm_mismatch=true) only if intentionally using this study as a partial protocol reference."
+                    "Pass confirm_protocol_mismatch=true only if intentionally using this study as a partial protocol reference."
                 ),
             )
         proto_warn = (
-            f"四维 PICO-T 方案偏离参考声明（研究者已显式确认）：所引用的注册试验 {target_rct['nct_id']} "
+            f"四维 PICO-T 方案偏离参考声明（研究者已显式确认 confirm_protocol_mismatch=true）：所引用的注册试验 {target_rct['nct_id']} "
             f"（overall_alignment_status={overall_status}）在人群、研究设计、主要终点或随访窗上与当前研究存在偏离（{div_summary}），"
             "仅作为局部方案参考框架，绝不可直接等同为同适应证同终点目标试验对标。"
         )

@@ -726,6 +726,23 @@ class RCTMatcherTests(unittest.TestCase):
                 confirm_arm_mismatch=False,
             )
         self.assertEqual(ctx_1b1.exception.code, "ARM_MISMATCH_CONFIRMATION_REQUIRED")
+        with self.assertRaises(ContractError) as ctx_1b1_proto_only:
+            rct_matcher.verify_and_enrich_target_rct(
+                norm_single,
+                intervention="Dapagliflozin",
+                comparator="Sitagliptin",
+                project_mode="user_cohort",
+                confirm_protocol_mismatch=True,
+            )
+        self.assertEqual(ctx_1b1_proto_only.exception.code, "ARM_MISMATCH_CONFIRMATION_REQUIRED")
+        unlocked_arm = rct_matcher.verify_and_enrich_target_rct(
+            norm_single,
+            intervention="Dapagliflozin",
+            comparator="Sitagliptin",
+            project_mode="user_cohort",
+            confirm_arm_mismatch=True,
+        )
+        self.assertIn("confirm_arm_mismatch=true", unlocked_arm["arm_alignment_warning"])
 
         # Probe 1B-2: Sparse registry record with `0` armGroups and 2 study-level interventions
         raw_zero_armgroups_api = {
@@ -907,6 +924,29 @@ class RCTMatcherTests(unittest.TestCase):
                 project_mode="user_cohort",
             )
         self.assertEqual(ctx_ketone.exception.code, "PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED")
+        with self.assertRaises(ContractError) as ctx_ketone_arm_only:
+            rct_matcher.verify_and_enrich_target_rct(
+                norm_ketone,
+                intervention="Dapagliflozin",
+                comparator="Sitagliptin",
+                target_condition="Type 2 Diabetes Heart Failure",
+                target_outcome="Heart Failure Hospitalization or Cardiovascular Death",
+                target_followup_days=1095.0,
+                project_mode="user_cohort",
+                confirm_arm_mismatch=True,
+            )
+        self.assertEqual(ctx_ketone_arm_only.exception.code, "PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED")
+        unlocked_ketone = rct_matcher.verify_and_enrich_target_rct(
+            norm_ketone,
+            intervention="Dapagliflozin",
+            comparator="Sitagliptin",
+            target_condition="Type 2 Diabetes Heart Failure",
+            target_outcome="Heart Failure Hospitalization or Cardiovascular Death",
+            target_followup_days=1095.0,
+            project_mode="user_cohort",
+            confirm_protocol_mismatch=True,
+        )
+        self.assertIn("confirm_protocol_mismatch=true", unlocked_ketone["protocol_alignment_warning"])
 
         # 2. NCT00842556: Healthy-volunteer PK/DDI study of Dapagliflozin + Sitagliptin
         nct00842556_raw = {
@@ -961,6 +1001,18 @@ class RCTMatcherTests(unittest.TestCase):
                 project_mode="user_cohort",
             )
         self.assertEqual(ctx_pk.exception.code, "PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED")
+        with self.assertRaises(ContractError) as ctx_pk_arm_only:
+            rct_matcher.verify_and_enrich_target_rct(
+                norm_pk,
+                intervention="Dapagliflozin",
+                comparator="Sitagliptin",
+                target_condition="Type 2 Diabetes Heart Failure",
+                target_outcome="Heart Failure Hospitalization or Cardiovascular Death",
+                target_followup_days=540.0,
+                project_mode="user_cohort",
+                confirm_arm_mismatch=True,
+            )
+        self.assertEqual(ctx_pk_arm_only.exception.code, "PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED")
 
         # 3. Exclusion Criteria Trap Test: Heart failure mentioned ONLY under Exclusion Criteria must NOT match HF population!
         trap_raw = {

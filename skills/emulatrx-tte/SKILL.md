@@ -157,4 +157,4 @@ Resources: `emulatrx://schemas/tte-protocol-v1`, `emulatrx://schemas/tte-ccw-v1`
 
 When `gate_status == "passed"`, `get_tte_result_summary` includes `clinical_comparison_ladder` (`tier_1_unadjusted_crude`, `tier_2_conventional_ps` with `psm_1to1` and `simple_iptw`, `tier_3_target_trial_emulation`) and `what_tte_controlled_beyond_psm` (`headline_progression_zh`, `baseline_confounders_controlled`, `extra_tte_controls`, `clinician_takeaway_zh`). When the gate is blocked, omit tier-3 and every other point estimate and return `diagnostics`, `remediation_hints`, and `estimates_omitted_reason`.
 
-Local unittest loader counts on this tree: `validate` 26, `tte-foundation` 48 (`test_tte_*.py`, including `test_tte_clinical_ladder.py`), `service` 24 (`test_preview_service.py` 8 + `test_dualmode_workbench.py` 14 + `test_mcp_agent_suite.py` 2), full `discover -s tests` 98.
+Local unittest loader counts on this tree: `validate` 26, `tte-foundation` 48 (`test_tte_*.py`, including `test_tte_clinical_ladder.py`), `service` 27 (`test_preview_service.py` 11 + `test_dualmode_workbench.py` 14 + `test_mcp_agent_suite.py` 2), full `discover -s tests` 101.
