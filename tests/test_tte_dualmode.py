@@ -1375,6 +1375,158 @@ class CohortIngestAndDualModePipelineTests(unittest.TestCase):
         self.assertIn("目标试验模拟（无数据模拟预演项目）可行性报告", sim_est["report_badge"])
         self.assertGreaterEqual(len(sim_est["simulation_recovery_table"]), 3)
 
+    def test_live_double_dummy_placebo_and_investigator_choice_or_arms(self):
+        """Live CT.gov fixtures: CAROLINA double-dummy placebos and FLAURA gefitinib-or-erlotinib stay exact dual-arm."""
+        fixture_dir = Path(__file__).resolve().parent / "fixtures" / "ctgov"
+
+        def load(nct_id: str) -> dict:
+            return json.loads((fixture_dir / f"{nct_id}.json").read_text(encoding="utf-8"))
+
+        active = set(rct_matcher.normalize_intervention_spec("linagliptin (linagliptin, glimepiride placebo)")["drug_ids"]) - {"placebo_soc"}
+        self.assertEqual(active, {"linagliptin"})
+        active = set(rct_matcher.normalize_intervention_spec("glimepiride 1-4 mg QD (glimepiride, linagliptin placebo)")["drug_ids"]) - {"placebo_soc"}
+        self.assertEqual(active, {"glimepiride"})
+        for placebo_label in (
+            "Drug: glimepiride placebo",
+            "Other: Placebo matching Gefitinib",
+            "linagliptin 5 mg placebo",
+            "sitagliptin-matching placebo",
+            "gefitinib/erlotinib placebo",
+            "placebo matching osimertinib",
+            "placebo to match glimepiride",
+            "placebo for sitagliptin",
+            "placebo (glimepiride)",
+            "利格列汀安慰剂",
+            "匹配格列美脲的安慰剂",
+        ):
+            spec = rct_matcher.normalize_intervention_spec(placebo_label)
+            self.assertEqual(set(spec["drug_ids"]) - {"placebo_soc"}, set(), placebo_label)
+            self.assertIn("placebo_soc", spec["drug_ids"], placebo_label)
+        self.assertEqual(
+            set(rct_matcher.normalize_intervention_spec("Placebo + Metformin")["drug_ids"]) - {"placebo_soc"},
+            {"metformin"},
+        )
+        combo = rct_matcher.normalize_intervention_spec("Sitagliptin + Glimepiride")
+        self.assertEqual(combo["regimen_mode"], "all")
+        self.assertEqual(set(combo["drug_ids"]), {"sitagliptin", "glimepiride"})
+        choice = rct_matcher.normalize_intervention_spec("Gefitinib or Erlotinib")
+        self.assertEqual(choice["regimen_mode"], "any")
+        self.assertEqual(set(choice["alternative_sets"]), {("gefitinib",), ("erlotinib",)})
+
+        carolina = rct_matcher._normalize_api_study(load("NCT01243424"))
+        self.assertIn("linagliptin, glimepiride placebo", carolina["experimental_arms"][0])
+        self.assertIn("linagliptin placebo", carolina["comparator_arms"][0])
+        audit_carolina = rct_matcher.audit_study_pico4d_alignment(
+            carolina,
+            intervention="利格列汀",
+            comparator="格列美脲",
+            target_condition="Type 2 Diabetes Cardiovascular Risk",
+            target_outcome="Cardiovascular Death Myocardial Infarction Stroke MACE",
+            target_followup_days=730.0,
+            project_mode="user_cohort",
+        )
+        self.assertEqual(audit_carolina["arm_alignment_status"], "exact_dual_arm")
+        self.assertEqual(audit_carolina["population_alignment"], "matched")
+        self.assertEqual(audit_carolina["outcome_alignment"], "matched")
+        self.assertEqual(audit_carolina["followup_alignment"], "adequate")
+        self.assertEqual(audit_carolina["overall_alignment_status"], "protocol_aligned")
+        self.assertTrue(audit_carolina["is_recommended"])
+        scored_carolina = rct_matcher._score_and_audit_study(
+            carolina,
+            ["Linagliptin", "Glimepiride", "Diabetes", "Cardiovascular"],
+            intervention="Linagliptin",
+            comparator="Glimepiride",
+            target_condition="Type 2 Diabetes Cardiovascular Risk",
+            target_outcome="Cardiovascular Death Myocardial Infarction Stroke MACE",
+            target_followup_days=730.0,
+            project_mode="user_cohort",
+        )
+        self.assertGreaterEqual(scored_carolina["match_score"], 0.85)
+
+        flaura = rct_matcher._normalize_api_study(load("NCT02296125"))
+        self.assertIn("Placebo Erlotinib", " ".join(flaura["experimental_arms"]))
+        self.assertIn("Gefitinib", flaura["comparator_arms"][0])
+        self.assertIn("Erlotinib", flaura["comparator_arms"][0])
+        for comparator in ("Gefitinib", "吉非替尼", "Gefitinib or Erlotinib"):
+            audit_flaura = rct_matcher.audit_study_pico4d_alignment(
+                flaura,
+                intervention="Osimertinib",
+                comparator=comparator,
+                target_condition="EGFR-Mutated Non-Small Cell Lung Cancer",
+                target_outcome="Progression-Free Survival and Overall Survival",
+                target_followup_days=540.0,
+                project_mode="user_cohort",
+            )
+            self.assertEqual(audit_flaura["arm_alignment_status"], "exact_dual_arm", comparator)
+            self.assertEqual(audit_flaura["overall_alignment_status"], "protocol_aligned", comparator)
+            self.assertTrue(audit_flaura["is_recommended"], comparator)
+        scored_flaura = rct_matcher._score_and_audit_study(
+            flaura,
+            ["Osimertinib", "Gefitinib", "EGFR", "Lung"],
+            intervention="Osimertinib",
+            comparator="Gefitinib",
+            target_condition="EGFR-Mutated Non-Small Cell Lung Cancer",
+            target_outcome="Progression-Free Survival and Overall Survival",
+            target_followup_days=540.0,
+            project_mode="user_cohort",
+        )
+        self.assertGreaterEqual(scored_flaura["match_score"], 0.85)
+        with self.assertRaises(ContractError) as orr_ctx:
+            rct_matcher.verify_and_enrich_target_rct(
+                flaura,
+                intervention="Osimertinib",
+                comparator="Gefitinib",
+                target_condition="EGFR-Mutated Non-Small Cell Lung Cancer",
+                target_outcome="ORR",
+                target_followup_days=540.0,
+                project_mode="user_cohort",
+            )
+        self.assertEqual(orr_ctx.exception.code, "PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED")
+
+        blocked = rct_matcher.audit_study_arm_alignment(
+            {
+                "experimental_arms": ["Dapagliflozin 10 mg"],
+                "comparator_arms": ["Sitagliptin 100 mg + Glimepiride 4 mg"],
+            },
+            intervention="Dapagliflozin",
+            comparator="Sitagliptin",
+            project_mode="user_cohort",
+        )
+        self.assertNotEqual(blocked["arm_alignment_status"], "exact_dual_arm")
+        self.assertEqual(blocked["arm_alignment_status"], "single_arm_or_comparator_mismatch")
+        self.assertLessEqual(blocked["arm_alignment_score_cap"], 0.45)
+
+        ketone = rct_matcher.audit_study_pico4d_alignment(
+            rct_matcher._normalize_api_study(load("NCT03959501")),
+            intervention="Dapagliflozin",
+            comparator="Sitagliptin",
+            target_condition="Type 2 Diabetes Heart Failure",
+            target_outcome="Heart Failure Hospitalization or Cardiovascular Death",
+            target_followup_days=1095.0,
+            project_mode="user_cohort",
+        )
+        self.assertLessEqual(ketone["effective_score_cap"], 0.48)
+        self.assertFalse(ketone["is_recommended"])
+        pk = rct_matcher.audit_study_pico4d_alignment(
+            rct_matcher._normalize_api_study(load("NCT00842556")),
+            intervention="Dapagliflozin",
+            comparator="Sitagliptin",
+            target_condition="Type 2 Diabetes Heart Failure",
+            target_outcome="Heart Failure Hospitalization or Cardiovascular Death",
+            target_followup_days=540.0,
+            project_mode="user_cohort",
+        )
+        self.assertLessEqual(pk["effective_score_cap"], 0.20)
+        self.assertEqual(pk["overall_alignment_status"], "non_efficacy_excluded")
+        same_class = rct_matcher.audit_study_arm_alignment(
+            rct_matcher._normalize_api_study(load("NCT06642272")),
+            intervention="Dapagliflozin",
+            comparator="Sitagliptin",
+            project_mode="user_cohort",
+        )
+        self.assertEqual(same_class["arm_alignment_status"], "single_arm_or_comparator_mismatch")
+        self.assertLessEqual(same_class["arm_alignment_score_cap"], 0.45)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -648,27 +648,100 @@ def urlopen_ctgov(request: Request, timeout: float):
     return _std_urlopen(request, timeout=timeout)
 
 
-def normalize_intervention_spec(raw_text: str) -> dict:
-    """Normalize an English/Chinese drug or regimen label into canonical drug IDs, classes, and English search terms."""
-    cleaned = (raw_text or "").strip()
-    if not cleaned or cleaned.lower() in GENERIC_ARM_PLACEHOLDERS:
-        return {
-            "raw": cleaned,
-            "has_specific_agent": False,
-            "drug_ids": set(),
-            "class_only_ids": set(),
-            "drug_classes": set(),
-            "en_terms": [],
-            "display_label": cleaned or "未指定",
-        }
+_TYPE_PREFIX_RE = re.compile(r"(?i)\b(?:drug|biological|other|procedure|radiation|behavioral)\s*:\s*")
+_COMBO_SPLIT_RE = re.compile(r"[,;+()]|\band\b|\bplus\b|\bwith\b|联合", re.IGNORECASE)
+_OR_SPLIT_RE = re.compile(r"(?i)\s+\bor\b\s+|\s*或\s*|(?<=[A-Za-z])\s*/\s*(?=[A-Za-z])")
+_COMBO_BETWEEN_RE = re.compile(r"(?i)\+| \band\b|\bplus\b|\bwith\b|\bcombined\b|\bcombination\b|联合|合用")
+_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9/-]*|[\u4e00-\u9fff]+")
+_STOP_GAP_RE = re.compile(r"[+,;()]|\bor\b|\band\b|\bplus\b|\bwith\b|或|和")
+_PLACEBO_LEAD_RE = re.compile(
+    r"(?i)\b[a-z0-9][a-z0-9/-]*-matching\s+placebos?\b"
+    r"|\b[a-z0-9][a-z0-9/-]*\s+matching\s+placebos?\b"
+    r"|\bplacebos?\s*(?:to\s+match|matching|matched\s+to|for|of|-matching)\s+[^,;+()]+"
+    r"|\bplacebos?\s*\([^)]*\)"
+    r"|\bmatching\s+placebos?(?:\s+(?:for|to|of)\s+[^,;+()]+)?"
+    r"|\bdummy\s+[a-z0-9][a-z0-9/-]*\b"
+    r"|\b[a-z0-9][a-z0-9/-]*\s+dummy\b"
+    r"|\bplacebos?\s+[a-z0-9][a-z0-9/-]*(?:\s+\d+(?:\.\d+)?\s*(?:mg|mcg|g|ml)\b(?:\s*/\s*\d+(?:\.\d+)?\s*(?:mg|mcg|g|ml)\b)?)?"
+)
+_CN_PLACEBO_RE = re.compile(
+    r"(?:匹配|模拟)\s*[\u4e00-\u9fffA-Za-z0-9/-]{1,16}\s*的?(?:安慰剂|模拟片|模拟剂|模拟胶囊)"
+    r"|[\u4e00-\u9fff]{1,8}\s*(?:安慰剂|模拟片|模拟剂|模拟胶囊)"
+)
 
-    norm_space = re.sub(r"[_/+]+", " ", cleaned.lower())
+
+def _empty_intervention_spec(raw: str) -> dict:
+    return {
+        "raw": raw,
+        "has_specific_agent": False,
+        "drug_ids": set(),
+        "class_only_ids": set(),
+        "drug_classes": set(),
+        "en_terms": [],
+        "display_label": raw or "未指定",
+        "regimen_mode": "all",
+        "alternative_sets": [],
+    }
+
+
+def _mask_trailing_drug_placebo(text: str) -> tuple[str, bool]:
+    """Mask `<drug> placebo` spans (up to 3 tokens) without crossing combination delimiters or `or`."""
+    pieces: list[str] = []
+    saw = False
+    cursor = 0
+    for match in re.finditer(r"(?i)\bplacebos?(?:[-\s]*controlled)?\b", text):
+        if match.start() < cursor:
+            continue
+        prefix = text[cursor:match.start()]
+        tokens = list(_TOKEN_RE.finditer(prefix))
+        span_start = match.start()
+        taken = 0
+        for tok in reversed(tokens):
+            if taken >= 3:
+                break
+            gap = prefix[tok.end():span_start]
+            if _STOP_GAP_RE.search(gap):
+                break
+            if tok.group(0).lower() in {"or", "and", "plus", "with", "或", "和"}:
+                break
+            span_start = tok.start()
+            taken += 1
+        pieces.append(text[cursor:span_start])
+        pieces.append(" ")
+        cursor = match.end()
+        saw = True
+    pieces.append(text[cursor:])
+    return "".join(pieces), saw
+
+
+def _strip_matching_placebos(text: str) -> tuple[str, bool]:
+    """Remove matching-placebo spans so the masked drug is not extracted as an active agent."""
+    saw = False
+    current = text
+    rewritten, count = _PLACEBO_LEAD_RE.subn(" ", current)
+    if count:
+        saw = True
+        current = rewritten
+    rewritten, count = _CN_PLACEBO_RE.subn(" ", current)
+    if count:
+        saw = True
+        current = rewritten
+    current, saw_trail = _mask_trailing_drug_placebo(current)
+    return current, saw or saw_trail
+
+
+def _lexicon_scan(fragment: str) -> tuple[set[str], set[str], set[str], list[str], list[str]]:
+    """Map one atomic fragment onto canonical drug ids, classes, and bilingual labels."""
+    cleaned = (fragment or "").strip()
     matched_drugs: set[str] = set()
     matched_class_only: set[str] = set()
     matched_classes: set[str] = set()
     en_terms: list[str] = []
     zh_displays: list[str] = []
+    if not cleaned:
+        return matched_drugs, matched_class_only, matched_classes, en_terms, zh_displays
 
+    norm_space = re.sub(r"[_/+]+", " ", cleaned.lower())
     for cid, en_q, dclass, zh_disp, is_cls_generic, aliases in DRUG_CLASS_LEXICON:
         hit = False
         for alias in aliases:
@@ -691,14 +764,6 @@ def normalize_intervention_spec(raw_text: str) -> dict:
             if zh_disp not in zh_displays:
                 zh_displays.append(zh_disp)
 
-    # Remove generic class-only marker if a specific drug in that same class was already matched
-    if matched_drugs:
-        specific_classes = {
-            dclass for cid, _, dclass, _, is_gen, _ in DRUG_CLASS_LEXICON if not is_cls_generic_id(cid) and cid in matched_drugs
-        }
-        matched_class_only = {c for c in matched_class_only if c not in specific_classes}
-
-    # Generic fallback token extraction for unlisted drugs (e.g., 'sacubitril', 'trastuzumab', 'lapatinib')
     known_alias_words = {
         w
         for _, _, _, _, _, aliases in DRUG_CLASS_LEXICON
@@ -715,18 +780,241 @@ def normalize_intervention_spec(raw_text: str) -> dict:
         matched_classes.add(f"token_class:{tl}")
         if tok not in en_terms:
             en_terms.append(tok)
+    return matched_drugs, matched_class_only, matched_classes, en_terms, zh_displays
 
+
+def _and_merge_alternative_groups(groups: list[list[frozenset]]) -> tuple[str, list[frozenset]]:
+    acc = [frozenset()]
+    for group in groups:
+        nonempty = [item for item in group if item]
+        if not nonempty:
+            continue
+        acc = [left | right for left in acc for right in nonempty]
+    unique: list[frozenset] = []
+    for item in acc:
+        if item and item not in unique:
+            unique.append(item)
+    if not unique:
+        return "all", []
+    if len(unique) == 1:
+        return "all", unique
+    return "any", unique
+
+
+def _drug_mechanism(cid: str) -> str:
+    if cid.startswith("token:"):
+        return cid
+    for item_cid, _, dclass, _, _, _ in DRUG_CLASS_LEXICON:
+        if item_cid == cid:
+            return dclass
+    return cid
+
+
+def _same_mechanism(drug_ids: set[str]) -> bool:
+    mechanisms = {_drug_mechanism(cid) for cid in drug_ids if cid != "placebo_soc"}
+    return len(mechanisms) == 1 and bool(mechanisms)
+
+
+def _combo_between(text: str, drug_ids: set[str]) -> bool:
+    """True when two active drugs are joined by a combination marker rather than investigator-choice OR."""
+    low = (text or "").lower()
+    starts: list[int] = []
+    for cid in drug_ids:
+        if cid == "placebo_soc":
+            continue
+        positions: list[int] = []
+        if cid.startswith("token:"):
+            tok = re.escape(cid.split(":", 1)[1])
+            positions = [m.start() for m in re.finditer(rf"(?<![a-z0-9]){tok}(?![a-z0-9])", low)]
+        else:
+            for item_cid, _, _, _, _, aliases in DRUG_CLASS_LEXICON:
+                if item_cid != cid:
+                    continue
+                for alias in aliases:
+                    al = alias.lower()
+                    if al:
+                        positions.extend(m.start() for m in re.finditer(re.escape(al), low))
+        if positions:
+            starts.append(min(positions))
+    if len(starts) < 2:
+        return bool(_COMBO_BETWEEN_RE.search(low)) and len(drug_ids) >= 2
+    starts.sort()
+    return bool(_COMBO_BETWEEN_RE.search(low[starts[0]:starts[-1]]))
+
+
+def _pack_intervention_spec(
+    raw: str,
+    *,
+    matched_drugs: set[str],
+    matched_class_only: set[str],
+    matched_classes: set[str],
+    en_terms: list[str],
+    zh_displays: list[str],
+    regimen_mode: str,
+    alternative_sets: list[frozenset],
+) -> dict:
+    if matched_drugs:
+        specific_classes = {
+            dclass
+            for cid, _, dclass, _, _, _ in DRUG_CLASS_LEXICON
+            if not is_cls_generic_id(cid) and cid in matched_drugs
+        }
+        matched_class_only = {cid for cid in matched_class_only if cid not in specific_classes}
     has_agent = bool(matched_drugs or matched_class_only)
-    display = zh_displays[0] if len(zh_displays) == 1 else (cleaned[:60] if cleaned else "未指定")
+    display = zh_displays[0] if len(zh_displays) == 1 else (raw[:60] if raw else "未指定")
     return {
-        "raw": cleaned,
+        "raw": raw,
         "has_specific_agent": has_agent,
         "drug_ids": matched_drugs,
         "class_only_ids": matched_class_only,
         "drug_classes": matched_classes,
         "en_terms": en_terms,
         "display_label": display,
+        "regimen_mode": regimen_mode if len(alternative_sets) > 1 else "all",
+        "alternative_sets": [tuple(sorted(item)) for item in alternative_sets],
     }
+
+
+def normalize_intervention_spec(raw_text: str) -> dict:
+    """Normalize an English/Chinese drug or regimen label into canonical drug IDs, classes, and English search terms.
+
+    Matching placebos (`glimepiride placebo`, `placebo matching osimertinib`, `利格列汀安慰剂`) contribute
+    no active drug. Clauses split on `+` / `and` / `plus` / `with` stay conjunctive, while same-string
+    `or` / `或` / alphabetic `/` joins become investigator-choice alternatives.
+    """
+    cleaned = _TYPE_PREFIX_RE.sub(" ", (raw_text or "").strip())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned or cleaned.lower() in GENERIC_ARM_PLACEHOLDERS:
+        return _empty_intervention_spec(cleaned)
+
+    masked, saw_placebo = _strip_matching_placebos(cleaned)
+    groups: list[list[frozenset]] = []
+    matched_drugs: set[str] = set()
+    matched_class_only: set[str] = set()
+    matched_classes: set[str] = set()
+    en_terms: list[str] = []
+    zh_displays: list[str] = []
+
+    clauses = [part.strip() for part in _COMBO_SPLIT_RE.split(masked) if part and part.strip()]
+    for clause in clauses or [masked]:
+        alt_sets: list[frozenset] = []
+        for frag in [part.strip() for part in _OR_SPLIT_RE.split(clause) if part and part.strip()] or [clause]:
+            drugs, class_only, classes, frag_en, frag_zh = _lexicon_scan(frag)
+            if "placebo_soc" in drugs:
+                saw_placebo = True
+            matched_drugs |= drugs
+            matched_class_only |= class_only
+            matched_classes |= classes
+            for term in frag_en:
+                if term not in en_terms:
+                    en_terms.append(term)
+            for label in frag_zh:
+                if label not in zh_displays:
+                    zh_displays.append(label)
+            active = frozenset(drugs - {"placebo_soc"})
+            if active:
+                alt_sets.append(active)
+        if len(alt_sets) > 1:
+            groups.append(alt_sets)
+        elif len(alt_sets) == 1:
+            groups.append(alt_sets)
+
+    regimen_mode, alternative_sets = _and_merge_alternative_groups(groups)
+    if saw_placebo:
+        matched_drugs.add("placebo_soc")
+        matched_classes.add("placebo_soc")
+    return _pack_intervention_spec(
+        cleaned,
+        matched_drugs=matched_drugs,
+        matched_class_only=matched_class_only,
+        matched_classes=matched_classes,
+        en_terms=en_terms,
+        zh_displays=zh_displays,
+        regimen_mode=regimen_mode,
+        alternative_sets=alternative_sets,
+    )
+
+
+def _active_regimen(spec: dict) -> tuple[str, list[frozenset]]:
+    raw_alts = spec.get("alternative_sets")
+    if not raw_alts:
+        drugs = frozenset(set(spec.get("drug_ids") or ()) - {"placebo_soc"})
+        return "all", [drugs]
+    unique: list[frozenset] = []
+    for alt in raw_alts:
+        cleaned = frozenset(set(alt) - {"placebo_soc"})
+        if cleaned and cleaned not in unique:
+            unique.append(cleaned)
+    if not unique:
+        return "all", [frozenset()]
+    if len(unique) == 1:
+        return "all", unique
+    mode = "any" if spec.get("regimen_mode") == "any" else "all"
+    return mode, unique
+
+
+def _regimens_equal(left: dict, right: dict) -> bool:
+    """Match conjunctive sets by equality, and investigator-choice OR arms when the cohort drug is one alternative."""
+    left_mode, left_sets = _active_regimen(left)
+    right_mode, right_sets = _active_regimen(right)
+    if left_mode == "all" and right_mode == "all":
+        return left_sets == right_sets
+    if left_mode == "any" and right_mode == "any":
+        return set(left_sets) == set(right_sets)
+    if left_mode == "any" and right_mode == "all":
+        return len(right_sets) == 1 and right_sets[0] in left_sets
+    return False
+
+
+def _merge_arm_part_specs(parts: list[str]) -> dict:
+    """Merge an arm label with its intervention items, treating same-class listed agents without `+`/`and` as OR."""
+    specs = [normalize_intervention_spec(part) for part in parts if part and part.strip()]
+    if not specs:
+        return _empty_intervention_spec("")
+    if len(specs) == 1:
+        return specs[0]
+
+    groups: list[list[frozenset]] = []
+    matched_drugs: set[str] = set()
+    matched_class_only: set[str] = set()
+    matched_classes: set[str] = set()
+    en_terms: list[str] = []
+    zh_displays: list[str] = []
+    for spec in specs:
+        matched_drugs |= set(spec.get("drug_ids") or ())
+        matched_class_only |= set(spec.get("class_only_ids") or ())
+        matched_classes |= set(spec.get("drug_classes") or ())
+        for term in spec.get("en_terms") or []:
+            if term not in en_terms:
+                en_terms.append(term)
+        label = str(spec.get("display_label") or "")
+        if label and label not in zh_displays and label != spec.get("raw"):
+            zh_displays.append(label)
+        mode, alts = _active_regimen(spec)
+        active_alts = [alt for alt in alts if alt]
+        if not active_alts:
+            continue
+        if mode == "any":
+            groups.append(active_alts)
+        else:
+            groups.append([frozenset().union(*active_alts)])
+
+    regimen_mode, alternative_sets = _and_merge_alternative_groups(groups)
+    if regimen_mode == "all" and alternative_sets and len(alternative_sets[0]) >= 2:
+        drugs = set(alternative_sets[0])
+        if _same_mechanism(drugs) and not _combo_between(" \n ".join(parts), drugs):
+            regimen_mode = "any"
+            alternative_sets = [frozenset([drug]) for drug in sorted(drugs)]
+    return _pack_intervention_spec(
+        " ".join(parts)[:240],
+        matched_drugs=matched_drugs,
+        matched_class_only=matched_class_only,
+        matched_classes=matched_classes,
+        en_terms=en_terms,
+        zh_displays=zh_displays,
+        regimen_mode=regimen_mode,
+        alternative_sets=alternative_sets,
+    )
 
 
 def is_cls_generic_id(cid: str) -> bool:
@@ -795,9 +1083,15 @@ def _extract_study_arm_specs(study: dict) -> tuple[list[dict], str, int]:
                 lbl = str(d.get("label", "")).strip()
                 inames = " ".join(str(x) for x in (d.get("intervention_names") or []))
                 desc = str(d.get("description", "")).strip()
-                combined = " ".join(p for p in (lbl, inames, desc) if p).strip()
-                if combined:
-                    arm_texts.append(combined)
+                # Drug identity comes from the arm label plus each linked intervention.
+                # Free-text descriptions are used only when those structured fields name no active agent,
+                # so a double-dummy sentence cannot reintroduce the matching-placebo drug.
+                parts = [p for p in (lbl, *([str(x).strip() for x in (d.get("intervention_names") or []) if str(x).strip()])) if p]
+                spec = _merge_arm_part_specs(parts) if parts else _empty_intervention_spec("")
+                if not (set(spec.get("drug_ids") or ()) - {"placebo_soc"} or spec.get("class_only_ids")) and desc:
+                    spec = normalize_intervention_spec(" ".join([*parts, desc]))
+                if parts or desc:
+                    arm_texts.append(spec)
                     arm_labels.append(lbl or inames or "Arm")
     else:
         for lbl in study.get("experimental_arms") or []:
@@ -810,7 +1104,7 @@ def _extract_study_arm_specs(study: dict) -> tuple[list[dict], str, int]:
                 arm_labels.append(str(lbl).strip())
 
     verified_arm_count = len(arm_texts)
-    specs = [normalize_intervention_spec(t) for t in arm_texts]
+    specs = [t if isinstance(t, dict) else normalize_intervention_spec(t) for t in arm_texts]
     if verified_arm_count == 0:
         pooled_intr = "、".join(str(x).split(": ", 1)[-1] for x in (study.get("interventions") or [])[:4]) or "未注明"
         summary_str = f"未声明分组结构（仅研究级干预：{pooled_intr}）"
@@ -993,16 +1287,16 @@ def audit_study_arm_alignment(
                     continue
                 arm_b_drugs = set(arm_b["drug_ids"]) - {"placebo_soc"}
                 arm_b_is_placebo = "placebo_soc" in arm_b["drug_ids"]
-                if t_core_drugs and c_core_drugs and t_core_drugs != c_core_drugs:
-                    if arm_a_drugs == t_core_drugs and arm_b_drugs == c_core_drugs:
+                if t_core_drugs and c_core_drugs and not _regimens_equal(t_spec, c_spec):
+                    if _regimens_equal(arm_a, t_spec) and _regimens_equal(arm_b, c_spec):
                         exact_dual = True
                         break
                 elif t_core_drugs and not c_core_drugs and c_is_placebo:
-                    if arm_a_drugs == t_core_drugs and len(arm_b_drugs) == 0 and arm_b_is_placebo:
+                    if _regimens_equal(arm_a, t_spec) and len(arm_b_drugs) == 0 and arm_b_is_placebo:
                         exact_dual = True
                         break
                 elif not t_core_drugs and t_is_placebo and c_core_drugs:
-                    if len(arm_a_drugs) == 0 and arm_a_is_placebo and arm_b_drugs == c_core_drugs:
+                    if len(arm_a_drugs) == 0 and arm_a_is_placebo and _regimens_equal(arm_b, c_spec):
                         exact_dual = True
                         break
             if exact_dual:

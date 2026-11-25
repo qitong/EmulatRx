@@ -1601,56 +1601,9 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                         },
                     }
                 },
-                # 4. NCT01243424: CAROLINA 4D positive control (Linagliptin vs Glimepiride in T2DM CV risk MACE)
-                {
-                    "protocolSection": {
-                        "identificationModule": {
-                            "nctId": "NCT01243424",
-                            "briefTitle": "CAROLINA: Cardiovascular Outcome Study of Linagliptin Versus Glimepiride in Patients With Type 2 Diabetes",
-                        },
-                        "statusModule": {"overallStatus": "COMPLETED"},
-                        "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE3"], "enrollmentInfo": {"count": 6042}, "designInfo": {"allocation": "RANDOMIZED"}},
-                        "conditionsModule": {"conditions": ["Diabetes Mellitus, Type 2", "Cardiovascular Risk"]},
-                        "armsInterventionsModule": {
-                            "armGroups": [
-                                {"label": "Linagliptin 5 mg", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Linagliptin"]},
-                                {"label": "Glimepiride 1-4 mg", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Glimepiride"]},
-                            ],
-                            "interventions": [{"name": "Linagliptin", "type": "DRUG"}, {"name": "Glimepiride", "type": "DRUG"}],
-                        },
-                        "eligibilityModule": {"healthyVolunteers": False, "eligibilityCriteria": "Inclusion Criteria:\n* Type 2 diabetes with elevated cardiovascular risk"},
-                        "outcomesModule": {
-                            "primaryOutcomes": [{"measure": "Time to First Occurrence of 3P-MACE (CV Death, Non-fatal MI, or Non-fatal Stroke)", "timeFrame": "Up to 8 years"}]
-                        },
-                    }
-                },
-                # 5. NCT02296125: FLAURA 4D positive control (Osimertinib vs Gefitinib in EGFR-mutated NSCLC PFS/OS)
-                {
-                    "protocolSection": {
-                        "identificationModule": {
-                            "nctId": "NCT02296125",
-                            "briefTitle": "AZD9291 (Osimertinib) Versus Gefitinib in Locally Advanced or Metastatic NSCLC (FLAURA)",
-                        },
-                        "statusModule": {"overallStatus": "COMPLETED"},
-                        "designModule": {"studyType": "INTERVENTIONAL", "phases": ["PHASE3"], "enrollmentInfo": {"count": 556}, "designInfo": {"allocation": "RANDOMIZED"}},
-                        "conditionsModule": {"conditions": ["Non-Small Cell Lung Cancer"]},
-                        "armsInterventionsModule": {
-                            "armGroups": [
-                                {"label": "Osimertinib 80 mg", "type": "EXPERIMENTAL", "interventionNames": ["Drug: Osimertinib"]},
-                                {"label": "Gefitinib 250 mg", "type": "ACTIVE_COMPARATOR", "interventionNames": ["Drug: Gefitinib"]},
-                            ],
-                            "interventions": [{"name": "Osimertinib", "type": "DRUG"}, {"name": "Gefitinib", "type": "DRUG"}],
-                        },
-                        "eligibilityModule": {
-                            "healthyVolunteers": False,
-                            "eligibilityCriteria": "Inclusion Criteria:\n* Locally advanced or metastatic NSCLC with EGFR exon 19 deletion or L858R mutation",
-                        },
-                        "outcomesModule": {
-                            "primaryOutcomes": [{"measure": "Progression-Free Survival (PFS)", "timeFrame": "18 months"}],
-                            "secondaryOutcomes": [{"measure": "Overall Survival (OS)", "timeFrame": "36 months"}],
-                        },
-                    }
-                },
+                # 4–5. Official ClinicalTrials.gov API v2 records: CAROLINA double-dummy and FLAURA SoC OR.
+                json.loads((Path(__file__).resolve().parent / "fixtures" / "ctgov" / "NCT01243424.json").read_text(encoding="utf-8")),
+                json.loads((Path(__file__).resolve().parent / "fixtures" / "ctgov" / "NCT02296125.json").read_text(encoding="utf-8")),
             ]
         }
 
@@ -1861,7 +1814,7 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                 self.assertEqual(self.wait_dual_run(mcp_ketone_ok["run_id"])["state"], "completed")
 
                 # --- Part B: True 4D Positive Controls (CAROLINA NCT01243424 & FLAURA NCT02296125) run with zero confirmation friction ---
-                for sample_key, expected_nct in (("t2dm_cv_carolina", "NCT01243424"), ("nsclc_egfr_flaura", "NCT02296125")):
+                for sample_key, expected_nct in (("sample_t2dm_cv_carolina", "NCT01243424"), ("sample_nsclc_egfr_tki", "NCT02296125")):
                     up_pos = self.client.post(
                         "/api/sessions/upload",
                         headers=self.web_auth,
@@ -1885,17 +1838,39 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                     self.assertEqual(srch_pos.status_code, 200, srch_pos.text)
                     top_pos = srch_pos.json()["candidates"][0]
                     self.assertEqual(top_pos["nct_id"], expected_nct)
+                    self.assertEqual(top_pos["arm_alignment_status"], "exact_dual_arm")
                     self.assertEqual(top_pos["overall_alignment_status"], "protocol_aligned")
                     self.assertTrue(top_pos["is_recommended"])
+                    self.assertGreaterEqual(top_pos["match_score"], 0.85)
+                    arm_blob = " ".join(top_pos.get("experimental_arms") or []) + " " + " ".join(top_pos.get("comparator_arms") or [])
+                    if expected_nct == "NCT01243424":
+                        self.assertIn("glimepiride placebo", arm_blob)
+                        self.assertIn("linagliptin placebo", arm_blob)
+                    else:
+                        self.assertIn("Gefitinib", arm_blob)
+                        self.assertIn("Erlotinib", arm_blob)
+                        self.assertIn("Placebo", arm_blob)
 
                     map_pos = up_pos.json()["default_mapping"]
                     map_pos["bootstrap_iterations"] = 20
-                    run_pos = self.client.post(
-                        "/api/v1/projects/user-cohort/runs",
+                    draft_pos = self.client.post(
+                        "/api/rcts/draft",
                         headers=self.web_auth,
-                        json={"session_id": sid_pos, "mapping": map_pos, "target_rct": top_pos},
+                        json={"project_mode": "user_cohort", "session_id": sid_pos, "target_rct": top_pos},
                     )
-                    self.assertEqual(run_pos.status_code, 202, run_pos.text)
+                    self.assertIn(draft_pos.status_code, (200, 202), draft_pos.text)
+                    self.assertEqual(draft_pos.json()["target_rct"]["arm_alignment_status"], "exact_dual_arm")
+                    run_pos = self.client.post(
+                        "/api/dual-runs",
+                        headers=self.web_auth,
+                        json={
+                            "project_mode": "user_cohort",
+                            "session_id": sid_pos,
+                            "mapping": map_pos,
+                            "target_rct": top_pos,
+                        },
+                    )
+                    self.assertIn(run_pos.status_code, (200, 202), run_pos.text)
                     pos_run_id = run_pos.json()["run_id"]
                     fin_pos = self.wait_dual_run(pos_run_id)
                     self.assertEqual(fin_pos["state"], "completed", fin_pos)

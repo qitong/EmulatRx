@@ -1,0 +1,145 @@
+{
+  "protocolSection": {
+    "identificationModule": {
+      "nctId": "NCT00842556",
+      "orgStudyIdInfo": {
+        "id": "MB102-037"
+      },
+      "organization": {
+        "fullName": "AstraZeneca",
+        "class": "INDUSTRY"
+      },
+      "briefTitle": "Pharmacokinetic Drug Interaction Study of Dapagliflozin and Glimepiride or Sitagliptin in Healthy Subjects",
+      "officialTitle": "Pharmacokinetic Drug Interaction Study of Dapagliflozin and Glimepiride or Sitagliptin in Healthy Subjects"
+    },
+    "statusModule": {
+      "overallStatus": "COMPLETED"
+    },
+    "designModule": {
+      "studyType": "INTERVENTIONAL",
+      "phases": [
+        "PHASE1"
+      ],
+      "designInfo": {
+        "allocation": "RANDOMIZED",
+        "interventionModel": "CROSSOVER",
+        "maskingInfo": {
+          "masking": "NONE"
+        }
+      },
+      "enrollmentInfo": {
+        "count": 18,
+        "type": "ACTUAL"
+      }
+    },
+    "conditionsModule": {
+      "conditions": [
+        "Type 2 Diabetes Mellitus"
+      ]
+    },
+    "armsInterventionsModule": {
+      "armGroups": [
+        {
+          "label": "Dapagliflozin",
+          "type": "ACTIVE_COMPARATOR",
+          "interventionNames": [
+            "Drug: Dapagliflozin"
+          ]
+        },
+        {
+          "label": "Glimepiride",
+          "type": "ACTIVE_COMPARATOR",
+          "interventionNames": [
+            "Drug: Glimepiride"
+          ]
+        },
+        {
+          "label": "Dapagliflozin + Glimepiride",
+          "type": "ACTIVE_COMPARATOR",
+          "interventionNames": [
+            "Drug: Dapagliflozin",
+            "Drug: Glimepiride"
+          ]
+        },
+        {
+          "label": "Sitagliptin",
+          "type": "ACTIVE_COMPARATOR",
+          "interventionNames": [
+            "Drug: Sitagliptin"
+          ]
+        },
+        {
+          "label": "Dapagliflozin + Sitagliptin",
+          "type": "ACTIVE_COMPARATOR",
+          "interventionNames": [
+            "Drug: Dapagliflozin",
+            "Drug: Sitagliptin"
+          ]
+        }
+      ],
+      "interventions": [
+        {
+          "type": "DRUG",
+          "name": "Dapagliflozin",
+          "description": "Tablets, Oral, 20 mg, Single Dose",
+          "armGroupLabels": [
+            "Dapagliflozin",
+            "Dapagliflozin + Glimepiride",
+            "Dapagliflozin + Sitagliptin"
+          ],
+          "otherNames": [
+            "BMS-512148"
+          ]
+        },
+        {
+          "type": "DRUG",
+          "name": "Glimepiride",
+          "description": "Tablets, Oral, 4 mg, Single Dose",
+          "armGroupLabels": [
+            "Dapagliflozin + Glimepiride",
+            "Glimepiride"
+          ],
+          "otherNames": [
+            "Amaryl"
+          ]
+        },
+        {
+          "type": "DRUG",
+          "name": "Sitagliptin",
+          "description": "Tablets, Oral, 100 mg, Single Dose",
+          "armGroupLabels": [
+            "Dapagliflozin + Sitagliptin",
+            "Sitagliptin"
+          ],
+          "otherNames": [
+            "Januvia"
+          ]
+        }
+      ]
+    },
+    "eligibilityModule": {
+      "eligibilityCriteria": "Inclusion Criteria:\n\n* Healthy subjects as determined by no clinically significant deviation from normal in medical history, physical examination, ECGs, and clinical laboratory determinations\n* Body mass index (BMI) of 18 to 32 kg/m2, inclusive BMI = weight (kg)/\\[height(m)\\]2\n\nExclusion Criteria:\n\n* WOCBP who are unwilling or unable to use an acceptable method to avoid pregnancy for the entire study period and for up to 12 weeks after the last dose of investigational product\n* Abnormal liver functions tests (ALT, AST or total bilirubin \\> 10% above ULN)\n* History of chronic or recurrent UTI (defined as 3 occurrences per year) or UTI in the past 3 months\n* History of allergy to SGLT@ inhibitors, DPP$ inhibitors or sulfonylurea or related compounds\n* Prior exposure to dapagliflozin, sitagliptin and glimepiride within 3 months of Day -1\n* History of recurrent (defined as 3 occurrences per year) or recent vulvovaginal mycotic infections",
+      "healthyVolunteers": true,
+      "sex": "ALL",
+      "minimumAge": "18 Years",
+      "maximumAge": "45 Years",
+      "stdAges": [
+        "ADULT"
+      ]
+    },
+    "outcomesModule": {
+      "primaryOutcomes": [
+        {
+          "measure": "Exposure to the investigational drug will be measured to compare with and without the co-administration of other drugs",
+          "timeFrame": "72 hours after dosing"
+        }
+      ],
+      "secondaryOutcomes": [
+        {
+          "measure": "To assess the safety and tolerability in healthy subjects",
+          "timeFrame": "15 time points up to 72 hours after dosing"
+        }
+      ]
+    }
+  }
+}

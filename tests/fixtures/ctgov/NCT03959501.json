@@ -1,0 +1,154 @@
+{
+  "protocolSection": {
+    "identificationModule": {
+      "nctId": "NCT03959501",
+      "orgStudyIdInfo": {
+        "id": "UW-17-166"
+      },
+      "organization": {
+        "fullName": "The University of Hong Kong",
+        "class": "OTHER"
+      },
+      "briefTitle": "Metabolic Responses of Dapagliflozin vs Sitagliptin in T2DM Patients Inadequately Controlled With Insulin Therapy",
+      "officialTitle": "A Randomized Study to Evaluate the Metabolic Responses of Adding Dapagliflozin Versus Sitagliptin to Chinese Patients With Type 2 Diabetes Inadequately Controlled With Insulin Therapy (DISTINCTION Study)"
+    },
+    "statusModule": {
+      "overallStatus": "COMPLETED"
+    },
+    "designModule": {
+      "studyType": "INTERVENTIONAL",
+      "phases": [
+        "PHASE4"
+      ],
+      "designInfo": {
+        "allocation": "RANDOMIZED",
+        "interventionModel": "PARALLEL",
+        "primaryPurpose": "TREATMENT",
+        "maskingInfo": {
+          "masking": "NONE"
+        }
+      },
+      "enrollmentInfo": {
+        "count": 60,
+        "type": "ACTUAL"
+      }
+    },
+    "conditionsModule": {
+      "conditions": [
+        "Type 2 Diabetes",
+        "Ketonemia"
+      ],
+      "keywords": [
+        "Type 2 diabetes",
+        "Sodium glucose co-transporter 2 inhibitors",
+        "Ketones"
+      ]
+    },
+    "armsInterventionsModule": {
+      "armGroups": [
+        {
+          "label": "Dapagliflozin",
+          "type": "EXPERIMENTAL",
+          "description": "Dapagliflozin 10mg daily PO for 24 weeks",
+          "interventionNames": [
+            "Drug: Dapagliflozin 10 mg"
+          ]
+        },
+        {
+          "label": "Sitagliptin",
+          "type": "ACTIVE_COMPARATOR",
+          "description": "Sitagliptin 100mg daily PO for 24 weeks",
+          "interventionNames": [
+            "Drug: Sitagliptin 100mg"
+          ]
+        }
+      ],
+      "interventions": [
+        {
+          "type": "DRUG",
+          "name": "Dapagliflozin 10 mg",
+          "description": "Dapagliflozin 10mg daily for 24 weeks",
+          "armGroupLabels": [
+            "Dapagliflozin"
+          ],
+          "otherNames": [
+            "Forxiga"
+          ]
+        },
+        {
+          "type": "DRUG",
+          "name": "Sitagliptin 100mg",
+          "description": "Sitagliptin 100mg daily for 24 weeks",
+          "armGroupLabels": [
+            "Sitagliptin"
+          ],
+          "otherNames": [
+            "Januvia"
+          ]
+        }
+      ]
+    },
+    "eligibilityModule": {
+      "eligibilityCriteria": "Inclusion Criteria:\n\n* Chinese\n* Aged 21 to 75 both inclusive\n* Type 2 diabetes on single or two doses of insulin therapy with or without metformin, which include intermediate acting human insulin, premixed human insulin or insulin analogues\n* On stable insulin doses, as defined by less than 10% changes in total daily insulin dose within 3 months prior to randomization\n* Suboptimal glycaemic control with baseline HbA1c ≥8.0% and ≤10.5%, taken within 2 months prior to randomization\n* Body mass index between 21 and 40 kg/m2\n\nExclusion Criteria:\n\n* Type 1 diabetes mellitus\n* History of ketoacidosis\n* Concurrent use of sulphonylurea or glucagon like peptide-1 receptor (GLP1) agonists\n* Prior use of SGLT2 inhibitors, DPP4-inhibitors or GLP1 agonists within 3 months of randomization\n* History of intolerance to SGLT2 inhibitors or DPP4-inhibitors\n* Concurrent use of loop diuretics\n* eGFR \\<45 ml/min/1.73m2 within 3 months prior to randomization\n* History of acute or chronic pancreatitis\n* History of benign or malignant pancreatic tumours\n* History of bladder cancer\n* Alcohol or drug abuse\n* Pregnant or nursing women\n* Women at childbearing age not using and refused to start chemical or mechanical contraception after randomization\n* Severe liver disease with elevated plasma alanine aminotransferase (ALT) of more than five times the upper limit of normal, taken within 3 months prior to randomization\n* Active or history of malignancy within 5 years prior to randomization\n* Hospitalization for acute illness within 3 months prior to randomization\n* Severe mental disorder\n* Unable to understand written patient information and to give informed consent\n* Ongoing participation in other clinical intervention trials\n* Other unspecified concomitant conditions that deemed unsuitable for study participation upon professional judgments by principal investigators",
+      "healthyVolunteers": false,
+      "sex": "ALL",
+      "minimumAge": "21 Years",
+      "maximumAge": "75 Years",
+      "stdAges": [
+        "ADULT",
+        "OLDER_ADULT"
+      ]
+    },
+    "outcomesModule": {
+      "primaryOutcomes": [
+        {
+          "measure": "Change in serum ketone levels after treatment",
+          "description": "Change in serum ketone levels before and after treatment with either dapagliflozin or sitagliptin for 24 weeks",
+          "timeFrame": "24 weeks"
+        }
+      ],
+      "secondaryOutcomes": [
+        {
+          "measure": "Change in fasting glucose",
+          "description": "Change in fasting plasma glucose before and after treatment with either dapagliflozin or sitagliptin for 24 weeks",
+          "timeFrame": "24 weeks"
+        },
+        {
+          "measure": "Change in glycated haemoglobin",
+          "description": "Change in glycated haemoglobin before and after treatment with either dapagliflozin or sitagliptin for 24 weeks",
+          "timeFrame": "24 weeks"
+        },
+        {
+          "measure": "Change in body weight",
+          "description": "Change in body weight before and after treatment with either dapagliflozin or sitagliptin for 24 weeks",
+          "timeFrame": "24 weeks"
+        },
+        {
+          "measure": "Change in blood pressure",
+          "description": "Change in systolic and diastolic blood pressure before and after treatment with either dapagliflozin or sitagliptin for 24 weeks",
+          "timeFrame": "24 weeks"
+        },
+        {
+          "measure": "Change in fasting lipid",
+          "description": "Change in fasting lipid before and after treatment with either dapagliflozin or sitagliptin for 24 weeks",
+          "timeFrame": "24 weeks"
+        },
+        {
+          "measure": "Change in free fatty acid levels",
+          "description": "Change in free fatty acid levels before and after treatment with either dapagliflozin or sitagliptin for 24 weeks",
+          "timeFrame": "24 weeks"
+        },
+        {
+          "measure": "Change in fasting glucagon levels",
+          "description": "Change in fasting glucagon levels before and after treatment with either dapagliflozin or sitagliptin for 24 weeks",
+          "timeFrame": "24 weeks"
+        },
+        {
+          "measure": "Change in homeostasis model assessment 2 steady-state beta-cell function",
+          "description": "Change in homeostasis model assessment 2 steady-state beta-cell function before and after treatment with either dapagliflozin or sitagliptin for 24 weeks",
+          "timeFrame": "24 weeks"
+        }
+      ]
+    }
+  }
+}
