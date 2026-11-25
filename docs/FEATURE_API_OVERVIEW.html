@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EmulatRx 功能、核心 API 与自动化测试矩阵概览（2026-11-24）</title>
+  <style>
+    :root {
+      --ink: #162e2a;
+      --muted: #526763;
+      --line: #d4dfda;
+      --paper: #fbfaf7;
+      --card: #ffffff;
+      --accent: #0f6a5c;
+      --accent-soft: #e6f4f0;
+      --purple: #6d28d9;
+      --purple-soft: #f5f3ff;
+      --amber: #92400e;
+      --amber-soft: #fffbeb;
+      --red: #991b1b;
+      --red-soft: #fef2f2;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 15.5px/1.68 "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif;
+      background: #edf2ef;
+      color: var(--ink);
+    }
+    main {
+      max-width: 1220px;
+      margin: 24px auto;
+      padding: clamp(20px, 3vw, 42px);
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      box-shadow: 0 10px 30px rgba(22, 46, 42, 0.08);
+    }
+    h1, h2, h3 {
+      font-family: "Songti SC", "Noto Serif CJK SC", "STSong", serif;
+      line-height: 1.35;
+      color: var(--ink);
+    }
+    h1 { margin: 0 0 10px; font-size: 1.9rem; }
+    h2 {
+      margin: 34px 0 14px;
+      padding-bottom: 8px;
+      border-bottom: 2px solid var(--line);
+      font-size: 1.42rem;
+    }
+    h3 { margin: 16px 0 8px; font-size: 1.1rem; }
+    code, pre {
+      font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
+      font-size: 0.85em;
+    }
+    code {
+      background: #eaf0ed;
+      padding: 2px 6px;
+      border-radius: 4px;
+      word-break: break-all;
+    }
+    pre {
+      background: #182926;
+      color: #ecfdf5;
+      padding: 14px 16px;
+      border-radius: 7px;
+      overflow-x: auto;
+      line-height: 1.55;
+    }
+    pre code { background: transparent; padding: 0; color: inherit; }
+    .hero {
+      background: linear-gradient(135deg, #e6f4f0 0%, #f4f9f7 100%);
+      border-left: 6px solid var(--accent);
+      border-radius: 8px;
+      padding: 20px 24px;
+      margin-bottom: 22px;
+    }
+    .badges { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+    .badge {
+      display: inline-block;
+      padding: 3px 11px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 700;
+    }
+    .badge-main { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
+    .badge-pr { background: var(--purple-soft); color: var(--purple); border: 1px solid #c4b5fd; }
+    .badge-priv { background: var(--amber-soft); color: var(--amber); border: 1px solid #fcd34d; }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 16px;
+      margin: 14px 0;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px 18px;
+    }
+    .card-merged { border-top: 4px solid var(--accent); }
+    .card-inflight { border-top: 4px solid var(--purple); }
+    .callout {
+      background: var(--amber-soft);
+      border-left: 5px solid #d97706;
+      padding: 12px 16px;
+      border-radius: 6px;
+      margin: 14px 0;
+      color: var(--amber);
+      font-size: 0.92rem;
+    }
+    .table-wrap { overflow-x: auto; margin: 14px 0; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--card);
+      font-size: 0.9rem;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: #eef4f1; font-weight: 700; }
+    .code-ok { color: #166534; font-weight: 700; }
+    .code-warn { color: #b45309; font-weight: 700; }
+    .code-err { color: var(--red); font-weight: 700; }
+    ul { margin: 8px 0; padding-left: 20px; }
+    li { margin: 4px 0; }
+    @media print {
+      body { background: #fff; }
+      main { box-shadow: none; border: 0; margin: 0; max-width: none; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header class="hero">
+    <div class="badges">
+      <span class="badge badge-main">main 基线: a9f98790（含 PR #18 P1 宽限期 CCW 已合并）</span>
+      <span class="badge badge-pr">在途待合并: PR #16 双入口四维 PICO-T 工作台（change_class=framework）</span>
+      <span class="badge badge-priv">零外链离线自包含文档 · 个体行记录 0 外发</span>
+    </div>
+    <h1>qitong/EmulatRx · 功能、核心 API 与自动化测试矩阵概览</h1>
+    <p style="margin:6px 0 0;color:var(--muted)">
+      确定性目标试验模拟（Target Trial Emulation, TTE）科学计算引擎（<code>emulatrx_tte</code>）、双侧宽限期克隆–删失–加权工作台（<code>emulatrx_tte.ccw</code>）与面向临床研究者的「研究想法 / 自有数据」双入口 Web / REST / MCP 服务（<code>emulatrx_preview</code>）全景说明。
+    </p>
+  </header>
+
+  <h2>1. 仓库能力矩阵（<code>main</code> 已合入 vs 在途开放 PR #16）</h2>
+  <div class="grid-2">
+    <div class="card card-merged">
+      <h3>✅ 已合入 <code>main</code>（<code>a9f98790</code>）</h3>
+      <ul>
+        <li><strong>标准库合成契约与公开来源收据（<code>emulatrx_demo</code>，PR #4/#5/#6）</strong>：零第三方依赖 <code>validate</code> / <code>demo</code> 与公开 <code>ClinicalTrials.gov</code> 12 键双 SHA-256 来源收据 <code>metadata</code>。</li>
+        <li><strong>七要素静态/地标竞争风险 TTE 引擎（<code>emulatrx_tte</code>，PR #10/#14）</strong>：<code>emulatrx_tte.validate-protocol</code>、<code>emulatrx_tte.synth</code>、<code>emulatrx_tte.diagnose</code>（重叠加权/IPTW 正值性·ESS·|SMD| 门禁，退出码 <code>3</code> Fail-Closed）、<code>emulatrx_tte.estimate</code> 与 <code>emulatrx_tte.run-synthetic</code>（加权 Aalen–Johansen 双 CIF、Fine–Gray <code>sHR</code>、原因特异 Cox <code>csHR_1</code>/<code>csHR_2</code>、时点 <code>RD</code>/<code>RR_CIF</code> 与 E-value 并列输出）及外部技能规范 <code>skills/emulatrx-tte/SKILL.md</code>。</li>
+        <li><strong>P1 双侧宽限期治疗克隆–删失–加权模块（<code>emulatrx_tte.ccw</code>，#17 / PR #18）</strong>：<code>validate-ccw</code>、<code>synth-ccw</code>、<code>run-ccw-synthetic</code>（<code>tte-ccw-v1</code> 对称双侧克隆、分臂独立稳定化 IPCW——仅基线协变量时拟合宽限期边界依从 Logistic、声明 <code>time_varying_covariates</code> <code>X_tv</code> 时在无期后治疗–混杂反馈边界下拟合逐期决策前启动风险率乘积——分位数感知截尾与截尾前极值门禁、克隆前患者主键聚类重拟合 Bootstrap 及自包含中文 SVG 报告 <code>ccw_preview_report.html</code>），并收口遗留缺陷函数 <code>emulation_utils.adjust_immortal_time_bias</code> 为显式 <code>RuntimeError</code>。</li>
+        <li><strong>私网合成预览容器基座（PR #13）</strong>：ARM64 容器构建（<code>Dockerfile.preview</code>）与 Web / MCP 双凭证分离基座。</li>
+      </ul>
+    </div>
+    <div class="card card-inflight">
+      <h3>🟣 在途开放待审（PR #16 / Issue #15，<code>qitong/emulatrx-dualmode-rct-workbench</code>）</h3>
+      <ul>
+        <li><strong>研究者双入口四步中文工作台</strong>：路径一「上传脱敏 CSV/TSV 或一键载入 4 套真实临床表头样表（心肾心衰 1,500 例、KEYNOTE-189 肺癌免疫 1,200 例、CAROLINA 糖尿病心血管 1,400 例、FLAURA EGFR 肺癌 1,200 例）」→ 🟢 真项目分析报告（<code>user_cohort</code>）；路径二「中文临床研究想法」→ 🟣 无数据模拟可行性预演报告（<code>simulated_cohort</code>，含预设 DGP 真值恢复对比表）。</li>
+        <li><strong>实时 <code>ClinicalTrials.gov</code> API v2 检索与五维 PICO-T 对齐门禁（<code>rct_matcher.py</code>）</strong>：逐候选核验研究设计与健康人/PK 排除（<code>NCT00842556</code> 硬上限 <code>0.20</code>）、目标人群适应证（严格在 <code>Exclusion Criteria</code> / <code>排除标准</code> 之前提取正向纳入人群，缺关键合并症上限 <code>0.55</code>）、双臂全方案活性药物集合严格相等、主要终点临床事件 vs 短期替代生物标志物（如 <code>NCT03959501</code> 24 周血酮变化硬上限 <code>0.48</code>）及随访时间窗充足度；在大模型重排后再次执行硬上限锁，渲染四维中文状态胶囊，并对一切非 <code>protocol_aligned</code> 试验执行 <code>422</code> 显式知情确认门禁。</li>
+        <li><strong>三层隐私安全 LLM 辅助与会话一键物理清除</strong>：<code>25 MB</code>（<code>64 KiB</code> 流式分块）上传上限保护、个体记录 0 外发隐私拦截器与无条件全盘清扫派生运行的会话物理删除。</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>2. 鉴权、密钥挂载与网络/数据隔离边界</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>安全边界维度</th>
+          <th>配置项 / 挂载契约</th>
+          <th>强制隔离与降级行为</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Web UI 与 REST API</strong></td>
+          <td>HTTP Basic 鉴权（<code>preview:&lt;WEB_PASSWORD&gt;</code>，容器读取 <code>EMULATRX_WEB_PASSWORD_FILE</code>，部署对应 <code>EMULATRX_PREVIEW_USER</code> / <code>EMULATRX_PREVIEW_PASS</code>）+ <code>EMULATRX_ALLOWED_HOSTS</code> 同源校验</td>
+          <td><code>ymadmin</code> 私网仅监听 Tailscale <code>100.121.92.1:8602</code>（SSH 本地隧道 <code>127.0.0.1:18602</code>），零公网端口暴露；仅 <code>GET /healthz</code> 免鉴权返回存活状态。</td>
+        </tr>
+        <tr>
+          <td><strong>Streamable HTTP MCP（<code>/mcp</code>）</strong></td>
+          <td>独立 Bearer Token（<code>Authorization: Bearer &lt;MCP_TOKEN&gt;</code>，读取 <code>EMULATRX_MCP_TOKEN_FILE</code> / <code>EMULATRX_PREVIEW_MCP_TOKEN</code>）</td>
+          <td>服务启动时强制校验与 Web 密码绝不相同（相同则拒绝启动），绝不复用 GigaTIME 或 MedGemma 等外部服务凭证；拿 Web Basic 访问 <code>/mcp</code> 或拿 MCP Token 访问 Web 均返回 <code>401</code>。</td>
+        </tr>
+        <tr>
+          <td><strong>LLM 兼容网关（DeepSeek / 百炼 / OpenAI）</strong></td>
+          <td>只读 Docker Secret 文件 <code>EMULATRX_LLM_API_KEY_FILE=/run/secrets/llm_api_key</code>（权限 <code>0400</code>，运行用户 <code>UID 10001</code>）优先于环境变量</td>
+          <td>未挂载密钥、空文件或网关超时时 100% 自动降级为本地确定性规则引擎；外发请求经三层隔离与 <code>assert_llm_payload_privacy_safe</code> 审查，任何个体 ID 或非白名单原始值一律触发 <code>400 PRIVACY_VIOLATION_BLOCKED</code> 本地阻断，密钥零回显。</td>
+        </tr>
+        <tr>
+          <td><strong>会话队列隔离落盘与物理擦除</strong></td>
+          <td><code>EMULATRX_RUNS_DIR/sessions/&lt;session_id&gt;/</code>（目录权限 <code>0700</code>）</td>
+          <td>调用 <code>DELETE /api/cohorts/{session_id}</code>（或 <code>/api/sessions/{session_id}</code>、MCP <code>delete_cohort_session</code>）无条件扫描清理会话及全部关联运行目录并执行磁盘零残留复核，擦除后访问一律返回 <code>404</code>。</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>3. 全量调用入口总表（Web、REST、CLI、Python SDK 与 MCP）</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>入口类别</th>
+          <th>路由 / 命令 / SDK / 工具名</th>
+          <th>核心输入参数</th>
+          <th>返回结构与产物清单</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Web 交互路由</strong></td>
+          <td><code>GET /</code> · <code>GET /protocol/new</code> · <code>POST /validate</code> · <code>POST /runs</code> · <code>GET /runs/{id}</code> · <code>GET /runs/{id}/report[?download=1]</code> · <code>GET /runs/{id}/artifacts/{name}</code> · <code>GET /healthz</code></td>
+          <td>浏览器四步向导操作或固定七要素合成表单字段</td>
+          <td>四步双轨工作台 HTML、四维状态徽章候选卡片、Step-After CIF / Love Plot / 倾向重叠 SVG、可打印独立 HTML 报告及受控白名单产物下载</td>
+        </tr>
+        <tr>
+          <td><strong>REST · 样表与会话</strong></td>
+          <td><code>GET /api/workbench/bootstrap</code> · <code>GET /api/samples/{sample_id}/download</code> · <code>POST /api/sessions/upload</code> · <code>POST /api/sessions/{id}/note</code> · <code>GET|DELETE /api/cohorts/{id}</code>（及 <code>/api/sessions/{id}</code>）</td>
+          <td><code>multipart/form-data</code> CSV/TSV（≤25 MB 流式分块）或 JSON <code>{"sample_id": "..."}</code></td>
+          <td><code>session_id</code>、脱敏表级画像 <code>profile</code>、双臂/适应证/结局线索 <code>interpretation</code>、推荐字段映射 <code>default_mapping</code> 及会话物理删除回执</td>
+        </tr>
+        <tr>
+          <td><strong>REST · 想法与四维检索</strong></td>
+          <td><code>POST /api/idea/parse</code> · <code>POST /api/rcts/search</code> · <code>POST /api/rcts/draft</code></td>
+          <td><code>idea_text</code> 或 <code>query</code> / <code>condition</code> / <code>intervention</code> / <code>comparator</code> / <code>outcome</code>（自动持久化至会话并跨步传递） / <code>session_id</code> / <code>confirm_arm_mismatch</code> / <code>confirm_protocol_mismatch</code></td>
+          <td>结构化中文 PICO、含 <code>dimension_audit</code> 四维胶囊与 <code>effective_score_cap</code> 硬上限的候选 RCT 列表、对齐后的映射或模拟七要素协议草稿</td>
+        </tr>
+        <tr>
+          <td><strong>REST · 双轨执行</strong></td>
+          <td><code>POST /api/dual-runs</code> · <code>POST /api/v1/projects/user-cohort/runs</code> · <code>POST /api/v1/projects/simulated/runs</code> · <code>GET /api/dual-runs/{run_id}</code></td>
+          <td><code>session_id</code> + <code>mapping</code>（或 <code>pico</code> + <code>sim_config</code>）+ <code>target_rct</code> + 可选 <code>condition</code>/<code>intervention</code>/<code>comparator</code>/<code>outcome</code> 覆写 + 偏离确认布尔值</td>
+          <td><code>202 Accepted</code> 异步任务句柄；完成后返回纳排瀑布、平衡诊断、双 CIF 曲线、五量并列表、模拟真值恢复表及服务端渲染 HTML</td>
+        </tr>
+        <tr>
+          <td><strong>MCP 工具（<code>POST /mcp</code>）</strong></td>
+          <td><code>search_target_rcts</code> · <code>profile_cohort_session</code> · <code>start_user_cohort_tte</code> · <code>start_simulated_rct_tte</code> · <code>delete_cohort_session</code> · <code>validate_tte_protocol</code> · <code>start_synthetic_tte</code> · <code>get_tte_run</code> · <code>read_tte_artifact</code></td>
+          <td>JSON-RPC <code>tools/list</code> 与 <code>tools/call</code> 参数（支持 <code>confirm_arm_mismatch</code> 与 <code>confirm_protocol_mismatch</code>）</td>
+          <td>结构化 JSON 结果与单块上限 <code>16 KiB</code> 的 Base64 审计产物分片读取</td>
+        </tr>
+        <tr>
+          <td><strong>CLI 与 Python SDK</strong></td>
+          <td><code>python -m emulatrx_tte validate-protocol | synth | diagnose | estimate | run-synthetic | run-simulated | run-user-cohort | validate-ccw | synth-ccw | run-ccw-synthetic</code><br><code>from emulatrx_tte import audit_study_pico4d_alignment, run_grace_period_ccw, run_user_cohort_pipeline, ...</code></td>
+          <td>七要素协议 JSON / <code>tte-ccw-v1</code> 宽限期协议 JSON / 脱敏队列路径与映射 JSON / 显式 <code>--seed</code> / 新目录 <code>--out</code></td>
+          <td>原子目录发布规范化协议、诊断表、<code>estimates.json</code> / <code>ccw_estimates.json</code>、<code>audit_report.md</code>、<code>ccw_preview_report.html</code> 与全文件 SHA-256 <code>run_manifest.json</code></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>4. 显式 Fail-Closed 错误码与退出码契约边界</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>返回码</th>
+          <th>稳定错误标识（Error Code）</th>
+          <th>触发条件与 Fail-Closed 处置机制</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="code-ok">CLI <code>0</code> / HTTP <code>200</code>·<code>202</code></td>
+          <td><code>passed</code> / <code>protocol_aligned</code></td>
+          <td>契约、四维 PICO-T 核验及统计门禁全部通过，完整发布估计结果与 SHA-256 审计清单。</td>
+        </tr>
+        <tr>
+          <td class="code-err">CLI 退出码 <code>2</code></td>
+          <td><code>MISSING_TIME_ZERO</code> · <code>POST_TIME_ZERO_ELIGIBILITY</code> · <code>POST_LANDMARK_COVARIATE_LEAK</code> · <code>NON_SYNTHETIC_COHORT_REJECTED</code> · <code>UNSUPPORTED_EVALUE_MEASURE</code> · <code>OUTPUT_EXISTS</code></td>
+          <td>协议结构缺失、时间零点/期后协变量时间穿越、合成模块混入非 <code>SYN-*</code> 主键、单事件 E-value 误用于 <code>sHR</code> 或输出目录已存在：立即中止且零残留。</td>
+        </tr>
+        <tr>
+          <td class="code-warn">CLI 退出码 <code>3</code></td>
+          <td><code>POSITIVITY_VIOLATION</code> · <code>ESS_RATIO_BELOW_MIN</code> · <code>SMD_EXCEEDS_MAX</code> · <code>PRE_TRUNCATION_WEIGHT_EXCEEDED</code> · <code>EXCESSIVE_WEIGHT_TRUNCATION</code> · <code>POST_GRACE_SMD_EXCEEDS_MAX</code> · <code>UPSTREAM_GATE_NOT_PASSED</code></td>
+          <td>倾向/IPCW 正值性崩溃、有效样本量不足、加权后残余失衡或过度截尾掩盖极值权重：<strong>仅发布诊断与流失证据，100% 省略点估计文件（<code>estimates.json</code> / <code>ccw_estimates.json</code>）</strong>。</td>
+        </tr>
+        <tr>
+          <td class="code-err">HTTP <code>401</code> / <code>403</code></td>
+          <td><code>authentication required</code></td>
+          <td>缺失凭证、密码或 Token 不匹配、跨通道混用 Web Basic 与 MCP Bearer 凭证或非白名单 Host 请求。</td>
+        </tr>
+        <tr>
+          <td class="code-err">HTTP <code>404</code></td>
+          <td><code>SESSION_NOT_FOUND</code> · <code>RUN_NOT_FOUND</code> · <code>ARTIFACT_NOT_FOUND</code></td>
+          <td>未知、过期或已执行一键物理擦除的会话、关联运行及产物下载请求。</td>
+        </tr>
+        <tr>
+          <td class="code-err">HTTP <code>413</code></td>
+          <td><code>COHORT_FILE_TOO_LARGE</code></td>
+          <td><code>Content-Length</code> 或 <code>64 KiB</code> 流式分块累计超过 <code>25 MB</code> 上限时立即中断读取并释放内存缓冲。</td>
+        </tr>
+        <tr>
+          <td class="code-err">HTTP <code>400</code></td>
+          <td><code>PRIVACY_VIOLATION_BLOCKED</code> · <code>ORIGIN_MISMATCH</code> · <code>INVALID_MAPPING</code></td>
+          <td>外发 LLM 请求体隐私守卫检出潜在个体标识/非白名单单元格值、跨站 Origin 不符或映射/协议参数非法。</td>
+        </tr>
+        <tr>
+          <td class="code-warn">HTTP <code>422</code></td>
+          <td><code>ARM_MISMATCH_CONFIRMATION_REQUIRED</code></td>
+          <td>候选 RCT 双臂与研究干预/对照不一致（如 <code>NCT06642272</code> 恩格列净 vs 达格列净、缺联合背景药、单臂/无分组或 <code>0/1</code> 匿名分组未声明通用名，匹配度硬上限 <code>≤0.45</code>/<code>0.72</code>）且未显式传入 <code>confirm_arm_mismatch=true</code>。</td>
+        </tr>
+        <tr>
+          <td class="code-warn">HTTP <code>422</code></td>
+          <td><code>PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED</code></td>
+          <td>双臂药物虽匹配但四维 PICO-T 任一维度偏离——健康受试者/药代试验（如 <code>NCT00842556</code> 硬上限 <code>≤0.20</code>）、缺失关键疾病合并症如心衰（上限 <code>≤0.55</code>，严格排除 <code>Exclusion Criteria</code> 假阳性）、主要终点为血酮/HbA1c 等短期替代指标（如 <code>NCT03959501</code> 硬上限 <code>≤0.48</code>）或随访期过短——且未显式传入 <code>confirm_protocol_mismatch=true</code>。</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>5. 自动化测试矩阵、执行命令与覆盖边界（White-Box Oracle &amp; Black-Box CI Matrix）</h2>
+  <pre><code>PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python3 -m unittest discover -s tests -p 'test_*.py' -v</code></pre>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>GitHub Actions 作业</th>
+          <th>精确执行命令</th>
+          <th>验证层级与证明边界</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong><code>validate</code></strong><br><small><code>synthetic-contract.yml</code></small></td>
+          <td><code>python -m unittest discover -s tests -p 'test_demo_contract.py' -v</code><br><code>python -m unittest discover -s tests -p 'test_synthetic_demo.py' -v</code><br><code>python -m unittest discover -s tests -p 'test_public_metadata.py' -v</code></td>
+          <td><strong>标准库零依赖契约层（26 项：<code>test_demo_contract.py</code> 11 + <code>test_synthetic_demo.py</code> 7 + <code>test_public_metadata.py</code> 8）</strong>：模板校验、合成复现与公开试验 12 键来源收据边界。</td>
+        </tr>
+        <tr>
+          <td><strong><code>tte-foundation</code></strong><br><small><code>synthetic-contract.yml</code></small></td>
+          <td><code>PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -p 'test_tte_*.py' -v</code></td>
+          <td><strong>白盒数学解析基准与对抗性因果探针层（44 项：<code>test_tte_foundation.py</code> + <code>test_tte_competing_risks.py</code> + <code>test_tte_ccw.py</code> + <code>test_tte_dualmode.py</code>）</strong>：双指数竞争风险解析真值、协变量依赖删失 Fine–Gray 联合 IPCW 得分方程与稳健方差 oracle、P1 双侧宽限期 CCW 零效应消偏/保护效应恢复/<code>X_tv</code> 时变协变量/截尾前极值阻断、五维 PICO-T 对齐（<code>NCT03959501</code>、<code>NCT00842556</code>、<code>Exclusion Criteria</code> 陷阱、肿瘤 <code>EGFR</code> 突变与肾脏 <code>CKD</code> 消歧、<code>user_cohort</code> 对称终点核验、显式短缩写 <code>ORR</code>/<code>CRP</code>/<code>CEA</code>/<code>LDH</code>/<code>PSA</code> 对 FLAURA 失败关闭、<code>OS</code>/<code>PFS</code> 仍对齐、CAROLINA 双盲双模拟安慰剂与 FLAURA 研究者选择 Gefitinib or Erlotinib 正对照）及三层 LLM 隐私脱敏单测。</td>
+        </tr>
+        <tr>
+          <td><strong><code>service</code></strong><br><small><code>preview-service.yml</code></small></td>
+          <td><code>PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -p 'test_preview_service.py' -v</code><br><code>PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -p 'test_dualmode_workbench.py' -v</code></td>
+          <td><strong>公开入口黑盒契约层（22 项：<code>test_preview_service.py</code> 8 + <code>test_dualmode_workbench.py</code> 14；<code>discover -s tests</code> 全仓合计 92 项 Web / REST / MCP）</strong>：通过本地 <code>127.0.0.1</code> 回环模拟 OpenAI 兼容网关与公开 <code>NCT*</code> 夹具（含官方 CAROLINA 双模拟臂与 FLAURA 研究者选择臂），端到端验证双入口运行及 HTML 报告/JSON/CSV/manifest 下载 <code>200</code>、Web Basic 与 MCP Bearer 鉴权隔离 <code>401</code>、<code>25 MB</code> 流式超限 <code>413</code>、Step 2 <code>condition</code>/<code>outcome</code> 覆写持久化及双臂/四维方案偏离 <code>422</code>（含未确认的 <code>ORR</code>/<code>CRP</code>/<code>CEA</code>/<code>LDH</code>/<code>PSA</code>）、<code>DELETE /api/cohorts/{id}</code> 物理清除后 <code>404</code> 及 MCP 全工具契约。</td>
+        </tr>
+        <tr>
+          <td><strong><code>arm64-image</code></strong><br><small><code>preview-service.yml</code></small></td>
+          <td><code>docker build --platform linux/arm64 -f Dockerfile.preview ...</code> + 容器内 <code>run-synthetic</code> / <code>run-ccw-synthetic</code> 冒烟 + 实启容器 <code>127.0.0.1:18602</code> HTTP/MCP 黑盒检查</td>
+          <td><strong>生产同构 ARM64 容器黑盒层</strong>：校验 OCI 镜像架构与提交溯源锁，运行静态竞争风险与 P1 CCW CLI 冒烟，并在真实容器网络端口上验证 <code>/healthz</code>、Basic/Bearer 隔离、CAROLINA 离线四维匹配与会话删除 <code>404</code>。</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout">
+    <strong>CI 隔离与线上实机核验边界：</strong>GitHub Actions 全程使用确定性合成队列（<code>SYN-*</code> 与合成临床表头夹具）、公开注册试验 <code>NCT*</code> 静态 JSON 夹具及本地 <code>127.0.0.1</code> 回环模拟网关，零真实患者 IPD、零外网脆弱依赖、零外部 API 密钥；<code>ymadmin</code> 部署保留最小实机冒烟收据（精确 OCI 镜像 SHA、<code>127.0.0.1:18602/healthz</code> 探针、<code>/run/secrets/llm_api_key</code> <code>0400</code> 只读挂载检查与一键回滚命令）。遗留 <code>v1-codebase.ipynb</code> 与 <code>environment.yml</code> 保持冻结不动。
+  </div>
+</main>
+</body>
+</html>

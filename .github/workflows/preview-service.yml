@@ -12,7 +12,8 @@ jobs:
         with:
           python-version: '3.11'
       - run: python -m pip install -r requirements-preview.txt httpx==0.28.1
-      - run: PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_preview_service.py' -v
+      - run: PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -p 'test_preview_service.py' -v
+      - run: PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -p 'test_dualmode_workbench.py' -v
   arm64-image:
     runs-on: ubuntu-24.04-arm
     steps:
@@ -25,11 +26,89 @@ jobs:
           COMMIT_SHA="$(git rev-parse HEAD)"
           git merge-base --is-ancestor "152af0610d4317cd18691da1173cd297566fee09" "$COMMIT_SHA"
           docker build --platform linux/arm64 --build-arg CODE_COMMIT="$COMMIT_SHA" --build-arg TTE_DEPENDENCY_COMMIT="$COMMIT_SHA" -f Dockerfile.preview -t "emulatrx-preview:$COMMIT_SHA" .
-      - name: Check architecture and export exact image
+      - name: Check architecture, CLI & live container HTTP black-box smoke tests, and export exact image
         run: |
           COMMIT_SHA="$(git rev-parse HEAD)"
           test "$(docker image inspect "emulatrx-preview:$COMMIT_SHA" --format '{{.Architecture}}')" = arm64
           docker run --rm "emulatrx-preview:$COMMIT_SHA" python -m emulatrx_tte run-synthetic --protocol /app/examples/tte_preview_v1.json --seed 42 --cases 1000 --weight-method overlap --bootstrap-iterations 20 --out /tmp/arm-smoke
+          docker run --rm "emulatrx-preview:$COMMIT_SHA" python -m emulatrx_tte run-ccw-synthetic --protocol /app/examples/tte_grace_period_ccw_v1.json --seed 42 --cases 800 --bootstrap-iterations 20 --out /tmp/arm-ccw-smoke
+          SMOKE_SECRETS="$(mktemp -d)"
+          printf '%s\n' "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww" > "$SMOKE_SECRETS/web_pass"
+          printf '%s\n' "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm" > "$SMOKE_SECRETS/mcp_token"
+          chmod 0755 "$SMOKE_SECRETS" && chmod 0644 "$SMOKE_SECRETS/web_pass" "$SMOKE_SECRETS/mcp_token"
+          docker run -d --name emulatrx-http-smoke -p 127.0.0.1:18602:8000 \
+            -e EMULATRX_RUNS_DIR=/tmp/tte-smoke-runs \
+            -e EMULATRX_OFFLINE_RCT_CATALOG=1 \
+            -e EMULATRX_ALLOWED_HOSTS=127.0.0.1:18602 \
+            -e EMULATRX_WEB_PASSWORD_FILE=/run/secrets/web_pass \
+            -e EMULATRX_MCP_TOKEN_FILE=/run/secrets/mcp_token \
+            -v "$SMOKE_SECRETS/web_pass:/run/secrets/web_pass:ro" \
+            -v "$SMOKE_SECRETS/mcp_token:/run/secrets/mcp_token:ro" \
+            "emulatrx-preview:$COMMIT_SHA"
+          trap 'docker rm -f emulatrx-http-smoke >/dev/null 2>&1 || true; rm -rf "$SMOKE_SECRETS"' EXIT
+          python3 - <<'PY'
+          import base64, json, time, urllib.error, urllib.request
+
+          base = "http://127.0.0.1:18602"
+          web_hdr = {"Authorization": "Basic " + base64.b64encode(b"preview:" + b"w" * 40).decode()}
+          mcp_hdr = {
+              "Authorization": "Bearer " + "m" * 40,
+              "Content-Type": "application/json",
+              "Accept": "application/json, text/event-stream",
+          }
+
+          for _ in range(30):
+              try:
+                  with urllib.request.urlopen(f"{base}/healthz", timeout=2) as r:
+                      if r.status == 200:
+                          break
+              except Exception:
+                  time.sleep(0.5)
+          else:
+              raise SystemExit("Container /healthz did not become ready")
+
+          def status_of(req):
+              try:
+                  with urllib.request.urlopen(req, timeout=10) as resp:
+                      return resp.status, resp.read().decode("utf-8")
+              except urllib.error.HTTPError as exc:
+                  return exc.code, exc.read().decode("utf-8")
+
+          # 1. Auth separation: unauth -> 401, Web Basic -> 200, Web Basic on /mcp -> 401, MCP Bearer -> 200
+          assert status_of(urllib.request.Request(f"{base}/"))[0] == 401
+          assert status_of(urllib.request.Request(f"{base}/", headers=web_hdr))[0] == 200
+          assert status_of(urllib.request.Request(f"{base}/mcp", data=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}', headers={**web_hdr, "Content-Type": "application/json"}, method="POST"))[0] == 401
+          mcp_code, mcp_body = status_of(urllib.request.Request(f"{base}/mcp", data=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}', headers=mcp_hdr, method="POST"))
+          assert mcp_code == 200 and "start_user_cohort_tte" in mcp_body
+
+          # 2. Offline dual-entry smoke: sample cohort upload -> 4D CAROLINA and FLAURA matches -> session purge -> 404
+          def assert_offline_sample(sample_id, query, nct_id):
+              code, txt = status_of(urllib.request.Request(f"{base}/api/sessions/upload", data=json.dumps({"sample_id": sample_id}).encode(), headers={**web_hdr, "Content-Type": "application/json"}, method="POST"))
+              assert code == 200, txt
+              session_id = json.loads(txt)["session_id"]
+              sr_code, sr_txt = status_of(urllib.request.Request(
+                  f"{base}/api/rcts/search",
+                  data=json.dumps({"session_id": session_id, "project_mode": "user_cohort", "query": query, "max_results": 8}).encode(),
+                  headers={**web_hdr, "Content-Type": "application/json"},
+                  method="POST",
+              ))
+              assert sr_code == 200, sr_txt
+              card = next(c for c in json.loads(sr_txt)["candidates"] if c["nct_id"] == nct_id)
+              assert card["arm_alignment_status"] == "exact_dual_arm", sr_txt
+              assert card["overall_alignment_status"] == "protocol_aligned", sr_txt
+              assert card["is_recommended"] is True, sr_txt
+              return session_id
+
+          sid = assert_offline_sample("t2dm_cv_carolina", "Linagliptin Glimepiride", "NCT01243424")
+          assert_offline_sample("sample_nsclc_egfr_tki", "Osimertinib Gefitinib Erlotinib", "NCT02296125")
+          id_code, _ = status_of(urllib.request.Request(f"{base}/api/idea/parse", data=json.dumps({"idea_text": "帕博利珠单抗联合含铂化疗对比单纯含铂化疗一线治疗晚期非小细胞肺癌"}).encode(), headers={**web_hdr, "Content-Type": "application/json"}, method="POST"))
+          assert id_code == 200
+          del_code, _ = status_of(urllib.request.Request(f"{base}/api/cohorts/{sid}", headers=web_hdr, method="DELETE"))
+          assert del_code == 200
+          assert status_of(urllib.request.Request(f"{base}/api/cohorts/{sid}", headers=web_hdr))[0] == 404
+          print("ARM64 live HTTP black-box smoke passed!")
+          PY
+          docker rm -f emulatrx-http-smoke
           docker save "emulatrx-preview:$COMMIT_SHA" | gzip -1 > emulatrx-preview-arm64.tar.gz
           sha256sum emulatrx-preview-arm64.tar.gz > emulatrx-preview-arm64.tar.gz.sha256
       - uses: actions/upload-artifact@v4

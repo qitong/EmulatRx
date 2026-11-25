@@ -1,4 +1,4 @@
-"""Command-line entry point for emulatrx_tte (validate-protocol, synth, diagnose, estimate, run-synthetic)."""
+"""Command-line entry point for emulatrx_tte (validate-protocol, synth, diagnose, estimate, run-synthetic, run-simulated, run-user-cohort, validate-ccw, synth-ccw, run-ccw-synthetic)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import sys
 
-from ._common import ContractError, GateBlockedError
+from ._common import ALLOWED_SOURCE_MODES, ContractError, GateBlockedError
 from .ccw import (
     generate_synthetic_ccw_cohort,
     run_ccw_synthetic_pipeline,
@@ -15,7 +15,11 @@ from .ccw import (
 )
 from .competing_risks import ALLOWED_CENSORING_IPCW, estimate_competing_risks
 from .diagnostics import diagnose_cohort
-from .pipeline import run_synthetic_pipeline
+from .pipeline import (
+    run_simulated_cohort_pipeline,
+    run_synthetic_pipeline,
+    run_user_cohort_pipeline,
+)
 from .protocol import validate_protocol_command
 from .synthetic import generate_synthetic_cohort
 from .weighting import ALLOWED_WEIGHT_METHODS
@@ -80,6 +84,12 @@ def main(argv: list[str] | None = None) -> int:
         choices=sorted(ALLOWED_CENSORING_IPCW),
     )
     es.add_argument("--ci-level", type=float, default=0.95)
+    es.add_argument(
+        "--source-mode",
+        default="synthetic_only",
+        choices=sorted(ALLOWED_SOURCE_MODES),
+    )
+    es.add_argument("--ingest-manifest", type=Path, default=None)
     es.add_argument("--out", type=Path, required=True)
 
     rs = subparsers.add_parser(
@@ -105,6 +115,35 @@ def main(argv: list[str] | None = None) -> int:
     )
     rs.add_argument("--ci-level", type=float, default=0.95)
     rs.add_argument("--out", type=Path, required=True)
+
+    rsim = subparsers.add_parser(
+        "run-simulated",
+        help="Run no-data target-RCT simulated cohort TTE rehearsal pipeline (source_mode=simulated_cohort)",
+    )
+    rsim.add_argument("--protocol", type=Path, required=True)
+    rsim.add_argument("--seed", type=_parse_strict_cli_int, required=True)
+    rsim.add_argument("--cases", type=_parse_strict_cli_int, required=True)
+    rsim.add_argument("--weight-method", default="overlap", choices=sorted(ALLOWED_WEIGHT_METHODS))
+    rsim.add_argument("--bootstrap-iterations", type=_parse_strict_cli_int, default=100)
+    rsim.add_argument("--dgp-params", type=Path, default=None)
+    rsim.add_argument("--horizons", default=None)
+    rsim.add_argument("--censoring-ipcw", default="none", choices=sorted(ALLOWED_CENSORING_IPCW))
+    rsim.add_argument("--ci-level", type=float, default=0.95)
+    rsim.add_argument("--out", type=Path, required=True)
+
+    ruc = subparsers.add_parser(
+        "run-user-cohort",
+        help="Run user-uploaded cohort ingestion, attrition, diagnostics, and TTE estimation (source_mode=user_cohort)",
+    )
+    ruc.add_argument("--cohort", type=Path, required=True)
+    ruc.add_argument("--mapping", type=Path, required=True, help="Path to ColumnMappingSpec JSON file")
+    ruc.add_argument("--target-rct", type=Path, default=None, help="Optional Target RCT JSON file")
+    ruc.add_argument("--seed", type=_parse_strict_cli_int, default=42)
+    ruc.add_argument("--bootstrap-iterations", type=_parse_strict_cli_int, default=100)
+    ruc.add_argument("--weight-method", default=None, choices=sorted(ALLOWED_WEIGHT_METHODS))
+    ruc.add_argument("--censoring-ipcw", default="none", choices=sorted(ALLOWED_CENSORING_IPCW))
+    ruc.add_argument("--ci-level", type=float, default=0.95)
+    ruc.add_argument("--out", type=Path, required=True)
 
     vc = subparsers.add_parser(
         "validate-ccw",
@@ -170,8 +209,40 @@ def main(argv: list[str] | None = None) -> int:
                 horizons_days=args.horizons,
                 censoring_ipcw=args.censoring_ipcw,
                 ci_level=args.ci_level,
+                source_mode=args.source_mode,
+                ingest_manifest_path=args.ingest_manifest,
             )
             exit_code = 0
+        elif args.command == "run-simulated":
+            result, exit_code = run_simulated_cohort_pipeline(
+                args.protocol,
+                seed=args.seed,
+                cases=args.cases,
+                weight_method=args.weight_method,
+                bootstrap_iterations=args.bootstrap_iterations,
+                out_dir=args.out,
+                dgp_params_path=args.dgp_params,
+                horizons_days=args.horizons,
+                censoring_ipcw=args.censoring_ipcw,
+                ci_level=args.ci_level,
+            )
+        elif args.command == "run-user-cohort":
+            from ._common import read_strict_json
+            _, mapping_obj = read_strict_json(args.mapping, io_error_code="MAPPING_IO_ERROR")
+            rct_obj = None
+            if args.target_rct is not None:
+                _, rct_obj = read_strict_json(args.target_rct, io_error_code="TARGET_RCT_IO_ERROR")
+            result, exit_code = run_user_cohort_pipeline(
+                args.cohort,
+                mapping_obj,
+                out_dir=args.out,
+                target_rct=rct_obj,
+                seed=args.seed,
+                bootstrap_iterations=args.bootstrap_iterations,
+                weight_method=args.weight_method,
+                censoring_ipcw=args.censoring_ipcw,
+                ci_level=args.ci_level,
+            )
         elif args.command == "validate-ccw":
             result = validate_ccw_protocol(args.protocol, args.out)
             exit_code = 0

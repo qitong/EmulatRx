@@ -1,0 +1,156 @@
+{
+  "protocolSection": {
+    "identificationModule": {
+      "nctId": "NCT06642272",
+      "orgStudyIdInfo": {
+        "id": "2401312"
+      },
+      "organization": {
+        "fullName": "Herlev and Gentofte Hospital",
+        "class": "OTHER"
+      },
+      "briefTitle": "A Pragmatic Trial Comparing Empagliflozin and Dapagliflozin Through Cluster Randomization Embedded in the Electronic Health Record",
+      "officialTitle": "A Pragmatic Trial Comparing Empagliflozin and Dapagliflozin Through Cluster Randomization Embedded in the Electronic Health Record",
+      "acronym": "APPLE TREE"
+    },
+    "statusModule": {
+      "overallStatus": "RECRUITING"
+    },
+    "designModule": {
+      "studyType": "INTERVENTIONAL",
+      "phases": [
+        "PHASE4"
+      ],
+      "designInfo": {
+        "allocation": "RANDOMIZED",
+        "interventionModel": "PARALLEL",
+        "primaryPurpose": "TREATMENT",
+        "maskingInfo": {
+          "masking": "NONE",
+          "maskingDescription": "Treatment assignment will be blinded to the statistician analysing the trial data."
+        }
+      },
+      "enrollmentInfo": {
+        "count": 17200,
+        "type": "ESTIMATED"
+      }
+    },
+    "conditionsModule": {
+      "conditions": [
+        "Diabetes Mellitus, Type 2",
+        "Heart Failure",
+        "Chronic Kidney Diseases"
+      ]
+    },
+    "armsInterventionsModule": {
+      "armGroups": [
+        {
+          "label": "Empagliflozin 10 MG",
+          "type": "OTHER",
+          "description": "Head-to-head comparator",
+          "interventionNames": [
+            "Drug: Empagliflozin 10 MG"
+          ]
+        },
+        {
+          "label": "Dapagliflozin 10 MG",
+          "type": "OTHER",
+          "description": "Head-to-head comparator",
+          "interventionNames": [
+            "Drug: Dapagliflozin 10 MG"
+          ]
+        }
+      ],
+      "interventions": [
+        {
+          "type": "DRUG",
+          "name": "Empagliflozin 10 MG",
+          "description": "Once daily",
+          "armGroupLabels": [
+            "Empagliflozin 10 MG"
+          ]
+        },
+        {
+          "type": "DRUG",
+          "name": "Dapagliflozin 10 MG",
+          "description": "Once daily",
+          "armGroupLabels": [
+            "Dapagliflozin 10 MG"
+          ]
+        }
+      ]
+    },
+    "eligibilityModule": {
+      "eligibilityCriteria": "Inclusion Criteria:\n\n* Adults aged 18 years or more\n\nExclusion Criteria:\n\n* Incapabability of giving informed consent\n* Withdrawal of informed consent",
+      "healthyVolunteers": false,
+      "sex": "ALL",
+      "minimumAge": "18 Years",
+      "stdAges": [
+        "ADULT",
+        "OLDER_ADULT"
+      ]
+    },
+    "outcomesModule": {
+      "primaryOutcomes": [
+        {
+          "measure": "Time to the first occurrence of any of the components of the composite: all-cause mortality, hospitalization for heart failure, hospitalization for myocardial infarction, hospitalization for ischemic stroke, and incident or worsening nephropathy.",
+          "description": "Incident or worsening nephropathy is defined as:\n\n* A sustained decrease in estimated glomerular filtration rate (eGFR) of ≥40% from baseline\n* A sustained decrease in eGFR of ≤10 per minute per 1.73 m2\n* Initiation of dialysis\n* Kidney transplantation",
+          "timeFrame": "Up to 24 months"
+        }
+      ],
+      "secondaryOutcomes": [
+        {
+          "measure": "All-cause mortality",
+          "timeFrame": "Up to 24 months"
+        },
+        {
+          "measure": "Hospitalization for heart failure",
+          "timeFrame": "Up to 24 months"
+        },
+        {
+          "measure": "Hospitalization for myocardial infarction",
+          "timeFrame": "Up to 24 months"
+        },
+        {
+          "measure": "Hospitalization for ischemic stroke",
+          "timeFrame": "Up to 24 months"
+        },
+        {
+          "measure": "Incident or worsening nephropathy",
+          "description": "Defined as a sustained decrease in estimated glomerular filtration rate (eGFR) of ≥40% from baseline, a sustained decrease in eGFR of ≤10 per minute per 1.73 m2, initiation of dialysis, or kidney transplantation",
+          "timeFrame": "Up to 24 months"
+        },
+        {
+          "measure": "Hospitalization for coronary revascularization",
+          "timeFrame": "Up to 24 months"
+        },
+        {
+          "measure": "Hospitalization for unstable angina",
+          "timeFrame": "Up to 24 months"
+        }
+      ],
+      "otherOutcomes": [
+        {
+          "measure": "Hospitalization for ketoacidosis",
+          "description": "Safety outcome",
+          "timeFrame": "Up to 24 months"
+        },
+        {
+          "measure": "Hospitalization for limb amputation",
+          "description": "Safety outcome",
+          "timeFrame": "Up to 24 months"
+        },
+        {
+          "measure": "Hospitalization for genitourinary infection",
+          "description": "Safety outcome",
+          "timeFrame": "Up to 24 months"
+        },
+        {
+          "measure": "Hospitalization for fracture",
+          "description": "Safety outcome",
+          "timeFrame": "Up to 24 months"
+        }
+      ]
+    }
+  }
+}
