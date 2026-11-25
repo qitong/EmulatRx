@@ -2101,7 +2101,21 @@ def estimate_competing_risks(
     if "target_rct" in protocol:
         estimates_payload["target_rct"] = protocol["target_rct"]
 
-    audit_md_bytes = _render_audit_report_md(estimates_payload).encode("utf-8")
+    from .clinical_ladder import attach_static_ladder, render_clinical_ladder_markdown
+
+    ladder_bundle = attach_static_ladder(
+        estimates_payload,
+        frame=wdf,
+        protocol=protocol,
+        diagnostics=diag_summary,
+    )
+    badge = estimates_payload.get("report_badge") or "目标试验模拟分析报告"
+    audit_md_bytes = (
+        f"# {badge}\n\n"
+        + render_clinical_ladder_markdown(ladder_bundle)
+        + "\n"
+        + _render_audit_report_md(estimates_payload)
+    ).encode("utf-8")
     estimates_bytes = json_bytes(estimates_payload)
 
     curve_rel_paths = [rel for rel, _, _, _ in curve_specs]

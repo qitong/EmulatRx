@@ -3020,6 +3020,16 @@ def _render_ccw_preview_report_html(
     s1_att = attrition["strategy_1_initiate_within_grace"]
     s0_att = attrition["strategy_0_never_initiate"]
     shared_ev = attrition["shared_early_events_within_grace_uninitiated"]
+    from .clinical_ladder import render_clinical_ladder_html
+
+    ladder_html = ""
+    if isinstance(estimates.get("clinical_comparison_ladder"), dict) and isinstance(estimates.get("what_tte_controlled_beyond_psm"), dict):
+        ladder_html = render_clinical_ladder_html(
+            {
+                "clinical_comparison_ladder": estimates["clinical_comparison_ladder"],
+                "what_tte_controlled_beyond_psm": estimates["what_tte_controlled_beyond_psm"],
+            }
+        )
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -3069,6 +3079,7 @@ def _render_ccw_preview_report_html(
   </div>
 
   <h1>{esc(protocol['study_title'])}</h1>
+  {ladder_html}
   <p class="meta">
     协议 ID：<code>{esc(protocol['protocol_id'])}</code> · 版本：<code>{esc(protocol['protocol_version'])}</code> ·
     宽限期 g = <strong>{gp['grace_period_days']}</strong> 天（步长 Δ = {gp['period_length_days']} 天，最大随访 {gp['max_followup_days']} 天） ·
@@ -3624,6 +3635,19 @@ def run_grace_period_ccw(
         "horizon_estimates": horizon_estimates,
         "naive_immortal_time_comparison": naive_comp,
     }
+    from .clinical_ladder import attach_ccw_ladder, render_clinical_ladder_markdown
+
+    ladder_bundle = attach_ccw_ladder(
+        estimates_payload,
+        time=validated["T_eff"],
+        event=validated["E_eff"],
+        ever_initiated=validated["has_init"].astype(np.int64),
+        X=validated["X_base"],
+        covariate_names=list(validated["base_cov_names"]),
+        diagnostics=diagnostics,
+        grace_days=grace_days,
+        tv_names=list(validated["tv_cov_names"]),
+    )
 
     if out_dir is None:
         return (
@@ -3650,11 +3674,15 @@ def run_grace_period_ccw(
     attr_bytes = json_bytes(attrition)
     diag_bytes = json_bytes(diagnostics)
     est_bytes = json_bytes(estimates_payload)
-    audit_md_bytes = _render_ccw_audit_report_md(
-        protocol=norm_proto,
-        attrition=attrition,
-        diagnostics=diagnostics,
-        estimates=estimates_payload,
+    audit_md_bytes = (
+        render_clinical_ladder_markdown(ladder_bundle)
+        + "\n"
+        + _render_ccw_audit_report_md(
+            protocol=norm_proto,
+            attrition=attrition,
+            diagnostics=diagnostics,
+            estimates=estimates_payload,
+        )
     ).encode("utf-8")
 
     html_bytes: bytes | None = None

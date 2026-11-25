@@ -277,6 +277,18 @@ def render_dualmode_run_view(result: dict, root: Path, *, standalone_report: boo
         + wipe_btn
         + "</div></section>"
     )
+    estimates = result.get("estimates") if isinstance(result.get("estimates"), dict) else None
+    if gate == "passed" and estimates and isinstance(estimates.get("clinical_comparison_ladder"), dict):
+        from emulatrx_tte.clinical_ladder import render_clinical_ladder_html
+
+        parts.append(
+            render_clinical_ladder_html(
+                {
+                    "clinical_comparison_ladder": estimates["clinical_comparison_ladder"],
+                    "what_tte_controlled_beyond_psm": estimates["what_tte_controlled_beyond_psm"],
+                }
+            )
+        )
 
     parts.append(
         "<div class='metric-grid'>"
