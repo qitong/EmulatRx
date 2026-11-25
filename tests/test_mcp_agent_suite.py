@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -206,7 +207,7 @@ class McpAgentSuiteTests(unittest.TestCase):
         )
         proc = subprocess.Popen(
             [
-                "/tmp/emulatrx-ci-venv/bin/python",
+                sys.executable,
                 "-m",
                 "emulatrx_tte",
                 "mcp-serve",
