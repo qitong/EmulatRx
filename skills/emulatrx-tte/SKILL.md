@@ -143,4 +143,18 @@ When reporting `estimates.json` (`co_presented_comparison_table`) or `audit_repo
 4. **Enforce E-value competing-risks boundaries**: Report sensitivity E-values strictly from horizon `RR_CIF_1(t)` (`evalue_rr_cif_point` and `evalue_rr_cif_ci_limit`). Never apply single-event E-value conversions to `sHR`, and never convert competing-risks `csHR` / `HR` when cumulative incidence `> 0.15`.
 5. **State censoring & bootstrap variance scope**: When `--censoring-ipcw none` is used, report the arm-conditional independent right-censoring assumption; note that CIF/`RD`/`RR_CIF` bootstrap CIs hold Stage-1 baseline propensity weights fixed (`baseline_propensity_weights: "fixed"`).
 
-For full CLI flags, JSON field schemas, Web/MCP endpoints, and Python SDK signatures, read [`docs/tte-cli-and-agent-contract-v1.md`](../../docs/tte-cli-and-agent-contract-v1.md), [`docs/tte-ccw-v1.md`](../../docs/tte-ccw-v1.md), and [`docs/FEATURE_API_OVERVIEW.md`](../../docs/FEATURE_API_OVERVIEW.md).
+For full CLI flags, JSON field schemas, Web/MCP endpoints, and Python SDK signatures, read [`docs/tte-cli-and-agent-contract-v1.md`](../../docs/tte-cli-and-agent-contract-v1.md), [`docs/tte-ccw-v1.md`](../../docs/tte-ccw-v1.md), [`docs/MCP_AGENT_API_DESIGN.html`](../../docs/MCP_AGENT_API_DESIGN.html), and [`docs/FEATURE_API_OVERVIEW.md`](../../docs/FEATURE_API_OVERVIEW.md).
+
+## 5. Agent MCP Suite and the 3-Tier Evidence Ladder
+
+`python -m emulatrx_tte mcp-serve [--runs-dir DIR] [--allow-ingest-dir DIR]` and authenticated `POST /mcp` expose the same 14 tools and 4 resources.
+
+Canonical tools: `parse_research_idea`, `ingest_cohort_session`, `delete_cohort_session`, `search_target_rcts`, `audit_target_rct_alignment`, `draft_tte_protocol`, `validate_tte_protocol`, `validate_ccw_protocol`, `diagnose_tte_feasibility`, `run_static_or_landmark_tte`, `run_grace_period_ccw`, `get_tte_run_status`, `get_tte_result_summary`, `export_tte_artifact`.
+
+Legacy aliases that still resolve: `profile_cohort_session`, `start_user_cohort_tte`, `start_simulated_rct_tte`, `start_synthetic_tte`, `get_tte_run`, `read_tte_artifact`.
+
+Resources: `emulatrx://schemas/tte-protocol-v1`, `emulatrx://schemas/tte-ccw-v1`, `emulatrx://samples/catalog`, `emulatrx://guide/error-and-gate-codes`.
+
+When `gate_status == "passed"`, `get_tte_result_summary` includes `clinical_comparison_ladder` (`tier_1_unadjusted_crude`, `tier_2_conventional_ps` with `psm_1to1` and `simple_iptw`, `tier_3_target_trial_emulation`) and `what_tte_controlled_beyond_psm` (`headline_progression_zh`, `baseline_confounders_controlled`, `extra_tte_controls`, `clinician_takeaway_zh`). When the gate is blocked, omit tier-3 and every other point estimate and return `diagnostics`, `remediation_hints`, and `estimates_omitted_reason`.
+
+Local unittest loader counts on this tree: `validate` 26, `tte-foundation` 48 (`test_tte_*.py`, including `test_tte_clinical_ladder.py`), `service` 27 (`test_preview_service.py` 11 + `test_dualmode_workbench.py` 14 + `test_mcp_agent_suite.py` 2), full `discover -s tests` 101.

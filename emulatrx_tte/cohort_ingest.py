@@ -363,6 +363,67 @@ def profile_cohort_dataframe(df: pd.DataFrame, *, filename: str = "cohort.csv", 
     }
 
 
+_PII_COLUMN_RE = re.compile(
+    r"姓名|患者名|身份证|手机|电话|住址|phone|mobile|patient_name|id_card|idcard",
+    re.IGNORECASE,
+)
+_OPAQUE_BINARY = {"0", "1", "0.0", "1.0"}
+
+
+def _category_values(column_info: dict) -> set[str]:
+    values: set[str] = set()
+    for item in column_info.get("top_categories") or column_info.get("categories") or []:
+        if isinstance(item, dict) and "value" in item:
+            values.add(str(item["value"]).strip())
+        else:
+            values.add(str(item).strip())
+    return values
+
+
+def detect_missing_clinical_semantics(df: pd.DataFrame, profile: dict) -> dict:
+    """Questions an agent must ask before drafting a protocol, plus quarantined PII column names.
+
+    The returned object never contains row-level cell values.
+    """
+    quarantined: list[str] = []
+    for column in profile.get("columns") or []:
+        name = str(column.get("name", ""))
+        if column.get("inferred_role") == "identifier" or _PII_COLUMN_RE.search(name):
+            quarantined.append(name)
+    questions: list[dict] = []
+    treatment_cols = profile.get("candidate_treatment_columns") or []
+    if treatment_cols:
+        lead = treatment_cols[0]
+        values = _category_values(lead)
+        header = str(lead.get("column", ""))
+        if values and values <= _OPAQUE_BINARY:
+            questions.append(
+                {
+                    "field": "treatment",
+                    "column": header,
+                    "ask_zh": "治疗组列只有 0/1，没有药品通用名。请向临床专家确认 1 和 0 分别对应哪一种药物或治疗策略。",
+                }
+            )
+    outcome_cols = profile.get("candidate_outcome_columns") or []
+    if outcome_cols:
+        lead_out = outcome_cols[0]
+        out_values = _category_values(lead_out)
+        out_header = str(lead_out.get("column", "")).lower()
+        generic_header = out_header in {"event", "outcome", "status", "y", "endpoint"}
+        if generic_header and out_values and out_values <= {"0", "1", "2", "0.0", "1.0", "2.0"}:
+            questions.append(
+                {
+                    "field": "outcome",
+                    "column": lead_out.get("column"),
+                    "ask_zh": "结局列是匿名的 event=0/1（或含 2）。请确认 1 是哪一种疾病事件、2 是否为竞争死亡，以及计时起点。",
+                }
+            )
+    return {
+        "missing_clinical_semantics": questions,
+        "pii_columns_quarantined": quarantined,
+    }
+
+
 def recommend_column_mapping(profile: dict, target_rct: dict | None = None) -> dict:
     """Draft default ColumnMappingSpec + protocol settings aligning a CohortProfile to an optional Target RCT."""
     trt_cands = profile.get("candidate_treatment_columns", [])

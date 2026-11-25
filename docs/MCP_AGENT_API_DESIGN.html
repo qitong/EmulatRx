@@ -1,0 +1,659 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EmulatRx · Agent-First MCP 功能接口与调用逻辑设计蓝图</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: var(--font-sans, "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", -apple-system, BlinkMacSystemFont, sans-serif);
+      background: var(--background, #f4f7f6);
+      color: var(--foreground, #142622);
+      line-height: 1.6;
+    }
+    .wrap {
+      max-width: 1180px;
+      margin: 0 auto;
+    }
+    .hero {
+      background: var(--card, #ffffff);
+      border: 1px solid var(--border, #d5e0dc);
+      border-left: 6px solid #0f766e;
+      border-radius: 12px;
+      padding: 22px 26px;
+      margin-bottom: 18px;
+      box-shadow: 0 4px 16px rgba(15, 40, 35, 0.05);
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .chip-teal { background: #ccfbf1; color: #115e59; }
+    .chip-blue { background: #dbeafe; color: #1e40af; }
+    .chip-amber { background: #fef3c7; color: #92400e; }
+    .chip-purple { background: #ede9fe; color: #5b21b6; }
+    .chip-existing { background: #dcfce7; color: #166534; }
+    .chip-upgrade { background: #e0f2fe; color: #0369a1; }
+    .chip-new { background: #fae8ff; color: #86198f; }
+
+    h1 { margin: 0 0 8px; font-size: 23px; line-height: 1.3; }
+    h2 { margin: 22px 0 12px; font-size: 17px; display: flex; align-items: center; gap: 8px; }
+    p.sub { margin: 0; color: var(--muted-foreground, #4e6560); font-size: 14px; }
+
+    .kpi-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+    .kpi {
+      background: var(--card, #ffffff);
+      border: 1px solid var(--border, #d5e0dc);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+    .kpi .num { font-size: 22px; font-weight: 800; color: #0f766e; }
+    .kpi .lbl { font-size: 12.5px; color: var(--muted-foreground, #526863); margin-top: 2px; }
+
+    .flow-box {
+      background: var(--card, #ffffff);
+      border: 1px solid var(--border, #d5e0dc);
+      border-radius: 12px;
+      padding: 18px 20px;
+      margin-bottom: 18px;
+      overflow-x: auto;
+    }
+
+    .tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .tab-btn {
+      cursor: pointer;
+      border: 1px solid var(--border, #cbd8d3);
+      background: var(--card, #ffffff);
+      color: var(--foreground, #142622);
+      padding: 7px 14px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 600;
+      transition: all 0.15s ease;
+    }
+    .tab-btn:hover { border-color: #0f766e; }
+    .tab-btn.active {
+      background: #0f766e;
+      color: #ffffff;
+      border-color: #0f766e;
+    }
+
+    .stage-group {
+      margin-bottom: 20px;
+    }
+    .stage-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 10px 14px;
+      background: var(--muted, #e8f0ed);
+      border-radius: 8px;
+      margin-bottom: 10px;
+    }
+    .stage-title { font-weight: 700; font-size: 15px; }
+    .stage-goal { font-size: 12.5px; color: var(--muted-foreground, #4a625c); }
+
+    .tool-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      gap: 12px;
+    }
+    .tool-card {
+      background: var(--card, #ffffff);
+      border: 1px solid var(--border, #d5e0dc);
+      border-radius: 10px;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .tool-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .tool-name {
+      font-family: var(--font-mono, "SFMono-Regular", Menlo, Consolas, monospace);
+      font-size: 14px;
+      font-weight: 700;
+      color: #0f766e;
+    }
+    .tool-desc { font-size: 13.5px; margin: 0; }
+    .io-box {
+      background: var(--muted, #f1f5f4);
+      border-radius: 7px;
+      padding: 9px 11px;
+      font-size: 12.5px;
+    }
+    .io-row { margin: 3px 0; }
+    .io-lbl {
+      display: inline-block;
+      min-width: 48px;
+      font-weight: 700;
+      color: var(--foreground, #1e3530);
+    }
+    code {
+      font-family: var(--font-mono, "SFMono-Regular", Menlo, Consolas, monospace);
+      font-size: 12px;
+      background: rgba(15, 118, 110, 0.1);
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+    details {
+      font-size: 12.5px;
+      border-top: 1px dashed var(--border, #d5e0dc);
+      padding-top: 6px;
+    }
+    summary {
+      cursor: pointer;
+      font-weight: 600;
+      color: #0f766e;
+      user-select: none;
+    }
+    pre {
+      margin: 6px 0 0;
+      padding: 10px 12px;
+      background: #132421;
+      color: #e6f7f3;
+      border-radius: 6px;
+      overflow-x: auto;
+      font-size: 11.5px;
+      line-height: 1.45;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      gap: 14px;
+      margin-top: 14px;
+    }
+    .panel {
+      background: var(--card, #ffffff);
+      border: 1px solid var(--border, #d5e0dc);
+      border-radius: 10px;
+      padding: 16px 18px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12.5px;
+      margin-top: 8px;
+    }
+    th, td {
+      border: 1px solid var(--border, #d5e0dc);
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--muted, #eaf1ee); font-weight: 700; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <section class="hero">
+    <div class="chips">
+      <span class="chip chip-teal">Agent-First 架构优先</span>
+      <span class="chip chip-blue">双传输通道：本地 stdio + 远程 Streamable HTTP (/mcp)</span>
+      <span class="chip chip-purple">5 阶段状态机 · 14 项原子工具 + 4 项只读 Resources</span>
+      <span class="chip chip-amber">确定性统计计算 · 逐行隐私 0 外发 · 门禁 Fail-Closed</span>
+    </div>
+    <h1>EmulatRx · MCP 功能接口与 Agent 编排逻辑设计蓝图</h1>
+    <p class="sub">
+      核心设计理念：<strong>不当“一把梭黑盒执行器”，而做 Agent 的“分步因果推断状态机”</strong>。把目标试验模拟拆成「建入口 → 对标 RCT 五维验真 → 起草与核验七要素/CCW 协议 → 秒级平衡与正值性预检 → 竞争风险/CCW 估计与结构化证据读取」五道原子工序；遇到人群/双臂/终点偏离或正值性崩溃时<strong>强制停机返回结构化原因</strong>，由 Agent 与研究者确认后再推进。后续重构可视化 Web Wizard 时可直接复用同一套分步接口。
+    </p>
+  </section>
+
+  <div class="kpi-row">
+    <div class="kpi">
+      <div class="num">5 阶段 / 14 工具</div>
+      <div class="lbl">在现有 9 项基础上补齐「协议草拟、独立预检、宽限期 CCW、结构化结果单」4 大缺口（旧工具名平滑兼容）</div>
+    </div>
+    <div class="kpi">
+      <div class="num">3 条核心分析轨</div>
+      <div class="lbl">① 自有脱敏队列真项目 (<code>user_cohort</code>) · ② 无数据模拟预演 (<code>simulated_cohort</code>) · ③ P1 双侧宽限期克隆 CCW</div>
+    </div>
+    <div class="kpi">
+      <div class="num">2 道人工确认/统计闸门</div>
+      <div class="lbl">Gate A：五维 PICO-T 偏离显式确认（防错配 RCT）；Gate B：加权均衡与正值性预检（未过门禁绝不输出有偏估计）</div>
+    </div>
+    <div class="kpi">
+      <div class="num">stdio + HTTP 双模</div>
+      <div class="lbl">本地 IDE/Claude/Orca 零配置直连 <code>stdio</code>；<code>ymadmin</code> 私网通过独立 Bearer Token 暴露 <code>POST /mcp</code></div>
+    </div>
+  </div>
+
+  <!-- 状态机 SVG 流程图 -->
+  <section class="flow-box">
+    <h2 style="margin-top:0">一、 Agent 调用主干状态机与决策分流逻辑</h2>
+    <svg viewBox="0 0 1080 270" width="100%" style="min-width:860px;display:block" role="img" aria-label="EmulatRx MCP 5-Stage Agent Workflow">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 1 L 10 5 L 0 9 z" fill="#0f766e"/>
+        </marker>
+        <marker id="arrow-warn" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 1 L 10 5 L 0 9 z" fill="#b45309"/>
+        </marker>
+      </defs>
+
+      <!-- Stage 1 -->
+      <rect x="12" y="24" width="184" height="92" rx="10" fill="#ecfdf5" stroke="#0f766e" stroke-width="2"/>
+      <text x="24" y="47" font-size="12" font-weight="700" fill="#0f766e">Stage 1 · 起点建立与画像</text>
+      <text x="24" y="68" font-size="11.5" fill="#142622">• parse_research_idea (无数据)</text>
+      <text x="24" y="86" font-size="11.5" fill="#142622">• ingest_cohort_session (有表)</text>
+      <text x="24" y="104" font-size="10.5" fill="#526863">产出: PICO 或 session_id + 表级画像</text>
+
+      <line x1="196" y1="70" x2="226" y2="70" stroke="#0f766e" stroke-width="2" marker-end="url(#arrow)"/>
+
+      <!-- Stage 2 -->
+      <rect x="230" y="24" width="194" height="92" rx="10" fill="#eff6ff" stroke="#1d4ed8" stroke-width="2"/>
+      <text x="242" y="47" font-size="12" font-weight="700" fill="#1e40af">Stage 2 · 目标试验五维对标</text>
+      <text x="242" y="68" font-size="11.5" fill="#142622">• search_target_rcts</text>
+      <text x="242" y="86" font-size="11.5" fill="#142622">• audit_target_rct_alignment</text>
+      <text x="242" y="104" font-size="10.5" fill="#526863">核验: 设计/人群/双臂/硬终点/随访窗</text>
+
+      <!-- Gate A branch -->
+      <path d="M 327 116 L 327 175" stroke="#b45309" stroke-width="1.8" stroke-dasharray="4 3" marker-end="url(#arrow-warn)"/>
+      <rect x="226" y="180" width="204" height="68" rx="8" fill="#fffbeb" stroke="#d97706" stroke-width="1.6"/>
+      <text x="238" y="201" font-size="11.5" font-weight="700" fill="#92400e">⚠️ Gate A：五维存在偏离 (422)</text>
+      <text x="238" y="219" font-size="10.8" fill="#78350f">Agent 向用户解释具体偏离维度，获</text>
+      <text x="238" y="235" font-size="10.8" fill="#78350f">明确授权后传 confirm_*_mismatch</text>
+
+      <line x1="424" y1="70" x2="454" y2="70" stroke="#0f766e" stroke-width="2" marker-end="url(#arrow)"/>
+
+      <!-- Stage 3 -->
+      <rect x="458" y="24" width="196" height="92" rx="10" fill="#f5f3ff" stroke="#6d28d9" stroke-width="2"/>
+      <text x="470" y="47" font-size="12" font-weight="700" fill="#5b21b6">Stage 3 · 协议草拟与穿越检查</text>
+      <text x="470" y="68" font-size="11.5" fill="#142622">• draft_tte_protocol</text>
+      <text x="470" y="86" font-size="11.5" fill="#142622">• validate_tte / ccw_protocol</text>
+      <text x="470" y="104" font-size="10.5" fill="#526863">阻断: 缺零点 / 期后协变量穿越 (码 2)</text>
+
+      <line x1="654" y1="70" x2="684" y2="70" stroke="#0f766e" stroke-width="2" marker-end="url(#arrow)"/>
+
+      <!-- Stage 4 -->
+      <rect x="688" y="24" width="192" height="92" rx="10" fill="#ecfdf5" stroke="#0f766e" stroke-width="2"/>
+      <text x="700" y="47" font-size="12" font-weight="700" fill="#0f766e">Stage 4 · 分阶预检与因果估计</text>
+      <text x="700" y="68" font-size="11.5" fill="#142622">① diagnose_tte_feasibility</text>
+      <text x="700" y="86" font-size="11.5" fill="#142622">② run_static_tte / run_ccw</text>
+      <text x="700" y="104" font-size="10.5" fill="#526863">先秒级看 ESS/SMD，通过再算 CIF/HR</text>
+
+      <!-- Gate B loop back -->
+      <path d="M 784 116 L 784 175" stroke="#b45309" stroke-width="1.8" stroke-dasharray="4 3" marker-end="url(#arrow-warn)"/>
+      <rect x="676" y="180" width="218" height="68" rx="8" fill="#fef2f2" stroke="#dc2626" stroke-width="1.6"/>
+      <text x="688" y="201" font-size="11.5" font-weight="700" fill="#991b1b">🛑 Gate B：正值性/平衡阻断 (码 3)</text>
+      <text x="688" y="219" font-size="10.8" fill="#7f1d1d">绝不输出有偏估计！返回失衡协变量与</text>
+      <text x="688" y="235" font-size="10.8" fill="#7f1d1d">极值权重诊断，回到 Stage 3 重调方案</text>
+      <path d="M 676 214 L 556 214 L 556 118" fill="none" stroke="#dc2626" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrow-warn)"/>
+
+      <line x1="880" y1="70" x2="906" y2="70" stroke="#0f766e" stroke-width="2" marker-end="url(#arrow)"/>
+
+      <!-- Stage 5 -->
+      <rect x="910" y="24" width="158" height="92" rx="10" fill="#f0fdfa" stroke="#0f766e" stroke-width="2"/>
+      <text x="920" y="47" font-size="12" font-weight="700" fill="#0f766e">Stage 5 · 证据读取与清理</text>
+      <text x="920" y="68" font-size="11.2" fill="#142622">• get_tte_result_summary</text>
+      <text x="920" y="86" font-size="11.2" fill="#142622">• export_tte_artifact</text>
+      <text x="920" y="104" font-size="11.2" fill="#142622">• delete_cohort_session</text>
+    </svg>
+  </section>
+
+  <!-- 阶段筛选按钮 -->
+  <h2>二、 14 项暴露给 Agent 的 MCP Tools 明细（点击阶段筛选）</h2>
+  <div class="tabs" id="stageTabs">
+    <button class="tab-btn active" data-filter="all">全部工具 (14)</button>
+    <button class="tab-btn" data-filter="s1">Stage 1 · 入口与画像 (3)</button>
+    <button class="tab-btn" data-filter="s2">Stage 2 · 目标 RCT 对标 (2)</button>
+    <button class="tab-btn" data-filter="s3">Stage 3 · 协议草拟与核验 (3)</button>
+    <button class="tab-btn" data-filter="s4">Stage 4 · 预检门禁与估计 (4)</button>
+    <button class="tab-btn" data-filter="s5">Stage 5 · 结构化结果与导出 (2)</button>
+  </div>
+
+  <!-- Stage 1 -->
+  <div class="stage-group" data-stage="s1">
+    <div class="stage-header">
+      <span class="stage-title">Stage 1 · 起点建立、队列画像与会话隔离层（Session &amp; Discovery）</span>
+      <span class="stage-goal">解决“Agent 如何接手用户的自然语言想法或本地脱敏表，并在分析完物理销毁”</span>
+    </div>
+    <div class="tool-grid">
+      <div class="tool-card">
+        <div class="tool-top">
+          <span class="tool-name">1. parse_research_idea</span>
+          <span class="chip chip-new">新增独立暴露</span>
+        </div>
+        <p class="tool-desc">将用户的中文/英文临床研究想法解析为结构化 PICO 与标准检索词，不虚构未声明的对照药，严格区分肿瘤 <code>EGFR</code> 与肾病 <code>CKD</code>。</p>
+        <div class="io-box">
+          <div class="io-row"><span class="io-lbl">输入：</span><code>idea_text</code>, 可选覆写 <code>condition / intervention / comparator / outcome</code></div>
+          <div class="io-row"><span class="io-lbl">输出：</span><code>pico</code> 字典、<code>comparator_explicit: bool</code>、英文检索词 <code>ctgov_queries</code></div>
+        </div>
+      </div>
+
+      <div class="tool-card">
+        <div class="tool-top">
+          <span class="tool-name">2. ingest_cohort_session</span>
+          <span class="chip chip-upgrade">升级自 profile_cohort_session · 核心自有数据入口</span>
+        </div>
+        <p class="tool-desc">接入<strong>用户自己的脱敏队列数据表</strong>（CSV/TSV/Excel导出表，兼容 UTF-8 与国内医院常见 GB18030 编码）：本地 <code>stdio</code> 模式直接传本地 <code>file_path</code> 零 Token 过手直读；远程 <code>HTTP</code> 模式签发一次性旁路上传地址 <code>upload_url</code> 流式直传服务器（绕开大模型上下文窗口与隐私泄露），仅将表头、缺失率、分布统计与候选字段角色返回给 Agent。（注：<code>sample_id</code> 仅保留作无数据时的教学演示快捷方式。）</p>
+        <div class="io-box">
+          <div class="io-row"><span class="io-lbl">输入：</span>本地 <code>file_path</code> | 远程已传 <code>session_id</code>（或请求签发 <code>issue_upload_ticket=true</code>）| 演示用 <code>sample_id</code></div>
+          <div class="io-row"><span class="io-lbl">输出：</span><code>session_id</code>、脱敏统计画像 <code>profile</code>、候选角色映射 <code>default_mapping</code>、待向用户追问的语义缺口 <code>missing_clinical_semantics</code>（如表中只写了 <code>0/1</code> 未写药名时提示 Agent 追问）</div>
+        </div>
+      </div>
+
+      <div class="tool-card">
+        <div class="tool-top">
+          <span class="tool-name">3. delete_cohort_session</span>
+          <span class="chip chip-existing">已有 · 保持强化</span>
+        </div>
+        <p class="tool-desc">一键物理擦除指定会话的原始表格、元数据及全部关联派生运行目录，执行磁盘零残留校验。</p>
+        <div class="io-box">
+          <div class="io-row"><span class="io-lbl">输入：</span><code>session_id</code></div>
+          <div class="io-row"><span class="io-lbl">输出：</span><code>deleted: true</code>、<code>purged_run_ids[]</code>（后续读取一律返回 <code>SESSION_NOT_FOUND</code>）</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stage 2 -->
+  <div class="stage-group" data-stage="s2">
+    <div class="stage-header">
+      <span class="stage-title">Stage 2 · 目标试验检索与五维 PICO-T 对标层（Target RCT Alignment）</span>
+      <span class="stage-goal">解决“不只看药名撞词，而是对设计、人群、双臂方案（含双模拟安慰剂剥离）、硬终点、随访窗五维把关”</span>
+    </div>
+    <div class="tool-grid">
+      <div class="tool-card">
+        <div class="tool-top">
+          <span class="tool-name">4. search_target_rcts</span>
+          <span class="chip chip-existing">已有 · 已升级五维审计</span>
+        </div>
+        <p class="tool-desc">实时检索 <code>ClinicalTrials.gov</code> API v2（头对头双臂优先，断网明示回落离线目录），剥离 <code>&lt;drug&gt; placebo</code> 双模拟安慰剂，按五维对齐等级排序并用确定性硬上限锁死大模型评分。</p>
+        <div class="io-box">
+          <div class="io-row"><span class="io-lbl">输入：</span><code>condition</code>, <code>intervention</code>, <code>comparator</code>, <code>outcome</code>, <code>target_followup_days</code>, <code>project_mode</code></div>
+          <div class="io-row"><span class="io-lbl">输出：</span>候选列表（含 <code>nct_id</code>、双臂解析明细、五维 <code>dimension_audit</code>、<code>match_score</code>、<code>overall_alignment_status</code>）</div>
+        </div>
+      </div>
+
+      <div class="tool-card">
+        <div class="tool-top">
+          <span class="tool-name">5. audit_target_rct_alignment</span>
+          <span class="chip chip-new">新增单试验精准验真</span>
+        </div>
+        <p class="tool-desc">当研究者直接向 Agent 指定某个 NCT 号（如“帮我对标 NCT02296125”）时，按单号实时拉取官方注册结构并输出五维逐项核对单与偏离确认要求。</p>
+        <div class="io-box">
+          <div class="io-row"><span class="io-lbl">输入：</span><code>nct_id</code>（或 <code>target_rct</code> JSON）+ <code>session_id</code> 或 <code>pico</code></div>
+          <div class="io-row"><span class="io-lbl">输出：</span><code>overall_alignment_status</code>、逐维通过/偏离详情、<code>requires_confirmation</code> 及对应错误码说明</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stage 3 -->
+  <div class="stage-group" data-stage="s3">
+    <div class="stage-header">
+      <span class="stage-title">Stage 3 · 协议草拟与因果时间轴显式核验层（Protocol Drafting &amp; Guardrails）</span>
+      <span class="stage-goal">解决“让 Agent 先生成可读、可改的七要素 / CCW 协议草案交用户过目，再跑确定性防时间穿越检查”</span>
+    </div>
+    <div class="tool-grid">
+      <div class="tool-card">
+        <div class="tool-top">
+          <span class="tool-name">6. draft_tte_protocol</span>
+          <span class="chip chip-new">核心新增 · 分步向导枢纽</span>
+        </div>
+        <p class="tool-desc">根据选定的目标 RCT 与队列画像（或模拟 PICO），草拟完整的七要素目标试验协议（静态基线 / 固定地标 / 宽限期 CCW）与列名映射表。若目标 RCT 存在未确认偏离，在此步即刻触发 <code>422</code> 拦截。</p>
+        <div class="io-box">
+          <div class="io-row"><span class="io-lbl">输入：</span><code>design_mode</code> (<code>static</code> | <code>landmark</code> | <code>grace_period_ccw</code>), <code>target_rct</code>, <code>session_id / pico</code>, <code>mapping_overrides</code>, <code>confirm_arm_mismatch</code>, <code>confirm_protocol_mismatch</code></div>
+          <div class="io-row"><span class="io-lbl">输出：</span>可审阅/可微调的 <code>protocol_draft</code> JSON、<code>column_mapping</code> 与关键参数清单（零点、宽限期、评估时点、门禁阈值）</div>
+        </div>
+        <details>
+          <summary>查看 Agent 典型交互效果</summary>
+          <pre>Agent 调用 draft_tte_protocol → 向研究者展示：
+"已按 CAROLINA (NCT01243424) 草拟协议：t0=首次处方日，双臂=利格列汀 vs 格列美脲，
+评估时点=180/365/730天，加权=Overlap，门禁 |SMD|≤0.10。是否调整地标窗或协变量？"</pre>
+        </details>
+      </div>
+
+      <div class="tool-card">
+        <div class="tool-top">
+          <span class="tool-name">7. validate_tte_protocol</span>
+          <span class="chip chip-existing">已有 · 静态/地标检查器</span>
+        </div>
+        <p class="tool-desc">对七要素静态/地标协议执行确定性方法学规则审查：拦截缺失时间零点、零点后纳排条件穿越、地标后协变量污染及 E-value 指标误用。</p>
+        <div class="io-box">
+          <div class="io-row"><span class="io-lbl">输入：</span><code>protocol</code> JSON + 可选 <code>session_id</code></div>
+          <div class="io-row"><span class="io-lbl">输出：</span><code>valid: bool</code>、规范化协议、结构化 <code>violations[]</code>（定位违规字段与修正提示）</div>
+        </div>
+      </div>
+
+      <div class="tool-card">
+        <div class="tool-top">
+          <span class="tool-name">8. validate_ccw_protocol</span>
+          <span class="chip chip-new">新增 · 接入已合并 P1 CCW</span>
+        </div>
+        <p class="tool-desc">校验 <code>tte-ccw-v1</code> 双侧宽限期克隆协议：核查宽限期 $g$ 与步长 $\Delta$ 整除性、时变协变量 <code>X_tv</code> 期前测量偏移（严防期后测量穿越）、分位截尾跨度与合成前缀守卫。</p>
+        <div class="io-box">
+          <div class="io-row"><span class="io-lbl">输入：</span><code>ccw_protocol</code> JSON</div>
+          <div class="io-row"><span class="io-lbl">输出：</span><code>valid: bool</code>、离散人-期网格规格 <code>(m_g, K)</code>、无治疗-混杂反馈适用边界声明与 <code>violations[]</code></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stage 4 -->
+  <div class="stage-group" data-stage="s4">
+    <div class="stage-header">
+      <span class="stage-title">Stage 4 · 分阶诊断预检与确定性因果估计层（Feasibility Gate &amp; Estimation）</span>
+      <span class="stage-goal">解决“先花 0.5 秒做倾向重叠与平衡门禁体检，通过后再启动竞争风险 / 个体聚类 Bootstrap 重计算”</span>
+    </div>
+    <div class="tool-grid">
+      <div class="tool-card">
+        <div class="tool-top">
+          <span class="tool-name">9. diagnose_tte_feasibility</span>
+          <span class="chip chip-new">核心新增 · 秒级独立门禁预检</span>
+        </div>
+        <p class="tool-desc">在不跑耗时生存 Bootstrap 的前提下，独立运行纳排瀑布筛选、重叠加权/IPTW（或宽限期 IPCW）拟合、ESS 有效样本量比、截尾前极值权重与加权前后协变量 <code>|SMD|</code> 体检。</p>
+        <div class="io-box">
+          <div class="io-row"><span class="io-lbl">输入：</span><code>protocol</code> + <code>session_id</code> + <code>column_mapping</code>（或模拟参数 <code>sim_config</code>）</div>
+          <div class="io-row"><span class="io-lbl">输出：</span><code>gate_status</code> (<code>passed</code> | <code>blocked</code>)、纳排流失瀑布、Love Plot <code>smd_table</code>、未过门禁时的修复建议 <code>remediation_hints</code></div>
+        </div>
+      </div>
+
+      <div class="tool-card">
+        <div class="tool-top">
+          <span class="tool-name">10. run_static_or_landmark_tte</span>
+          <span class="chip chip-upgrade">整合升级自有/模拟/合成三轨</span>
+        </div>
+        <p class="tool-desc">执行静态基线或固定地标竞争风险完整估计（门禁未过强制阻断并省略点估计；通过则计算加权 Aalen–Johansen <code>CIF_1/CIF_2</code>、Fine–Gray <code>sHR</code>、原因特异 <code>csHR</code>、<code>RD/RR_CIF</code> 与 E-value）。保留原 <code>start_user_cohort_tte</code> / <code>start_simulated_rct_tte</code> 兼容别名。</p>
+        <div class="io-box">
+          <div class="io-row"><span class="io-lbl">输入：</span><code>project_mode</code>, <code>protocol</code>, <code>session_id / mapping</code>（或 <code>sim_config</code> + <code>seed</code>）, <code>target_rct</code>, 确认位</div>
+          <div class="io-row"><span class="io-lbl">输出：</span><code>run_id</code>、运行状态（快速任务直接附带完成态核心指标，长任务返回异步句柄）</div>
+        </div>
+      </div>
+
+      <div class="tool-card">
+        <div class="tool-top">
+          <span class="tool-name">11. run_grace_period_ccw</span>
+          <span class="chip chip-new">新增 · 接入已合并 P1 CCW</span>
+        </div>
+        <p class="tool-desc">运行双侧宽限期治疗克隆–删失–加权（CCW）引擎：分臂独立稳定化 IPCW（支持 <code>X_tv</code> 期前时变混杂）、截尾前正值性熔断、克隆前患者级聚类 Bootstrap 重拟合，并同步输出「朴素事后分组不朽时间假阳性曲线」定量对照。</p>
+        <div class="io-box">
+          <div class="io-row"><span class="io-lbl">输入：</span><code>ccw_protocol</code>, <code>synthetic_scenario</code>（<code>null_effect</code> | <code>protective_effect</code> 或自定义 DGP 参数）, <code>seed</code>, <code>bootstrap_replicates</code>, 可选 <code>session_id</code>（写入 <code>status.json</code>，供 <code>delete_cohort_session</code> 一并清除）</div>
+          <div class="io-row"><span class="io-lbl">输出：</span><code>run_id</code>、<code>gate_status</code>、各时点 <code>ccw_rd</code> vs <code>naive_immortal_biased_rd</code> vs <code>truth_rd</code> 对照</div>
+        </div>
+      </div>
+
+      <div class="tool-card">
+        <div class="tool-top">
+          <span class="tool-name">12. get_tte_run_status</span>
+          <span class="chip chip-existing">已有 (get_tte_run)</span>
+        </div>
+        <p class="tool-desc">查询异步估计或高次 Bootstrap 任务的实时阶段、门禁通过状态、耗时及已落盘产物列表。</p>
+        <div class="io-box">
+          <div class="io-row"><span class="io-lbl">输入：</span><code>run_id</code></div>
+          <div class="io-row"><span class="io-lbl">输出：</span><code>status</code> (<code>running / completed / gate_blocked / failed</code>)、<code>artifacts[]</code>、错误摘要</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+    <!-- Stage 5 -->
+  <div class="stage-group" data-stage="s5">
+    <div class="stage-header">
+      <span class="stage-title">Stage 5 · 面向临床专家的「三阶渐进对比结果单」与审计导出层（Clinician-Facing 3-Tier Evidence Ladder）</span>
+      <span class="stage-goal">核心输出原则：服务临床专家而非纯方法学专家——同屏对比「① 原始直接分析 → ② 常规 PSM/IPTW → ③ 完整 TTE」的终点值演变与额外受控偏倚归因</span>
+    </div>
+    <div class="panel" style="margin-bottom:12px;border-left:5px solid #0f766e">
+      <h3 style="margin:0 0 6px;font-size:14.5px;color:#0f766e">🎯 最终输出必含的核心「三阶去偏对比梯队（<code>clinical_comparison_ladder</code>）」</h3>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:20%">分析层级</th>
+            <th style="width:28%">输出的终点核心指标</th>
+            <th style="width:26%">这一步解决了什么</th>
+            <th style="width:26%">这一步还残留什么盲区</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>第一阶 · 原始粗分析</strong><br><code>tier_1_unadjusted_crude</code></td>
+            <td>原始两组例数/事件数、未调整终点发生率、粗风险差 <code>Crude RD</code>、粗 <code>Crude HR</code> (95% CI)</td>
+            <td>直观还原临床医生在 Excel/SPSS 直接做分组对比看到的原始表面数值</td>
+            <td>混杂两组基线病情轻重差异（适应证混杂）+ 时间起点与不朽时间偏倚</td>
+          </tr>
+          <tr>
+            <td><strong>第二阶 · 常规倾向评分调整</strong><br><code>tier_2_conventional_ps</code></td>
+            <td><strong>1:1 卡钳 PSM</strong>（含匹配对数与丢弃样本比例）及<strong>常规简单 IPTW</strong> 下的终点发生率、<code>PSM/IPTW RD</code> 与 <code>HR</code> (95% CI)</td>
+            <td>拉平已测量的<strong>基线特征差异</strong>（列出具体被拉平的基线变量及 SMD 下降幅度）</td>
+            <td><strong>仍无法消除时间与设计偏倚</strong>：事后分组不朽时间假阳性、1:1 匹配丢弃大量样本、传统 KM 高估竞争死亡风险、期前时变混杂</td>
+          </tr>
+          <tr>
+            <td><strong>第三阶 · 完整目标试验模拟</strong><br><code>tier_3_target_trial_emulation</code></td>
+            <td>对标目标 RCT 后的加权 <code>CIF_1(t*)</code>、<code>TTE RD / RR_CIF</code>、Fine–Gray <code>sHR</code>、原因特异 <code>csHR</code> 及未测混杂 <code>E-value</code></td>
+            <td colspan="2"><strong>自动生成临床大白话归因单（<code>what_tte_controlled_beyond_psm</code>）</strong>：逐条量化告诉临床专家“为什么从 PSM 到 TTE 终点值又发生了变化”——① 额外剔除了多少例违反时间零点/纳排规则的现患或穿越病例；② 额外消除了多少百分点<strong>不朽时间偏倚</strong>（宽限期双侧克隆 CCW）；③ 修正了多少例<strong>竞争死亡导致的高估</strong>（Aalen–Johansen vs 1-KM）；④ 额外控制了哪些<strong>纵向期前时变混杂因素</strong>并保留了多少临床重叠目标人群。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="tool-grid">
+      <div class="tool-card">
+        <div class="tool-top">
+          <span class="tool-name">13. get_tte_result_summary</span>
+          <span class="chip chip-new">核心新增 · 临床三阶对比结构化结果单</span>
+        </div>
+        <p class="tool-desc">一次性返回免 Base64 的结构化 JSON 临床结论包：首屏即为 <strong><code>clinical_comparison_ladder</code>（粗分析 → 常规 1:1 PSM / 简单 IPTW → 完整 TTE 三阶终点数值对照表）</strong> + <strong><code>what_tte_controlled_beyond_psm</code>（额外控制的混杂与设计偏倚临床白话归因清单）</strong>，辅以纳排瀑布、平衡诊断、各时点置信区间与证据边界声明。</p>
+        <div class="io-box">
+          <div class="io-row"><span class="io-lbl">输入：</span><code>run_id</code></div>
+          <div class="io-row"><span class="io-lbl">输出：</span><code>{clinical_comparison_ladder, what_tte_controlled_beyond_psm, horizon_estimates, hazard_ratios, diagnostics, evidence_tier}</code></div>
+        </div>
+      </div>
+
+      <div class="tool-card">
+        <div class="tool-top">
+          <span class="tool-name">14. export_tte_artifact</span>
+          <span class="chip chip-upgrade">升级自 read_tte_artifact</span>
+        </div>
+        <p class="tool-desc">按 UTF-8 文本、解析后 JSON 或分页块导出独立可打印 HTML 临床报告（首屏同样内置三阶去偏对比表与曲线）、Markdown 审计稿、CIF 阶梯曲线 CSV 及 SHA-256 <code>run_manifest.json</code>（保留原 <code>read_tte_artifact</code> 兼容）。</p>
+        <div class="io-box">
+          <div class="io-row"><span class="io-lbl">输入：</span><code>run_id</code>, <code>artifact_name</code>, <code>mode</code> (<code>text</code> | <code>json</code> | <code>base64_chunk</code>)</div>
+          <div class="io-row"><span class="io-lbl">输出：</span>产物正文/对象、<code>sha256</code> 校验值、分页游标（若超大）</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Resources + 传输与治理对比 -->
+  <div class="grid-2">
+    <div class="panel">
+      <h2 style="margin-top:0">三、 配套暴露的 4 项 MCP 只读 Resources</h2>
+      <p class="sub" style="margin-bottom:8px">供外部 Agent 零工具调用开销直接读取协议规范与样表目录：</p>
+      <table>
+        <thead>
+          <tr><th>Resource URI</th><th>提供内容与用途</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>emulatrx://schemas/tte-protocol-v1</code></td>
+            <td>静态基线 / 固定地标七要素协议完整 JSON Schema</td>
+          </tr>
+          <tr>
+            <td><code>emulatrx://schemas/tte-ccw-v1</code></td>
+            <td>双侧宽限期克隆–删失–加权（CCW）纵向协议 JSON Schema</td>
+          </tr>
+          <tr>
+            <td><code>emulatrx://samples/catalog</code></td>
+            <td>4 套内置临床样表与 CCW 正/零效应合成基准的字段字典与推荐场景</td>
+          </tr>
+          <tr>
+            <td><code>emulatrx://guide/error-and-gate-codes</code></td>
+            <td>全部 <code>422 / 400 / 码 2 / 码 3</code> 门禁码的医学含义与 Agent 标准应对规程</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <h2 style="margin-top:0">四、 传输接入、鉴权隔离与实施边界</h2>
+      <table>
+        <thead>
+          <tr><th>架构维度</th><th>设计规格</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>双传输模式</strong></td>
+            <td>① <strong>本地 <code>stdio</code></strong>：<code>python -m emulatrx_tte mcp-serve</code>（Claude Desktop / Cursor / Orca / 本地科研 Agent 即插即用）；<br>② <strong>远程 HTTP</strong>：<code>POST /mcp</code>（<code>ymadmin</code> 私网容器，独立 <code>Bearer Token</code> 鉴权，与 Web 口令强制不同）。</td>
+          </tr>
+          <tr>
+            <td><strong>隐私与确定性红线</strong></td>
+            <td>所有统计加权、生存曲线与门禁 100% 由纯 Python 确定性引擎计算；脱敏队列个体行记录与非白名单单元格值严禁发往外部大模型；合成/模拟输出强制带 <code>non_clinical_evidence</code> 标识。</td>
+          </tr>
+          <tr>
+            <td><strong>与后续 Web Wizard 的关系</strong></td>
+            <td>Web 交互重构已单独建入 GitHub Issue 与需求池；届时前端每一步向导直接调用上述 Stage 1→5 同构状态机，前后端不再重复造两套逻辑。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    var btns = document.querySelectorAll('#stageTabs .tab-btn');
+    var groups = document.querySelectorAll('.stage-group');
+    btns.forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var f = btn.getAttribute('data-filter');
+        btns.forEach(function (b) { b.classList.remove('active'); });
+        btn.classList.add('active');
+        groups.forEach(function (g) {
+          if (f === 'all' || g.getAttribute('data-stage') === f) {
+            g.classList.remove('hidden');
+          } else {
+            g.classList.add('hidden');
+          }
+        });
+      });
+    });
+  })();
+</script>
+</body>
+</html>

@@ -21,6 +21,14 @@ def esc(val: object) -> str:
     return html.escape(str(val), quote=True)
 
 
+def safe_record_href(url: object) -> str:
+    """Allow only http(s) record links. Anything else, including javascript: URIs, becomes '#'."""
+    text = str(url or "").strip()
+    if text.startswith(("https://", "http://")):
+        return text
+    return "#"
+
+
 def _fmt_num(val: object, digits: int = 4) -> str:
     if val is None or val == "":
         return "—"
@@ -249,7 +257,7 @@ def render_dualmode_run_view(result: dict, root: Path, *, standalone_report: boo
         any_warn = trct.get("arm_alignment_warning") or trct.get("protocol_alignment_warning")
         rct_role_label = "参考框架 RCT（局部方案参考）" if any_warn else "对标目标 RCT"
         parts.append(
-            f"<p><strong>{rct_role_label}：</strong><a href='{esc(trct.get('record_url', 'https://clinicaltrials.gov/study/' + trct['nct_id']))}' target='_blank' rel='noopener'>"
+            f"<p><strong>{rct_role_label}：</strong><a href='{esc(safe_record_href(trct.get('record_url') or ('https://clinicaltrials.gov/study/' + trct['nct_id'])))}' target='_blank' rel='noopener'>"
             f"{esc(trct['nct_id'])}</a> — {esc(trct.get('brief_title', ''))} "
             f"（来源标识：<code>{esc(trct.get('source', 'clinicaltrials_gov_api_v2'))}</code>"
             + (f"，分组对齐状态：<code>{esc(trct['arm_alignment_status'])}</code>" if trct.get("arm_alignment_status") else "")
@@ -277,6 +285,18 @@ def render_dualmode_run_view(result: dict, root: Path, *, standalone_report: boo
         + wipe_btn
         + "</div></section>"
     )
+    estimates = result.get("estimates") if isinstance(result.get("estimates"), dict) else None
+    if gate == "passed" and estimates and isinstance(estimates.get("clinical_comparison_ladder"), dict):
+        from emulatrx_tte.clinical_ladder import render_clinical_ladder_html
+
+        parts.append(
+            render_clinical_ladder_html(
+                {
+                    "clinical_comparison_ladder": estimates["clinical_comparison_ladder"],
+                    "what_tte_controlled_beyond_psm": estimates["what_tte_controlled_beyond_psm"],
+                }
+            )
+        )
 
     parts.append(
         "<div class='metric-grid'>"
@@ -772,6 +792,12 @@ function escHtml(s) {{
   return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }}
 
+function safeRecordHref(url) {{
+  const text = String(url ?? '').trim();
+  if (text.startsWith('https://') || text.startsWith('http://')) return text;
+  return '#';
+}}
+
 function initBootCards() {{
   const sc = document.getElementById('sample-cards-container');
   sc.innerHTML = BOOT.samples.map(s => `
@@ -1111,7 +1137,7 @@ async function executeRCTSearch(cond='', intr='', comp='', out='') {{
             <input type="radio" name="target_rct_choice" value="${{idx}}" ${{isChecked ? 'checked' : ''}} style="width:auto" onchange="onSelectRCTRadio(${{idx}})">
             <span>选择</span>
           </label>
-          <a href="${{escHtml(c.record_url)}}" target="_blank" rel="noopener"><strong>${{escHtml(c.nct_id)}} ↗</strong></a>
+          <a href="${{escHtml(safeRecordHref(c.record_url))}}" target="_blank" rel="noopener"><strong>${{escHtml(c.nct_id)}} ↗</strong></a>
           <span class="tag ${{alignCls}}">${{escHtml(alignText)}}</span>
           <span class="tag ${{scoreCls}}">匹配度 ${{pct}}%</span>
           <span class="tag">${{escHtml((c.phases || []).join('/'))}}</span>
@@ -1185,7 +1211,7 @@ async function chooseTargetRCT(idx) {{
     : '';
   document.getElementById('selected-rct-summary').innerHTML = `
     <div class="notice" style="background:#eef6f4;border-left-color:var(--accent)">
-      <strong>${{combinedWarn ? '当前局部参考框架 RCT：' : '当前四维对标目标 RCT：'}}</strong><a href="${{escHtml(activeRct.record_url)}}" target="_blank" rel="noopener">${{escHtml(activeRct.nct_id)}} ↗</a> — ${{escHtml(activeRct.brief_title)}}
+      <strong>${{combinedWarn ? '当前局部参考框架 RCT：' : '当前四维对标目标 RCT：'}}</strong><a href="${{escHtml(safeRecordHref(activeRct.record_url))}}" target="_blank" rel="noopener">${{escHtml(activeRct.nct_id)}} ↗</a> — ${{escHtml(activeRct.brief_title)}}
     </div>
     ${{warnHtml}}
   `;

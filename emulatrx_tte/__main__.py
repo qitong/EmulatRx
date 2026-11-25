@@ -174,7 +174,27 @@ def main(argv: list[str] | None = None) -> int:
     rc.add_argument("--ci-level", type=float, default=0.95)
     rc.add_argument("--out", type=Path, required=True)
 
+    serve = subparsers.add_parser(
+        "mcp-serve",
+        help="Serve the 14-tool MCP registry over stdio JSON-RPC",
+    )
+    serve.add_argument("--runs-dir", type=Path, default=Path("/tmp/emulatrx-mcp-stdio-runs"))
+    serve.add_argument("--allow-ingest-dir", action="append", default=None)
+
     args = parser.parse_args(argv)
+    if args.command == "mcp-serve":
+        from mcp.server.fastmcp import FastMCP
+
+        from emulatrx_preview.mcp_tools import register_tools
+        from emulatrx_preview.tte_runner import TTERunner
+
+        runs_dir = args.runs_dir.expanduser().resolve()
+        allow = [Path(item).expanduser().resolve() for item in (args.allow_ingest_dir or [])]
+        local_runner = TTERunner(runs_dir)
+        server = FastMCP("EmulatRx TTE", stateless_http=True, json_response=True)
+        register_tools(server, local_runner, transport="stdio", allow_ingest_dirs=allow)
+        server.run(transport="stdio")
+        return 0
 
     try:
         if args.command == "validate-protocol":
