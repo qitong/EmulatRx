@@ -14,6 +14,7 @@ jobs:
       - run: python -m pip install -r requirements-preview.txt httpx==0.28.1
       - run: PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -p 'test_preview_service.py' -v
       - run: PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -p 'test_dualmode_workbench.py' -v
+      - run: PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -p 'test_mcp_agent_suite.py' -v
       - name: Test RCT benchmark CLI, REST, MCP, and feature flag
         run: PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -p 'test_tte_benchmarking.py' -v
   arm64-image:
@@ -82,6 +83,28 @@ jobs:
           assert status_of(urllib.request.Request(f"{base}/mcp", data=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}', headers={**web_hdr, "Content-Type": "application/json"}, method="POST"))[0] == 401
           mcp_code, mcp_body = status_of(urllib.request.Request(f"{base}/mcp", data=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}', headers=mcp_hdr, method="POST"))
           assert mcp_code == 200 and "start_user_cohort_tte" in mcp_body
+          for tool_name in (
+              "parse_research_idea", "ingest_cohort_session", "delete_cohort_session",
+              "search_target_rcts", "audit_target_rct_alignment", "draft_tte_protocol",
+              "validate_tte_protocol", "validate_ccw_protocol", "diagnose_tte_feasibility",
+              "run_static_or_landmark_tte", "run_grace_period_ccw", "get_tte_run_status",
+              "get_tte_result_summary", "export_tte_artifact",
+          ):
+              assert tool_name in mcp_body, tool_name
+          res_code, res_body = status_of(urllib.request.Request(f"{base}/mcp", data=b'{"jsonrpc":"2.0","id":2,"method":"resources/list"}', headers=mcp_hdr, method="POST"))
+          assert res_code == 200, res_body
+          for uri in (
+              "emulatrx://schemas/tte-protocol-v1", "emulatrx://schemas/tte-ccw-v1",
+              "emulatrx://samples/catalog", "emulatrx://guide/error-and-gate-codes",
+          ):
+              assert uri in res_body, uri
+          read_code, read_body = status_of(urllib.request.Request(
+              f"{base}/mcp",
+              data=b'{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"emulatrx://guide/error-and-gate-codes"}}',
+              headers=mcp_hdr,
+              method="POST",
+          ))
+          assert read_code == 200 and "POSITIVITY_VIOLATION" in read_body, read_body[:400]
 
           # 2. Offline dual-entry smoke: sample cohort upload -> 4D CAROLINA and FLAURA matches -> session purge -> 404
           def assert_offline_sample(sample_id, query, nct_id):

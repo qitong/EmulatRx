@@ -591,8 +591,12 @@ def diagnose_cohort(
         ),
         "landmark_day": landmark_day,
         "initial_n": int(len(df)),
+        "initial_arm_counts": initial_arm_counts,
         "retained_n": int(len(df_ret)),
         "retained_arm_counts": ret_arm_counts,
+        "landmark_excluded_n": int(len(df_excl)),
+        "landmark_excluded_primary_events": int((excl_events == primary_code).sum()),
+        "landmark_excluded_competing_events": int(excl_events.isin(list(competing_codes)).sum()),
         "covariates": cov_names,
         "protocol_diagnostic_gates": gates,
         "max_abs_smd_unweighted": (

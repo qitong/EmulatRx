@@ -303,5 +303,79 @@ class PreviewServiceTests(unittest.TestCase):
         self.assertEqual(recovered.get(run_id)["state"], "interrupted")
 
 
+class RoundTwoAuditPolishTests(unittest.TestCase):
+    def test_static_and_ccw_ess_hints_stay_distinct(self):
+        from emulatrx_preview.mcp_tools import _remediation
+
+        static = _remediation([{"code": "ESS_RATIO_BELOW_MIN", "detail": "static"}])
+        ccw = _remediation([{"code": "ESS_RATIO_BELOW_MIN", "detail": "ccw"}], is_ccw=True)
+        self.assertIn("极端权重", static[0]["hint_zh"])
+        self.assertIn("克隆", ccw[0]["hint_zh"])
+        self.assertNotEqual(static[0]["hint_zh"], ccw[0]["hint_zh"])
+
+    def test_javascript_record_url_never_enters_an_href(self):
+        from emulatrx_preview.dualmode_views import render_dualmode_run_view, safe_record_href, workbench_home_view
+
+        self.assertEqual(safe_record_href("javascript:alert(1)"), "#")
+        self.assertEqual(safe_record_href("data:text/html,hi"), "#")
+        self.assertTrue(safe_record_href("https://clinicaltrials.gov/study/NCT00000099").startswith("https://"))
+        page = workbench_home_view()
+        self.assertIn("function safeRecordHref", page)
+        self.assertNotIn("escHtml(c.record_url)", page)
+        self.assertNotIn("escHtml(activeRct.record_url)", page)
+        result = {
+            "state": "blocked",
+            "run_id": "a" * 32,
+            "project_mode": "simulated_cohort",
+            "normalized_protocol": {
+                "study_title": "XSS probe",
+                "treatment_strategies": [
+                    {"id": "active", "label": "A"},
+                    {"id": "comparator", "label": "B"},
+                ],
+                "estimand": {"diagnostic_gates": {"max_abs_smd": 0.1}},
+            },
+            "diagnostics": {"max_abs_smd_weighted": 0.2, "ess_diagnostics": {}},
+            "gate_status": "blocked",
+            "target_rct": {
+                "nct_id": "NCT00000099",
+                "record_url": "javascript:alert(1)",
+                "brief_title": "probe",
+                "source": "caller",
+            },
+            "cohort_rows": 0,
+            "eligible_rows": 0,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            html_text = render_dualmode_run_view(result, Path(directory))
+        self.assertNotIn("javascript:", html_text.lower())
+        self.assertIn("href='#'", html_text)
+
+    def test_optional_ccw_session_id_is_swept_on_delete(self):
+        session_id = "b" * 32
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner = TTERunner(root)
+            (runner.sessions_root / session_id).mkdir()
+            source = root / "ccw-src"
+            source.mkdir()
+            (source / "ccw_diagnostics.json").write_text("{}", encoding="utf-8")
+            linked = runner.adopt_ccw_directory(
+                source,
+                gate_status="blocked",
+                seed=1,
+                case_count=12,
+                session_id=session_id,
+            )
+            self.assertEqual(linked["session_id"], session_id)
+            saved = json.loads((root / linked["run_id"] / "status.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved["session_id"], session_id)
+            wiped = runner.delete_session(session_id)
+            self.assertIn(linked["run_id"], wiped["purged_runs"])
+            self.assertFalse((root / linked["run_id"]).exists())
+            plain = runner.adopt_ccw_directory(source, gate_status="passed", seed=2, case_count=8)
+            self.assertNotIn("session_id", plain)
+
+
 if __name__ == "__main__":
     unittest.main()

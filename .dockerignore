@@ -5,6 +5,7 @@
 !emulatrx_preview/**
 !examples/
 !examples/tte_preview_v1.json
+!examples/tte_grace_period_ccw_v1.json
 !schemas/
 !schemas/**
 !requirements-preview.txt
