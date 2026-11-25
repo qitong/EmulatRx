@@ -1,4 +1,4 @@
-"""Command-line entry point for emulatrx_tte (validate-protocol, synth, diagnose, estimate, run-synthetic, run-simulated, run-user-cohort, validate-ccw, synth-ccw, run-ccw-synthetic)."""
+"""Command-line entry point for emulatrx_tte (validate-protocol, synth, diagnose, estimate, run-synthetic, run-simulated, run-user-cohort, validate-ccw, synth-ccw, run-ccw-synthetic, benchmark-rct)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import sys
 
-from ._common import ALLOWED_SOURCE_MODES, ContractError, GateBlockedError
+from ._common import ALLOWED_SOURCE_MODES, ContractError, GateBlockedError, read_strict_json
 from .ccw import (
     generate_synthetic_ccw_cohort,
     run_ccw_synthetic_pipeline,
@@ -174,6 +174,26 @@ def main(argv: list[str] | None = None) -> int:
     rc.add_argument("--ci-level", type=float, default=0.95)
     rc.add_argument("--out", type=Path, required=True)
 
+    br = subparsers.add_parser(
+        "benchmark-rct",
+        help="Benchmark a finished TTE against public RCT aggregates and optional negative-control diagnostics",
+    )
+    br.add_argument("--output-dir", type=Path, required=True)
+    br.add_argument("--nct-id", default="NCT01243424")
+    br.add_argument("--synthetic-demo", choices=("hidden_bias", "clean_null"), default=None)
+    br.add_argument("--seed", type=_parse_strict_cli_int, default=20261125)
+    br.add_argument("--n", type=_parse_strict_cli_int, default=2500)
+    br.add_argument("--tte-result-json", type=Path, default=None)
+    br.add_argument("--alignment-json", type=Path, default=None)
+    br.add_argument("--study-json", type=Path, default=None)
+    br.add_argument("--curated-summary-json", type=Path, default=None)
+    br.add_argument("--cohort-csv", type=Path, default=None)
+    br.add_argument("--treatment-col", default="treatment")
+    br.add_argument("--outcome-col", default="outcome_event")
+    br.add_argument("--weights-col", default="analysis_weight")
+    br.add_argument("--negative-control-outcome-col", default=None)
+    br.add_argument("--negative-control-time-col", default=None)
+
     args = parser.parse_args(argv)
 
     try:
@@ -254,6 +274,64 @@ def main(argv: list[str] | None = None) -> int:
                 dgp_params=args.dgp_params,
                 out_dir=args.out,
             )
+            exit_code = 0
+        elif args.command == "benchmark-rct":
+            from .benchmarking import (
+                execute_benchmark_request,
+                is_benchmarking_enabled,
+                run_synthetic_benchmark_demo,
+                write_benchmark_report,
+            )
+
+            if not is_benchmarking_enabled():
+                print("BENCHMARKING_FEATURE_DISABLED: benchmarking is turned off", file=sys.stderr)
+                return 2
+            if args.synthetic_demo:
+                result = run_synthetic_benchmark_demo(
+                    args.synthetic_demo,
+                    nct_id=args.nct_id,
+                    n=args.n,
+                    seed=args.seed,
+                )
+            else:
+                if args.tte_result_json is None or args.alignment_json is None:
+                    raise ContractError(
+                        "MISSING_BENCHMARK_INPUT",
+                        "benchmark-rct requires --synthetic-demo or both --tte-result-json and --alignment-json",
+                    )
+                _, tte_result = read_strict_json(args.tte_result_json, max_bytes=2_000_000)
+                _, alignment = read_strict_json(args.alignment_json, max_bytes=2_000_000)
+                study_json = None
+                curated = None
+                if args.study_json is not None:
+                    _, study_json = read_strict_json(args.study_json, max_bytes=2_000_000)
+                if args.curated_summary_json is not None:
+                    _, curated = read_strict_json(args.curated_summary_json, max_bytes=2_000_000)
+                cohort = None
+                weights = None
+                if args.cohort_csv is not None:
+                    import pandas as pd
+
+                    cohort = pd.read_csv(args.cohort_csv)
+                    if args.weights_col not in cohort.columns:
+                        raise ContractError("INVALID_WEIGHTS", f"cohort is missing weights column {args.weights_col}")
+                    weights = cohort[args.weights_col].to_numpy()
+                result = execute_benchmark_request(
+                    {
+                        "nct_id": args.nct_id,
+                        "tte_result": tte_result,
+                        "alignment_audit": alignment,
+                        "study_json": study_json,
+                        "curated_published_summary": curated,
+                        "treatment_col": args.treatment_col,
+                        "outcome_col": args.outcome_col,
+                        "negative_control_outcome_col": args.negative_control_outcome_col,
+                        "negative_control_time_col": args.negative_control_time_col,
+                    },
+                    cohort=cohort,
+                    weights=weights,
+                )
+            write_benchmark_report(result, args.output_dir)
             exit_code = 0
         elif args.command == "run-ccw-synthetic":
             result, exit_code = run_ccw_synthetic_pipeline(

@@ -14,6 +14,8 @@ jobs:
       - run: python -m pip install -r requirements-preview.txt httpx==0.28.1
       - run: PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -p 'test_preview_service.py' -v
       - run: PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -p 'test_dualmode_workbench.py' -v
+      - name: Test RCT benchmark CLI, REST, MCP, and feature flag
+        run: PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -p 'test_tte_benchmarking.py' -v
   arm64-image:
     runs-on: ubuntu-24.04-arm
     steps:

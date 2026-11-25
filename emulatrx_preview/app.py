@@ -33,8 +33,10 @@ from emulatrx_tte import (
     verify_and_enrich_target_rct,
 )
 from emulatrx_tte._common import ContractError, MAX_USER_COHORT_BYTES
+from emulatrx_tte.benchmarking import benchmarking_disabled_payload, interpretive_guardrail, is_benchmarking_enabled
 from emulatrx_tte.llm_assist import extract_untrusted_Note_forbidden_tokens
 from .dualmode_views import render_dualmode_run_view, workbench_home_view
+from .mcp_tools import benchmark_from_payload, register_benchmark_tools
 from .tte_runner import TTERunner
 from .tte_views import cohort_view, form, report_view, result_view, review_view
 from .web_protocol import FIELD_NAMES, FormError, protocol_from_fields
@@ -358,6 +360,9 @@ def get_tte_run(run_id: str) -> dict:
 @mcp.tool(description="Read a permitted run artifact in base64 chunks of at most 16 KiB; use next_offset for pagination.")
 def read_tte_artifact(run_id: str, name: str, offset: int = 0, limit: int = 16384) -> dict:
     return runner.read_artifact(run_id, name, offset=offset, limit=limit)
+
+
+register_benchmark_tools(mcp)
 
 
 # ----------------------------------------------------------------------
@@ -910,7 +915,31 @@ async def api_get_dual_run(request):
 
 
 async def home(request):
-    return page(workbench_home_view())
+    return page(workbench_home_view(benchmarking_enabled=is_benchmarking_enabled()))
+
+
+async def api_v1_tte_benchmark(request):
+    if not is_benchmarking_enabled():
+        return JSONResponse(
+            benchmarking_disabled_payload(),
+            status_code=503,
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        payload = await _read_json_body(request)
+        report = benchmark_from_payload(payload, runner)
+        return JSONResponse(report, headers={"Cache-Control": "no-store"})
+    except ContractError as exc:
+        status_code = 404 if exc.code in {"RUN_NOT_FOUND", "INVALID_RUN_ID"} else 400
+        return JSONResponse(
+            {
+                "error": f"{exc.code}: {exc}",
+                "code": exc.code,
+                "interpretive_guardrail": interpretive_guardrail(),
+            },
+            status_code=status_code,
+            headers={"Cache-Control": "no-store"},
+        )
 
 
 async def new_protocol(request):
@@ -1044,6 +1073,7 @@ inner = Starlette(
         Route("/api/dual-runs/{run_id}", api_get_dual_run),
         Route("/api/v1/projects/user-cohort/runs", api_start_v1_user_cohort_run, methods=["POST"]),
         Route("/api/v1/projects/simulated/runs", api_start_v1_simulated_run, methods=["POST"]),
+        Route("/api/v1/tte/benchmark", api_v1_tte_benchmark, methods=["POST"]),
         Route("/protocol/new", new_protocol),
         Route("/protocol/edit", edit_protocol, methods=["POST"]),
         Route("/validate", validate_form, methods=["POST"]),

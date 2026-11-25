@@ -351,6 +351,8 @@
       </tbody>
     </table>
   </div>
+  <h2>6. 目标 RCT 公开结果对标与阴性对照</h2>
+  <p>命令 <code>python -m emulatrx_tte benchmark-rct</code>，接口 <code>POST /api/v1/tte/benchmark</code>，MCP 工具 <code>benchmark_rct_and_negative_control</code>。只使用研究层面的公开汇总（<code>ipd_used=false</code>）。错误码包括 <code>BENCHMARK_UNAVAILABLE_NO_RESULTS_SECTION</code>、<code>BENCHMARK_BLOCKED_PROTOCOL_OR_ENDPOINT_MISMATCH</code>、<code>BENCHMARK_SCALE_MISMATCH</code>、<code>NEGATIVE_CONTROL_BIAS_DETECTED</code> 与 <code>BENCHMARKING_FEATURE_DISABLED</code>（HTTP 503）。<code>numerical_proximity_proves_causality</code> 恒为 false，<code>clinical_efficacy_claim_prohibited</code> 恒为 true。契约见 <code>docs/tte-benchmark-v1.md</code> 与 <code>schemas/tte-benchmark-v1.schema.json</code>。</p>
   <div class="callout">
     <strong>CI 隔离与线上实机核验边界：</strong>GitHub Actions 全程使用确定性合成队列（<code>SYN-*</code> 与合成临床表头夹具）、公开注册试验 <code>NCT*</code> 静态 JSON 夹具及本地 <code>127.0.0.1</code> 回环模拟网关，零真实患者 IPD、零外网脆弱依赖、零外部 API 密钥；<code>ymadmin</code> 部署保留最小实机冒烟收据（精确 OCI 镜像 SHA、<code>127.0.0.1:18602/healthz</code> 探针、<code>/run/secrets/llm_api_key</code> <code>0400</code> 只读挂载检查与一键回滚命令）。遗留 <code>v1-codebase.ipynb</code> 与 <code>environment.yml</code> 保持冻结不动。
   </div>

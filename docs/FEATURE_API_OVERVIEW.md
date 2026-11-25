@@ -43,7 +43,9 @@
 | **REST · 想法与四维检索** | `POST /api/idea/parse`、`POST /api/rcts/search`、`POST /api/rcts/draft` | HTTP Basic | 中文临床想法或检索词、`condition` / `intervention` / `comparator` / `outcome`（自动持久化至会话并在 Step 2→3→4 传递）、`session_id`、可选确认标记 | 结构化 PICO、带 `dimension_audit` 四维胶囊与硬上限评分的候选 RCT 列表、对齐后的映射/七要素方案草稿 |
 | **REST · 双轨异步运行** | `POST /api/dual-runs`、`POST /api/v1/projects/user-cohort/runs`、`POST /api/v1/projects/simulated/runs`、`GET /api/dual-runs/{run_id}` | HTTP Basic | `session_id` + `mapping`（或 `pico` + `sim_config`）+ `target_rct` + 可选 `condition`/`intervention`/`comparator`/`outcome` 覆写 + 偏离确认标记 | `202 Accepted`（`run_id`、`status_url`、`report_url`），完成后返回诊断、双 CIF、五量并列表、恢复对比表与渲染 HTML |
 | **MCP 工具集** | `POST /mcp`：`search_target_rcts`、`profile_cohort_session`、`start_user_cohort_tte`、`start_simulated_rct_tte`、`delete_cohort_session`、`validate_tte_protocol`、`start_synthetic_tte`、`get_tte_run`、`read_tte_artifact` | `Bearer <MCP_TOKEN>` | JSON-RPC `tools/list` / `tools/call` 结构化参数 | 与 REST 一致的四维候选 RCT、会话画像、双轨/合成运行状态及 `≤16 KiB` Base64 分块审计产物 |
-| **确定性 CLI & SDK** | `python -m emulatrx_tte validate-protocol \| synth \| diagnose \| estimate \| run-synthetic \| run-simulated \| run-user-cohort \| validate-ccw \| synth-ccw \| run-ccw-synthetic`；`python -m emulatrx_demo validate \| demo \| metadata` | 本地进程（零网络/零密钥，`metadata` 除外） | 协议 JSON / 脱敏队列 CSV + 映射 JSON / `--seed` / `--out <new_dir>` | 原子发布的规范化协议、纳排瀑布、平衡诊断、CIF 曲线、`estimates.json` / `ccw_estimates.json`、`ccw_preview_report.html` 与 SHA-256 `run_manifest.json` |
+| **确定性 CLI & SDK** | `python -m emulatrx_tte validate-protocol \| synth \| diagnose \| estimate \| run-synthetic \| run-simulated \| run-user-cohort \| validate-ccw \| synth-ccw \| run-ccw-synthetic \| benchmark-rct`；`python -m emulatrx_demo validate \| demo \| metadata` | 本地进程（零网络/零密钥，`metadata` 与显式 `allow_live` 除外） | 协议 JSON / 脱敏队列 CSV + 映射 JSON / `--seed` / `--out <new_dir>`；`benchmark-rct` 接受 `--synthetic-demo` 或 TTE/对齐 JSON 与 `NCT` | 原子发布的规范化协议、纳排瀑布、平衡诊断、CIF 曲线、`estimates.json` / `ccw_estimates.json`、`benchmark_report.json`、`benchmark_report.html` 与 SHA-256 `run_manifest.json` |
+| **REST · 公开结果对标** | `POST /api/v1/tte/benchmark` | HTTP Basic；`EMULATRX_ENABLE_BENCHMARKING=0` 时 `503` | `run_id` 或 `tte_result` + `alignment_audit` + `nct_id`，可选 `negative_control_outcome_col` 与带引用的 `curated_published_summary`；拒绝个体行记录 | 研究层面对标报告。`ipd_used=false`。数值接近不是因果或疗效证据 |
+| **MCP · 对标与阴性对照** | `benchmark_rct_and_negative_control` | Bearer | 与 REST 相同的研究层面参数 | 同上；开关关闭时返回 `BENCHMARKING_FEATURE_DISABLED` |
 
 ---
 
@@ -61,6 +63,7 @@
 | **HTTP / MCP 服务** | `422` | `ARM_MISMATCH_CONFIRMATION_REQUIRED` | 目标 RCT 双臂与研究干预/对照不一致（如 `NCT06642272` 同类互比、缺联合背景药、单臂/`0` 分组或匿名 `0/1` 队列未声明通用名）且未传 `confirm_arm_mismatch=true` |
 | **HTTP / MCP 服务** | `422` | `PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED` | 双臂药物虽匹配但四维 PICO-T 任一维度偏离——健康受试者/药代试验（如 `NCT00842556` 上限 `0.20`）、缺失核心合并症如心衰（上限 `0.55`，含 `Exclusion Criteria` 陷阱拦截）、主要终点为血酮/HbA1c 等短期替代指标（如 `NCT03959501` 上限 `0.48`）或随访窗过短——且未传 `confirm_protocol_mismatch=true` |
 | **HTTP / MCP 服务** | `429` | `BUSY` | 单容器有界并发槽位占用时拒绝超额并发计算请求 |
+| **对标 / 阴性对照** | CLI `0` 或 `2`；HTTP `400` / `503` | `BENCHMARK_UNAVAILABLE_NO_RESULTS_SECTION`、`BENCHMARK_BLOCKED_PROTOCOL_OR_ENDPOINT_MISMATCH`、`BENCHMARK_BLOCKED_UPSTREAM_DIAGNOSTIC_FAILED`、`BENCHMARK_SCALE_MISMATCH`、`NEGATIVE_CONTROL_BIAS_DETECTED`、`BENCHMARKING_FEATURE_DISABLED`、`IPD_NOT_ACCEPTED` | 无公开 `resultsSection`、方案/终点未对齐、上游门禁未过、效应尺度不一致、阴性对照显著偏离，或功能开关关闭。任何数值接近都保持 `numerical_proximity_proves_causality=false` 与 `clinical_efficacy_claim_prohibited=true`。详见 [`docs/tte-benchmark-v1.md`](tte-benchmark-v1.md) |
 
 ---
 

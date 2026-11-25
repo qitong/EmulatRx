@@ -125,12 +125,25 @@ python -m emulatrx_tte run-ccw-synthetic \
 - On exit code `3` (`UNCENSORED_BELOW_MIN`, `PRE_TRUNCATION_WEIGHT_EXCEEDED`, `EXCESSIVE_WEIGHT_TRUNCATION`, `MAX_WEIGHT_EXCEEDED`, `ESS_RATIO_BELOW_MIN`, `POST_GRACE_SMD_EXCEEDS_MAX`), `run-ccw-synthetic` writes `ccw_diagnostics.json`, `ccw_attrition.json`, and `run_manifest.json` while **100% omitting** `ccw_estimates.json`. Optional `diagnostic_gates` truncation controls (`max_pre_truncation_weight` defaulting to `max_stabilized_weight`, `min_truncation_quantile_span` defaulting to `0.80`, and `max_truncated_weight_fraction` defaulting to `min(1.0, q_low + (1.0 - q_high) + 0.05)` when `truncate_quantiles` is enabled) are resolved and audited as `effective_*` fields in `ccw_diagnostics.json`.
 - Always report `ccw_rd_event1` (`subject_cluster_bootstrap_with_ipcw_refit` 95% CI) alongside `naive_immortal_time_comparison` (`naive_rd` and `immortal_time_bias_rd_inflation = naive_rd - ccw_rd`) and the four mandatory causal identification assumptions.
 
+### Option F: Published-result benchmark and negative-control probe (`benchmark-rct`)
+
+Use only after a TTE gate has passed and PICO-T alignment is exact. Study-level public aggregates only (`ipd_used: false`). Set `EMULATRX_ENABLE_BENCHMARKING=0` to disable the CLI, `POST /api/v1/tte/benchmark` (HTTP 503), and MCP `benchmark_rct_and_negative_control`.
+
+```bash
+python -m emulatrx_tte benchmark-rct \
+  --synthetic-demo hidden_bias \
+  --nct-id NCT01243424 \
+  --output-dir /tmp/tte-benchmark-demo
+```
+
+Fail-closed codes: `BENCHMARK_UNAVAILABLE_NO_RESULTS_SECTION`, `BENCHMARK_BLOCKED_PROTOCOL_OR_ENDPOINT_MISMATCH`, `BENCHMARK_BLOCKED_UPSTREAM_DIAGNOSTIC_FAILED`, `BENCHMARK_SCALE_MISMATCH`, `NEGATIVE_CONTROL_BIAS_DETECTED`, `BENCHMARKING_FEATURE_DISABLED`. Every report sets `numerical_proximity_proves_causality` false and `clinical_efficacy_claim_prohibited` true. Contract: [`docs/tte-benchmark-v1.md`](../../docs/tte-benchmark-v1.md).
+
 ## 3. Exit Codes & Fail-Closed Gate Rules
 
 | Exit Code | Meaning | Required Agent Action |
 | --- | --- | --- |
 | `0` | Contract & diagnostic gates passed; full artifacts + `run_manifest.json` atomically published | Parse `estimates.json` / `ccw_estimates.json`, `audit_report.md`, `curves/*.csv`, and verify `run_manifest.json` |
-| `2` | `ContractError` (schema violation, `MISSING_TIME_ZERO`, `INVALID_TIME_ZERO`, `POST_TIME_ZERO_ELIGIBILITY`, `POST_LANDMARK_COVARIATE_LEAK`, `INVALID_STRATEGIES`, `UNHANDLED_COMPETING_EVENT`, `UNSUPPORTED_EVALUE_MEASURE`, `MISSING_USER_COHORT_INGEST_MANIFEST`, `PRIVACY_VIOLATION_BLOCKED`, `OUTPUT_EXISTS`, etc.) | Stop immediately; inspect the error code + `Hint:` on `stderr` and fix protocol/mapping/arguments before retrying into a new `--out` directory |
+| `2` | `ContractError` (schema violation, `MISSING_TIME_ZERO`, `INVALID_TIME_ZERO`, `POST_TIME_ZERO_ELIGIBILITY`, `POST_LANDMARK_COVARIATE_LEAK`, `INVALID_STRATEGIES`, `UNHANDLED_COMPETING_EVENT`, `UNSUPPORTED_EVALUE_MEASURE`, `MISSING_USER_COHORT_INGEST_MANIFEST`, `PRIVACY_VIOLATION_BLOCKED`, `OUTPUT_EXISTS`, `BENCHMARKING_FEATURE_DISABLED`, `IPD_NOT_ACCEPTED`, etc.) | Stop immediately; inspect the error code + `Hint:` on `stderr` and fix protocol/mapping/arguments before retrying into a new `--out` directory |
 | `3` | Statistical / upstream gate blocked (`POSITIVITY_VIOLATION`, `ESS_RATIO_BELOW_MIN`, `SMD_EXCEEDS_MAX`, `ZERO_RISK_SET`, `UNCENSORED_BELOW_MIN`, `PRE_TRUNCATION_WEIGHT_EXCEEDED`, `EXCESSIVE_WEIGHT_TRUNCATION`, `MAX_WEIGHT_EXCEEDED`, `POST_GRACE_SMD_EXCEEDS_MAX`, `UPSTREAM_GATE_NOT_PASSED`, `MISSING_WEIGHTED_COHORT`, `MANIFEST_INTEGRITY_MISMATCH`, `PROTOCOL_DIAGNOSTICS_MISMATCH`, `INGEST_LINEAGE_MISMATCH`) | **Fail closed**: report the diagnostic gate failure from `diagnostics_summary.json` / `ccw_diagnostics.json` / `stderr`. Never fabricate survival estimates, never bypass `diagnose`, and never copy an unverified `weighted_cohort.csv` |
 
 ## 4. Mandatory Side-by-Side Competing-Risks Interpretation Rules

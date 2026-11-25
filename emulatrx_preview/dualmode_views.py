@@ -392,7 +392,7 @@ def render_dualmode_run_view(result: dict, root: Path, *, standalone_report: boo
     return "".join(parts)
 
 
-def workbench_home_view() -> str:
+def workbench_home_view(*, benchmarking_enabled: bool = True) -> str:
     """Render the interactive 4-step Chinese Dual-Mode Target Trial Emulation Workbench."""
     llm_info = get_llm_status()
     samples_list = list(SAMPLE_COHORT_SPECS.values())
@@ -408,6 +408,16 @@ def workbench_home_view() -> str:
     )
 
     llm_badge_cls = "pill-ai" if llm_info["enabled"] else "pill-local"
+    benchmark_panel = (
+        """
+<details id="benchmark-diagnostic-panel">
+  <summary>可选诊断 · 目标 RCT 公开结果对标与阴性对照（默认折叠，不进入主向导）</summary>
+  <p>仅对已完成且门禁通过的 TTE，用研究层面的公开汇总做统计对标，并可探测预先指定的阴性对照。数值接近不能证明因果、无未测混杂或临床有效性。接口为 <code>POST /api/v1/tte/benchmark</code>。将 <code>EMULATRX_ENABLE_BENCHMARKING</code> 设为 0 可立即隐藏本面板并关闭接口。</p>
+</details>
+"""
+        if benchmarking_enabled
+        else ""
+    )
     return f"""
 <style>
 .wb-topbar{{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;padding:12px 16px;background:#f1f6f4;border:1px solid var(--line);border-radius:6px;margin:12px 0 20px}}
@@ -486,6 +496,7 @@ def workbench_home_view() -> str:
   <button type="button" class="step-tab" id="tab-step-4" onclick="goStep(4)">第 4 步 · 双态分析报告<small>门禁诊断、CIF 曲线与审计包</small></button>
 </div>
 
+{benchmark_panel}
 <div id="wb-alert" class="error hidden" role="alert"></div>
 
 <!-- ==================== STEP 1 ==================== -->
