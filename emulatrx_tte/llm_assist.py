@@ -1105,14 +1105,18 @@ def interpret_cohort_profile(
         det_intr_en = str(sample_spec.get("active_intervention_en", "")).strip()
         det_comp_en = str(sample_spec.get("comparator_intervention_en", "")).strip()
     if not det_intr_en:
-        if act_spec["en_terms"]:
+        if act_spec.get("regimen_mode") == "any" and len(act_spec.get("en_terms") or []) > 1:
+            det_intr_en = " or ".join(act_spec["en_terms"])
+        elif act_spec["en_terms"]:
             # Exclude shared backbone token if comparator already represents that backbone (e.g. Pembrolizumab + Platinum vs Platinum)
             diff_terms = [t for t in act_spec["en_terms"] if t not in comp_spec["en_terms"]]
             det_intr_en = (diff_terms or act_spec["en_terms"])[0]
         elif det["interventions_en"]:
             det_intr_en = det["interventions_en"][0]
     if not det_comp_en:
-        if comp_spec["en_terms"]:
+        if comp_spec.get("regimen_mode") == "any" and len(comp_spec.get("en_terms") or []) > 1:
+            det_comp_en = " or ".join(comp_spec["en_terms"])
+        elif comp_spec["en_terms"]:
             det_comp_en = comp_spec["en_terms"][0]
         elif det["comparators_en"]:
             det_comp_en = det["comparators_en"][0]

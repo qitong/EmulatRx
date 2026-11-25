@@ -1902,7 +1902,7 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
 
         csv_lines = ["patient_key,arm_drug,time_days,os_event,age,ecog"]
         for i in range(30):
-            drug = "Osimertinib" if i % 2 == 0 else "Gefitinib"
+            drug = "Osimertinib" if i % 2 == 0 else "Gefitinib or Erlotinib"
             t_days = 150 + (i * 23) % 520
             ev = 1 if (i % 3 == 0) else 0
             age = 50 + ((i * 7) % 22)
@@ -1926,7 +1926,7 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                     "domain_summary_zh": "EGFR 突变晚期非小细胞肺癌靶向队列",
                     "condition_query_en": "EGFR-Mutated Non-Small Cell Lung Cancer",
                     "intervention_query_en": "Osimertinib",
-                    "comparator_query_en": "Gefitinib",
+                    "comparator_query_en": "Gefitinib or Erlotinib",
                     "search_query_en": "Osimertinib Gefitinib EGFR Non-Small Cell Lung Cancer",
                 }
             return _FakeHTTPResp(json.dumps({"choices": [{"message": {"content": json.dumps(ans, ensure_ascii=False)}}]}).encode("utf-8"))
@@ -1970,6 +1970,7 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                 self.assertEqual(srch_ok.status_code, 200, srch_ok.text)
                 flaura_card = srch_ok.json()["candidates"][0]
                 self.assertEqual(flaura_card["nct_id"], "NCT02296125")
+                self.assertEqual(flaura_card["arm_alignment_status"], "exact_dual_arm")
                 self.assertEqual(flaura_card["overall_alignment_status"], "protocol_aligned")
                 self.assertTrue(flaura_card["is_recommended"])
 
@@ -2047,7 +2048,7 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                         "query": "Osimertinib Gefitinib NSCLC",
                         "condition": "EGFR-mutated non-small cell lung cancer Alice Smith",
                         "intervention": "Osimertinib",
-                        "comparator": "Gefitinib",
+                        "comparator": "Gefitinib or Erlotinib",
                         "outcome": "Blood ketone change 987654321",
                     },
                 )
@@ -2094,7 +2095,7 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
         """Round-8 E2E: ORR/CRP/CEA/LDH/PSA vs FLAURA stay unconfirmed 422 with score clamped below a mocked DeepSeek 0.99; OS and PFS still draft and run."""
         csv_lines = ["patient_key,arm_drug,time_days,os_event,age,ecog"]
         for i in range(30):
-            drug = "Osimertinib" if i % 2 == 0 else "Gefitinib"
+            drug = "Osimertinib" if i % 2 == 0 else "Gefitinib or Erlotinib"
             csv_lines.append(
                 f"PT-R8-{i + 1:03d},{drug},{150 + (i * 23) % 520},{1 if i % 3 == 0 else 0},{50 + ((i * 7) % 22)},{(i // 2) % 2}"
             )
@@ -2113,7 +2114,7 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                     "domain_summary_zh": "EGFR 突变非小细胞肺癌",
                     "condition_query_en": "EGFR-Mutated Non-Small Cell Lung Cancer",
                     "intervention_query_en": "Osimertinib",
-                    "comparator_query_en": "Gefitinib",
+                    "comparator_query_en": "Gefitinib or Erlotinib",
                     "outcome_query_en": "Overall Survival",
                     "search_query_en": "Osimertinib Gefitinib EGFR Non-Small Cell Lung Cancer",
                 }
@@ -2154,7 +2155,7 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                             "query": "Osimertinib Gefitinib EGFR Non-Small Cell Lung Cancer",
                             "condition": "EGFR-mutated Non-Small Cell Lung Cancer",
                             "intervention": "Osimertinib",
-                            "comparator": "Gefitinib",
+                            "comparator": "Gefitinib or Erlotinib",
                             "outcome": bad_out,
                         },
                     )
@@ -2174,7 +2175,7 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                                 "target_rct": flaura,
                                 "condition": "EGFR-mutated Non-Small Cell Lung Cancer",
                                 "intervention": "Osimertinib",
-                                "comparator": "Gefitinib",
+                                "comparator": "Gefitinib or Erlotinib",
                                 "outcome": bad_out,
                             },
                         ),
@@ -2187,7 +2188,7 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                                 "target_rct": flaura,
                                 "condition": "EGFR-mutated Non-Small Cell Lung Cancer",
                                 "intervention": "Osimertinib",
-                                "comparator": "Gefitinib",
+                                "comparator": "Gefitinib or Erlotinib",
                                 "outcome": bad_out,
                             },
                         ),
@@ -2206,7 +2207,7 @@ class DualModeWorkbenchServiceTests(unittest.TestCase):
                             "query": "Osimertinib Gefitinib EGFR Non-Small Cell Lung Cancer",
                             "condition": "EGFR-mutated Non-Small Cell Lung Cancer",
                             "intervention": "Osimertinib",
-                            "comparator": "Gefitinib",
+                            "comparator": "Gefitinib or Erlotinib",
                             "outcome": good_out,
                         },
                     )

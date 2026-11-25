@@ -81,12 +81,26 @@ jobs:
           mcp_code, mcp_body = status_of(urllib.request.Request(f"{base}/mcp", data=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}', headers=mcp_hdr, method="POST"))
           assert mcp_code == 200 and "start_user_cohort_tte" in mcp_body
 
-          # 2. Offline dual-entry smoke: sample cohort upload -> 4D CAROLINA match -> session purge -> 404
-          up_code, up_txt = status_of(urllib.request.Request(f"{base}/api/sessions/upload", data=json.dumps({"sample_id": "t2dm_cv_carolina"}).encode(), headers={**web_hdr, "Content-Type": "application/json"}, method="POST"))
-          assert up_code == 200, up_txt
-          sid = json.loads(up_txt)["session_id"]
-          sr_code, sr_txt = status_of(urllib.request.Request(f"{base}/api/rcts/search", data=json.dumps({"session_id": sid, "project_mode": "user_cohort", "query": "Linagliptin Glimepiride"}).encode(), headers={**web_hdr, "Content-Type": "application/json"}, method="POST"))
-          assert sr_code == 200 and json.loads(sr_txt)["candidates"][0]["overall_alignment_status"] == "protocol_aligned", sr_txt
+          # 2. Offline dual-entry smoke: sample cohort upload -> 4D CAROLINA and FLAURA matches -> session purge -> 404
+          def assert_offline_sample(sample_id, query, nct_id):
+              code, txt = status_of(urllib.request.Request(f"{base}/api/sessions/upload", data=json.dumps({"sample_id": sample_id}).encode(), headers={**web_hdr, "Content-Type": "application/json"}, method="POST"))
+              assert code == 200, txt
+              session_id = json.loads(txt)["session_id"]
+              sr_code, sr_txt = status_of(urllib.request.Request(
+                  f"{base}/api/rcts/search",
+                  data=json.dumps({"session_id": session_id, "project_mode": "user_cohort", "query": query, "max_results": 8}).encode(),
+                  headers={**web_hdr, "Content-Type": "application/json"},
+                  method="POST",
+              ))
+              assert sr_code == 200, sr_txt
+              card = next(c for c in json.loads(sr_txt)["candidates"] if c["nct_id"] == nct_id)
+              assert card["arm_alignment_status"] == "exact_dual_arm", sr_txt
+              assert card["overall_alignment_status"] == "protocol_aligned", sr_txt
+              assert card["is_recommended"] is True, sr_txt
+              return session_id
+
+          sid = assert_offline_sample("t2dm_cv_carolina", "Linagliptin Glimepiride", "NCT01243424")
+          assert_offline_sample("sample_nsclc_egfr_tki", "Osimertinib Gefitinib Erlotinib", "NCT02296125")
           id_code, _ = status_of(urllib.request.Request(f"{base}/api/idea/parse", data=json.dumps({"idea_text": "帕博利珠单抗联合含铂化疗对比单纯含铂化疗一线治疗晚期非小细胞肺癌"}).encode(), headers={**web_hdr, "Content-Type": "application/json"}, method="POST"))
           assert id_code == 200
           del_code, _ = status_of(urllib.request.Request(f"{base}/api/cohorts/{sid}", headers=web_hdr, method="DELETE"))
