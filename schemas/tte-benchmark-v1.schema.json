@@ -49,7 +49,7 @@
     "numerical_proximity_proves_causality": {"const": false},
     "overall_validity_flag": {
       "type": "string",
-      "enum": ["numerical_proximity_only", "high_residual_bias_risk", "not_interpretable"]
+      "enum": ["numerical_proximity_only", "high_residual_bias_risk", "not_interpretable", "nco_inconclusive_underpowered"]
     },
     "interpretive_guardrail": {
       "type": "object",

@@ -14,6 +14,7 @@ import math
 import os
 from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 import numpy as np
@@ -28,7 +29,7 @@ from .weighting import compute_weights
 
 SCHEMA_VERSION = "tte-benchmark-v1"
 Z_975 = 1.959963984540054
-PI_Z = 1.96
+PI_Z = Z_975
 CTGOV_STUDY_URL = "https://clinicaltrials.gov/api/v2/studies/{nct_id}"
 OBSERVED_COVARIATES = ("age", "bmi", "prior_cvd")
 
@@ -104,6 +105,40 @@ def _normalize_nct(nct_id: str | None) -> str:
     if len(text) != 11 or not text.startswith("NCT") or not text[3:].isdigit():
         raise ContractError("INVALID_NCT_ID", f"NCT id must look like NCT########, got {nct_id!r}")
     return text
+
+
+def _require_http_url(url: str, *, field: str = "source_url") -> str:
+    """Allow only absolute http(s) URLs. Rejects javascript:, data:, and scheme-relative values."""
+    text = str(url or "").strip()
+    parsed = urlparse(text)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ContractError("INVALID_SOURCE_URL", f"{field} must be an absolute http or https URL")
+    return text
+
+
+def _study_identification(study: dict) -> dict:
+    protocol = study.get("protocolSection") if isinstance(study.get("protocolSection"), dict) else {}
+    identification = protocol.get("identificationModule") if isinstance(protocol.get("identificationModule"), dict) else {}
+    return identification
+
+
+def _validated_study_nct(study: dict) -> str:
+    identification = _study_identification(study)
+    raw = identification.get("nctId") if identification.get("nctId") not in (None, "") else study.get("nctId")
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    return _normalize_nct(text)
+
+
+def _reject_untrusted_source_urls(study: dict) -> None:
+    identification = _study_identification(study)
+    for field, value in (
+        ("source_url", study.get("source_url")),
+        ("identificationModule.source_url", identification.get("source_url")),
+    ):
+        if isinstance(value, str) and value.strip():
+            _require_http_url(value, field=field)
 
 
 def _blank(value) -> bool:
@@ -329,9 +364,10 @@ def parse_clinicaltrials_results_study(study: dict) -> dict | None:
     """Parse a ClinicalTrials.gov API v2 study JSON object into study-level aggregates."""
     if not isinstance(study, dict):
         return None
+    _reject_untrusted_source_urls(study)
+    nct_id = _validated_study_nct(study)
     protocol = study.get("protocolSection") or {}
     identification = protocol.get("identificationModule") or {}
-    nct_id = str(identification.get("nctId") or study.get("nctId") or "")
     has_results = bool(study.get("hasResults"))
     results = study.get("resultsSection")
     if not has_results or not isinstance(results, dict):
@@ -582,6 +618,9 @@ def _curated_aggregate(summary: dict, nct_id: str | None) -> dict:
         raise ContractError("INVALID_CURATED_SUMMARY", "n_treatment and n_control must be integers") from exc
     if n_treatment_i <= 0 or n_control_i <= 0:
         raise ContractError("INVALID_CURATED_SUMMARY", "arm sample sizes must be positive")
+    external_url = str(summary.get("source_url") or "").strip()
+    if external_url:
+        external_url = _require_http_url(external_url)
     label = str(summary.get("primary_outcome_label") or "").strip()
     if not label:
         raise ContractError("INVALID_CURATED_SUMMARY", "primary_outcome_label is required")
@@ -602,6 +641,7 @@ def _curated_aggregate(summary: dict, nct_id: str | None) -> dict:
         "n_treatment": n_treatment_i,
         "n_control": n_control_i,
         "baseline_characteristics": summary.get("baseline_characteristics") or {},
+        "source_url": external_url,
         "raw_input": summary,
     }
 
@@ -656,6 +696,14 @@ def resolve_rct_public_results(
     return _receipt_from_aggregate(parsed, retrieved_at_utc=retrieved, raw_for_hash=study_json)
 
 
+def _public_source_url(nct_id: str) -> str:
+    text = str(nct_id or "").strip()
+    if not text:
+        return ""
+    normalized = _normalize_nct(text)
+    return _require_http_url(CTGOV_STUDY_URL.format(nct_id=normalized))
+
+
 def _unavailable(nct_id: str, retrieved: str, code: str, detail: str, official_title: str = "") -> dict:
     message = "目标 NCT 暂无公开结果摘要（resultsSection 缺失），不可对标，禁止输出一致性结论"
     return {
@@ -671,7 +719,7 @@ def _unavailable(nct_id: str, retrieved: str, code: str, detail: str, official_t
         "source_receipt": {
             "nct_id": nct_id,
             "source_mode": "clinicaltrials_results_section",
-            "source_url": CTGOV_STUDY_URL.format(nct_id=nct_id) if nct_id else "",
+            "source_url": _public_source_url(nct_id),
             "source_citation": "",
             "retrieved_at_utc": retrieved,
             "has_posted_results": False,
@@ -686,7 +734,10 @@ def _unavailable(nct_id: str, retrieved: str, code: str, detail: str, official_t
 
 
 def _receipt_from_aggregate(aggregate: dict, *, retrieved_at_utc: str, raw_for_hash: dict) -> dict:
-    nct_id = str(aggregate.get("nct_id") or "")
+    raw_nct = str(aggregate.get("nct_id") or "").strip()
+    nct_id = _normalize_nct(raw_nct) if raw_nct else ""
+    external = str(aggregate.get("source_url") or "").strip()
+    source_url = _require_http_url(external) if external else _public_source_url(nct_id)
     hash_body = {
         "effect_scale": aggregate.get("effect_scale"),
         "point_estimate": aggregate.get("point_estimate"),
@@ -701,7 +752,7 @@ def _receipt_from_aggregate(aggregate: dict, *, retrieved_at_utc: str, raw_for_h
     receipt = {
         "nct_id": nct_id,
         "source_mode": aggregate.get("source_mode") or "clinicaltrials_results_section",
-        "source_url": CTGOV_STUDY_URL.format(nct_id=nct_id) if nct_id else "",
+        "source_url": source_url,
         "source_citation": str(aggregate.get("source_citation") or ""),
         "retrieved_at_utc": retrieved_at_utc,
         "has_posted_results": bool(aggregate.get("has_posted_results")),
@@ -723,6 +774,22 @@ def _receipt_from_aggregate(aggregate: dict, *, retrieved_at_utc: str, raw_for_h
     }
 
 
+def _baseline_component(value, *, covariate: str, field: str):
+    """Parse a present baseline component. Missing values stay missing; junk fails closed."""
+    if value is None or value == "":
+        return None
+    try:
+        number = float(str(value).replace("%", "").strip())
+    except (TypeError, ValueError) as exc:
+        raise ContractError(
+            "INVALID_BASELINE_SUMMARY",
+            f"{covariate}.{field} must be a finite number",
+        ) from exc
+    if not math.isfinite(number):
+        raise ContractError("INVALID_BASELINE_SUMMARY", f"{covariate}.{field} must be a finite number")
+    return number
+
+
 def _shared_baseline_rows(rwd_baseline: dict, rct_baseline: dict) -> list[dict]:
     rows = []
     rct_keys = {str(key).lower(): value for key, value in (rct_baseline or {}).items() if isinstance(value, dict)}
@@ -732,13 +799,19 @@ def _shared_baseline_rows(rwd_baseline: dict, rct_baseline: dict) -> list[dict]:
         rct = rct_keys.get(str(key).lower())
         if not isinstance(rct, dict):
             continue
+        covariate = str(key)
         if "mean" in rwd and "mean" in rct:
-            mean_rwd = _parse_float(rwd.get("mean"))
-            mean_rct = _parse_float(rct.get("mean"))
-            sd_rwd = _parse_float(rwd.get("sd"))
-            sd_rct = _parse_float(rct.get("sd"))
+            mean_rwd = _baseline_component(rwd.get("mean"), covariate=covariate, field="mean")
+            mean_rct = _baseline_component(rct.get("mean"), covariate=covariate, field="mean")
+            sd_rwd = _baseline_component(rwd.get("sd"), covariate=covariate, field="sd")
+            sd_rct = _baseline_component(rct.get("sd"), covariate=covariate, field="sd")
             if None in (mean_rwd, mean_rct, sd_rwd, sd_rct):
                 continue
+            if sd_rwd < 0.0 or sd_rct < 0.0:
+                raise ContractError(
+                    "INVALID_BASELINE_SUMMARY",
+                    f"{covariate} continuous sd must be finite and >= 0",
+                )
             denom = math.sqrt((sd_rwd**2 + sd_rct**2) / 2.0)
             smd = 0.0 if denom == 0.0 and mean_rwd == mean_rct else (math.inf if denom == 0.0 else (mean_rwd - mean_rct) / denom)
             rows.append(
@@ -754,10 +827,15 @@ def _shared_baseline_rows(rwd_baseline: dict, rct_baseline: dict) -> list[dict]:
                 }
             )
         elif "proportion" in rwd and "proportion" in rct:
-            p_rwd = _parse_float(rwd.get("proportion"))
-            p_rct = _parse_float(rct.get("proportion"))
+            p_rwd = _baseline_component(rwd.get("proportion"), covariate=covariate, field="proportion")
+            p_rct = _baseline_component(rct.get("proportion"), covariate=covariate, field="proportion")
             if p_rwd is None or p_rct is None:
                 continue
+            if not (0.0 <= p_rwd <= 1.0) or not (0.0 <= p_rct <= 1.0):
+                raise ContractError(
+                    "INVALID_BASELINE_SUMMARY",
+                    f"{covariate} binary proportion must be finite and within [0, 1]",
+                )
             denom = math.sqrt((p_rwd * (1.0 - p_rwd) + p_rct * (1.0 - p_rct)) / 2.0)
             smd = 0.0 if denom == 0.0 and p_rwd == p_rct else (math.inf if denom == 0.0 else (p_rwd - p_rct) / denom)
             rows.append(
@@ -1304,11 +1382,15 @@ def _scale_mismatch(message: str) -> dict:
 def _attach_nco(report: dict, nco: dict | None) -> dict:
     report["negative_control"] = nco
     alert = bool(nco and nco.get("residual_confounding_alert"))
+    inconclusive = bool(nco and nco.get("status") == "insufficient_events_inconclusive")
     if alert:
         report["overall_validity_flag"] = "high_residual_bias_risk"
         report["consistency_conclusion_allowed"] = False
     elif report.get("effect_comparison") is not None and nco and nco.get("status") == "invalid_negative_control":
         report["overall_validity_flag"] = "not_interpretable"
+        report["consistency_conclusion_allowed"] = False
+    elif inconclusive:
+        report["overall_validity_flag"] = "nco_inconclusive_underpowered"
         report["consistency_conclusion_allowed"] = False
     elif report.get("effect_comparison") is not None:
         report["overall_validity_flag"] = report.get("overall_validity_flag") or "numerical_proximity_only"
@@ -1432,7 +1514,11 @@ def run_rct_benchmark_and_nco(
         "effect_comparison": comparison,
         "baseline_comparability": baseline,
         "source_receipt": resolved["source_receipt"],
-        "consistency_conclusion_allowed": nco is None or not nco.get("residual_confounding_alert"),
+        "consistency_conclusion_allowed": nco is None
+        or (
+            not nco.get("residual_confounding_alert")
+            and nco.get("status") != "insufficient_events_inconclusive"
+        ),
         "overall_validity_flag": "numerical_proximity_only",
         "ipd_used": False,
         "numerical_proximity_proves_causality": False,
@@ -1447,7 +1533,10 @@ def run_rct_benchmark_and_nco(
 
 def tte_result_from_run_record(run_record: dict) -> tuple[dict, dict]:
     """Build a study-level TTE effect dict from a completed run summary. Drops row samples."""
-    gate_passed = run_record.get("gate_passed") is True or run_record.get("gate_status") == "passed"
+    if run_record.get("gate_status") == "blocked":
+        gate_passed = False
+    else:
+        gate_passed = run_record.get("gate_passed") is True or run_record.get("gate_status") == "passed"
     estimates = run_record.get("estimates") if isinstance(run_record.get("estimates"), dict) else {}
     table = estimates.get("co_presented_comparison_table") or []
     row = table[0] if table else {}
@@ -1480,26 +1569,152 @@ def tte_result_from_run_record(run_record: dict) -> tuple[dict, dict]:
     return tte_result, alignment
 
 
+def _stored_target_rct(run_record: dict) -> dict | None:
+    target = run_record.get("target_rct")
+    if isinstance(target, dict) and target:
+        return target
+    protocol = run_record.get("normalized_protocol")
+    if isinstance(protocol, dict):
+        nested = protocol.get("target_rct")
+        if isinstance(nested, dict) and nested:
+            return nested
+    return None
+
+
+def _joined_text(value) -> str:
+    if isinstance(value, list):
+        return " ".join(str(item).strip() for item in value if str(item).strip())
+    return str(value or "").strip()
+
+
+def _outcome_text(target: dict) -> str:
+    outcomes = target.get("primary_outcomes")
+    if isinstance(outcomes, list) and outcomes:
+        first = outcomes[0]
+        if isinstance(first, dict):
+            return str(first.get("measure") or "").strip()
+        return str(first).strip()
+    return str(target.get("primary_outcome") or target.get("primary_outcome_title") or "").strip()
+
+
+def _catalog_study(nct_id: str) -> dict | None:
+    from emulatrx_tte.rct_matcher import OFFLINE_CURATED_RCTS
+
+    for item in OFFLINE_CURATED_RCTS:
+        if item.get("nct_id") == nct_id:
+            return item
+    return None
+
+
+def _four_d_confirms_aligned(run_record: dict, requested_nct: str) -> bool:
+    """Deterministic offline 4D check. Empty axes cannot rubber-stamp a different NCT."""
+    target = _stored_target_rct(run_record)
+    if not isinstance(target, dict):
+        return False
+    intervention = _joined_text(target.get("experimental_arms") or target.get("intervention"))
+    comparator = _joined_text(target.get("comparator_arms") or target.get("comparator"))
+    condition = _joined_text(target.get("conditions") or target.get("condition") or target.get("target_condition"))
+    outcome = _outcome_text(target)
+    if not intervention or not comparator or not condition or not outcome:
+        return False
+    study = _catalog_study(requested_nct)
+    if study is None:
+        return False
+    from emulatrx_tte.rct_matcher import audit_study_pico4d_alignment
+
+    followup = target.get("target_followup_days")
+    if followup in (None, ""):
+        followup = target.get("parsed_admin_end_day")
+    try:
+        followup_days = float(followup) if followup not in (None, "") else None
+    except (TypeError, ValueError):
+        followup_days = None
+    audit = audit_study_pico4d_alignment(
+        study,
+        intervention=intervention,
+        comparator=comparator,
+        target_condition=condition,
+        target_outcome=outcome,
+        target_followup_days=followup_days,
+    )
+    return str(audit.get("overall_alignment_status")) in {"protocol_aligned", "aligned"}
+
+
+def _explicit_benchmark_ncts(payload: dict) -> list[str]:
+    tokens: list[str] = []
+    if payload.get("nct_id") not in (None, ""):
+        tokens.append(_normalize_nct(payload.get("nct_id")))
+    study = payload.get("study_json")
+    if isinstance(study, dict):
+        raw = _validated_study_nct(study)
+        if raw:
+            tokens.append(raw)
+    return tokens
+
+
+def _protocol_mismatch_report() -> dict:
+    blocked = audit_benchmark_eligibility(
+        {"gate_passed": True},
+        {"overall_alignment": "mismatched", "population_aligned": False, "arms_aligned": False, "outcome_aligned": False, "timeframe_aligned": False},
+    )
+    blocked["schema_version"] = SCHEMA_VERSION
+    blocked["overall_validity_flag"] = "not_interpretable"
+    return blocked
+
+
+def _nct_parity_blocks(run_record: dict, tokens: list[str]) -> bool:
+    """True when the request NCT is not the persisted target and 4D verification is not fully aligned."""
+    target = _stored_target_rct(run_record)
+    if target is None or not str(target.get("nct_id") or "").strip():
+        if not tokens:
+            return True
+        return any(not _four_d_confirms_aligned(run_record, token) for token in tokens)
+    try:
+        stored = _normalize_nct(target.get("nct_id"))
+    except ContractError:
+        return True
+    for token in tokens:
+        if token != stored and not _four_d_confirms_aligned(run_record, token):
+            return True
+    return False
+
+
 def execute_benchmark_request(payload: dict, *, run_record: dict | None = None, cohort: pd.DataFrame | None = None, weights=None) -> dict:
-    """Service entry. Rejects embedded patient-level tables."""
+    """Service entry. Rejects embedded patient-level tables.
+
+    When ``run_record`` is present, persisted gate status, alignment, and NCT identity win.
+    Caller ``tte_result`` / ``alignment_audit`` cannot upgrade a blocked or mismatched run.
+    """
     if not isinstance(payload, dict):
         raise ContractError("INVALID_JSON", "Benchmark body must be an object")
     forbidden = [key for key in ("cohort_rows", "patients", "ipd", "records", "subject_rows") if key in payload]
     if forbidden:
         raise ContractError("IPD_NOT_ACCEPTED", "Patient-level records are not accepted by the benchmark endpoint")
-    if payload.get("synthetic_demo"):
+    if run_record is not None:
+        payload = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"tte_result", "alignment_audit", "synthetic_demo"}
+        }
+        tokens = _explicit_benchmark_ncts(payload)
+        if _nct_parity_blocks(run_record, tokens):
+            return _protocol_mismatch_report()
+        target = _stored_target_rct(run_record)
+        if target is not None and not payload.get("nct_id") and str(target.get("nct_id") or "").strip():
+            payload = {**payload, "nct_id": _normalize_nct(target.get("nct_id"))}
+        derived_tte, derived_alignment = tte_result_from_run_record(run_record)
+        tte_result = derived_tte
+        alignment = derived_alignment
+    elif payload.get("synthetic_demo"):
         return run_synthetic_benchmark_demo(
             str(payload["synthetic_demo"]),
             nct_id=str(payload.get("nct_id") or "NCT01243424"),
             n=int(payload.get("n") or 2500),
             seed=int(payload.get("seed") or 20261125),
         )
-    tte_result = payload.get("tte_result") if isinstance(payload.get("tte_result"), dict) else None
-    alignment = payload.get("alignment_audit") if isinstance(payload.get("alignment_audit"), dict) else None
-    if run_record is not None:
-        derived_tte, derived_alignment = tte_result_from_run_record(run_record)
-        tte_result = tte_result or derived_tte
-        alignment = alignment or derived_alignment
+    else:
+        tte_result = payload.get("tte_result") if isinstance(payload.get("tte_result"), dict) else None
+        alignment = payload.get("alignment_audit") if isinstance(payload.get("alignment_audit"), dict) else None
     if tte_result is None or alignment is None:
         raise ContractError("MISSING_BENCHMARK_INPUT", "Provide tte_result and alignment_audit, a run_id, or synthetic_demo")
     nco_col = payload.get("negative_control_outcome_col") or None
@@ -1567,7 +1782,7 @@ def render_benchmark_report_html(report: dict) -> str:
     metrics = (
         f"<p>standardized_difference_z = {html.escape(str(comparison.get('standardized_difference_z')))}</p>"
         f"<p>p_difference = {html.escape(str(comparison.get('p_difference')))}</p>"
-        f"<p>within |z|&lt;1.96: {html.escape(str(comparison.get('standardized_difference_within_196')))}</p>"
+        f"<p>within |z|&lt;{Z_975}: {html.escape(str(comparison.get('standardized_difference_within_196')))}</p>"
         f"<p>95% prediction interval: {html.escape(str(comparison.get('prediction_interval_95')))}</p>"
         f"<p>estimate_within_95_pi: {html.escape(str(comparison.get('estimate_within_95_pi')))}</p>"
         f"<p>regulatory direction agree: {html.escape(str(direction.get('agree')))}</p>"

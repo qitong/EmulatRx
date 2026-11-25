@@ -907,6 +907,13 @@ def benchmark_from_payload(payload: dict, runner) -> dict:
     if run_id:
         run_record = runner.get(run_id)
         run_record = {key: value for key, value in run_record.items() if key != "sample_cases"}
+        # Persisted run state is authoritative. Drop caller overrides before they can
+        # upgrade gate_passed, alignment, or a synthetic demo pasted next to run_id.
+        payload = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"tte_result", "alignment_audit", "synthetic_demo"}
+        }
         if payload.get("negative_control_outcome_col"):
             cohort, weights = load_run_weights(runner, run_id)
     return execute_benchmark_request(payload, run_record=run_record, cohort=cohort, weights=weights)

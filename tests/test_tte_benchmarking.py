@@ -16,6 +16,7 @@ from urllib.error import URLError
 import numpy as np
 import pandas as pd
 
+from emulatrx_tte._common import ContractError
 from emulatrx_tte.benchmarking import (
     OFFLINE_RESULTS_FIXTURES,
     compute_baseline_comparability,
@@ -39,6 +40,40 @@ ALIGNED = {
     "outcome_aligned": True,
     "timeframe_aligned": True,
 }
+_PASSED_ESTIMATES = {
+    "co_presented_comparison_table": [
+        {
+            "cshr_primary": 0.90,
+            "cshr_primary_ci_lower": 0.75,
+            "cshr_primary_ci_upper": 1.08,
+        }
+    ]
+}
+
+
+def _carolina_target(**overrides) -> dict:
+    target = {
+        "nct_id": "NCT01243424",
+        "overall_alignment_status": "protocol_aligned",
+        "population_alignment": "matched",
+        "arm_alignment_status": "exact_dual_arm",
+        "outcome_alignment": "matched",
+        "followup_alignment": "adequate",
+        "experimental_arms": ["Linagliptin 5 mg once daily"],
+        "comparator_arms": ["Glimepiride 1–4 mg once daily"],
+        "conditions": ["Diabetes Mellitus, Type 2"],
+        "primary_outcomes": [
+            {
+                "measure": "Time to First Occurrence of 3P-MACE (Cardiovascular Death, Non-fatal Myocardial Infarction, or Non-fatal Stroke)",
+                "timeFrame": "Up to approximately 8 years (median follow-up 6.3 years)",
+            }
+        ],
+        "parsed_admin_end_day": 1095.0,
+    }
+    target.update(overrides)
+    return target
+
+
 RWD_HR = {
     "gate_passed": True,
     "effect_scale": "hr",
@@ -172,8 +207,8 @@ class OracleMetricTests(unittest.TestCase):
         self.assertAlmostEqual(metrics["standardized_difference_z"], -0.7018343393704267, places=8)
         self.assertAlmostEqual(metrics["p_difference"], 0.48278248087680387, places=8)
         self.assertTrue(metrics["standardized_difference_within_196"])
-        self.assertAlmostEqual(metrics["prediction_interval_95"][0], 0.7725787215563508, places=8)
-        self.assertAlmostEqual(metrics["prediction_interval_95"][1], 1.2431095669646264, places=8)
+        self.assertAlmostEqual(metrics["prediction_interval_95"][0], 0.7725820977124557, places=8)
+        self.assertAlmostEqual(metrics["prediction_interval_95"][1], 1.2431041346203282, places=8)
         self.assertTrue(metrics["estimate_within_95_pi"])
         direction = metrics["regulatory_direction_agreement"]
         self.assertTrue(direction["agree"])
@@ -193,8 +228,8 @@ class OracleMetricTests(unittest.TestCase):
             rct_upper=0.02,
         )
         self.assertAlmostEqual(rd["standardized_difference_z"], 1.3859038243496777, places=8)
-        self.assertAlmostEqual(rd["prediction_interval_95"][0], -0.05242718648070067, places=8)
-        self.assertAlmostEqual(rd["prediction_interval_95"][1], 0.032427186480700664, places=8)
+        self.assertAlmostEqual(rd["prediction_interval_95"][0], -0.052426406871192856, places=8)
+        self.assertAlmostEqual(rd["prediction_interval_95"][1], 0.03242640687119285, places=8)
 
         # Continuous SMD = (70-64) / sqrt((8^2 + 9.5^2) / 2) = 0.6832091307714864
         # Binary SMD = (0.55-0.399) / sqrt((0.55*0.45 + 0.399*0.601) / 2) = 0.30591035995839616
@@ -621,12 +656,281 @@ class BenchmarkServiceTests(unittest.TestCase):
             mcp_payload = json.loads(mcp_off.json()["result"]["content"][0]["text"])
             self.assertEqual(mcp_payload["error_code"], "BENCHMARKING_FEATURE_DISABLED")
 
+    def _plant_run(self, run_id: str, status: dict) -> None:
+        path = self.service.runner.root / run_id
+        path.mkdir()
+        (path / "status.json").write_text(json.dumps(status), encoding="utf-8")
+
+    def test_http_and_mcp_reject_spoofed_alignment_bad_nct_and_baseline(self):
+        blocked_id = "a" * 32
+        self._plant_run(
+            blocked_id,
+            {
+                "run_id": blocked_id,
+                "state": "completed",
+                "kind": "grace_period_ccw",
+                "gate_status": "blocked",
+                "target_rct": {
+                    "nct_id": "NCT01243424",
+                    "overall_alignment_status": "protocol_mismatched",
+                    "population_alignment": "matched",
+                    "arm_alignment_status": "arm_mismatched",
+                    "outcome_alignment": "surrogate_or_mismatched",
+                    "followup_alignment": "adequate",
+                },
+            },
+        )
+        spoof = {
+            "run_id": blocked_id,
+            "nct_id": "NCT01243424",
+            "tte_result": {**RWD_HR, "gate_passed": True},
+            "alignment_audit": {"overall_alignment": "aligned"},
+        }
+        blocked = self.client.post("/api/v1/tte/benchmark", headers=self.web, json=spoof)
+        self.assertEqual(blocked.status_code, 200, blocked.text[:500])
+        body = blocked.json()
+        self.assertIn(
+            body["gate_code"],
+            {"BENCHMARK_BLOCKED_UPSTREAM_DIAGNOSTIC_FAILED", "BENCHMARK_BLOCKED_PROTOCOL_OR_ENDPOINT_MISMATCH"},
+        )
+        self.assertIs(body["consistency_conclusion_allowed"], False)
+        self.assertIsNone(body["effect_comparison"])
+        self.assertNotEqual(body["status"], "benchmarked")
+
+        swapped_id = "b" * 32
+        self._plant_run(
+            swapped_id,
+            {
+                "run_id": swapped_id,
+                "state": "completed",
+                "kind": "grace_period_ccw",
+                "gate_status": "passed",
+                "gate_passed": True,
+                "target_rct": _carolina_target(),
+                "estimates": _PASSED_ESTIMATES,
+            },
+        )
+        swapped = self.client.post(
+            "/api/v1/tte/benchmark",
+            headers=self.web,
+            json={
+                "run_id": swapped_id,
+                "nct_id": "NCT02296125",
+                "tte_result": RWD_HR,
+                "alignment_audit": ALIGNED,
+            },
+        )
+        self.assertEqual(swapped.status_code, 200, swapped.text[:500])
+        swapped_body = swapped.json()
+        self.assertEqual(swapped_body["gate_code"], "BENCHMARK_BLOCKED_PROTOCOL_OR_ENDPOINT_MISMATCH")
+        self.assertIs(swapped_body["consistency_conclusion_allowed"], False)
+        self.assertIsNone(swapped_body["effect_comparison"])
+
+        mcp_spoof = self.client.post(
+            "/mcp",
+            headers=self.mcp,
+            json={
+                "jsonrpc": "2.0",
+                "id": 41,
+                "method": "tools/call",
+                "params": {
+                    "name": "benchmark_rct_and_negative_control",
+                    "arguments": {
+                        "run_id": blocked_id,
+                        "nct_id": "NCT01243424",
+                        "tte_result": {**RWD_HR, "gate_passed": True},
+                        "alignment_audit": {"overall_alignment": "aligned"},
+                    },
+                },
+            },
+        )
+        self.assertEqual(mcp_spoof.status_code, 200, mcp_spoof.text[:800])
+        tool_body = mcp_spoof.json()["result"]
+        self.assertFalse(tool_body.get("isError"), tool_body)
+        tool_report = json.loads(tool_body["content"][0]["text"])
+        self.assertIn(
+            tool_report["gate_code"],
+            {"BENCHMARK_BLOCKED_UPSTREAM_DIAGNOSTIC_FAILED", "BENCHMARK_BLOCKED_PROTOCOL_OR_ENDPOINT_MISMATCH"},
+        )
+        self.assertIs(tool_report["consistency_conclusion_allowed"], False)
+
+        hostile = self.client.post(
+            "/api/v1/tte/benchmark",
+            headers=self.web,
+            json={
+                "nct_id": "NCT01243424",
+                "study_json": {"nctId": "javascript:alert(1)", "hasResults": False},
+                "tte_result": RWD_HR,
+                "alignment_audit": ALIGNED,
+            },
+        )
+        self.assertIn(hostile.status_code, {400, 422})
+        self.assertEqual(hostile.json()["code"], "INVALID_NCT_ID")
+
+        overflow = self.client.post(
+            "/api/v1/tte/benchmark",
+            headers=self.web,
+            json={
+                "nct_id": "NCT01243424",
+                "tte_result": {
+                    **RWD_HR,
+                    "baseline_characteristics": {"female": {"proportion": 1.5}},
+                },
+                "alignment_audit": ALIGNED,
+            },
+        )
+        self.assertIn(overflow.status_code, {400, 422}, overflow.text[:500])
+        self.assertNotEqual(overflow.status_code, 500)
+        self.assertEqual(overflow.json()["code"], "INVALID_BASELINE_SUMMARY")
+
 
 class RequestBoundaryTests(unittest.TestCase):
     def test_embedded_patient_rows_are_rejected_before_benchmarking(self):
         with self.assertRaises(Exception) as caught:
             execute_benchmark_request({"patients": [{"age": 1}], "synthetic_demo": "clean_null"})
         self.assertEqual(caught.exception.code, "IPD_NOT_ACCEPTED")
+
+
+class PersistedRunAndContractRegressionTests(unittest.TestCase):
+    def test_spoofed_body_cannot_upgrade_persisted_gate_or_alignment(self):
+        failed_gate = execute_benchmark_request(
+            {
+                "nct_id": "NCT01243424",
+                "tte_result": {**RWD_HR, "gate_passed": True},
+                "alignment_audit": {"overall_alignment": "aligned"},
+            },
+            run_record={
+                "gate_status": "blocked",
+                "gate_passed": True,
+                "target_rct": _carolina_target(),
+                "estimates": _PASSED_ESTIMATES,
+            },
+        )
+        self.assertEqual(failed_gate["gate_code"], "BENCHMARK_BLOCKED_UPSTREAM_DIAGNOSTIC_FAILED")
+        self.assertIs(failed_gate["consistency_conclusion_allowed"], False)
+        self.assertIsNone(failed_gate["effect_comparison"])
+        self.assertNotEqual(failed_gate["status"], "benchmarked")
+
+        mismatched = execute_benchmark_request(
+            {
+                "nct_id": "NCT01243424",
+                "tte_result": RWD_HR,
+                "alignment_audit": ALIGNED,
+            },
+            run_record={
+                "gate_status": "passed",
+                "target_rct": _carolina_target(
+                    overall_alignment_status="protocol_mismatched",
+                    arm_alignment_status="arm_mismatched",
+                    outcome_alignment="surrogate_or_mismatched",
+                ),
+                "estimates": _PASSED_ESTIMATES,
+            },
+        )
+        self.assertEqual(mismatched["gate_code"], "BENCHMARK_BLOCKED_PROTOCOL_OR_ENDPOINT_MISMATCH")
+        self.assertIs(mismatched["consistency_conclusion_allowed"], False)
+        self.assertIsNone(mismatched["effect_comparison"])
+
+    def test_stored_nct_cannot_be_benchmarked_against_a_different_trial(self):
+        swapped = execute_benchmark_request(
+            {
+                "nct_id": "NCT02296125",
+                "tte_result": RWD_HR,
+                "alignment_audit": ALIGNED,
+            },
+            run_record={
+                "gate_status": "passed",
+                "target_rct": _carolina_target(),
+                "estimates": _PASSED_ESTIMATES,
+            },
+        )
+        self.assertEqual(swapped["gate_code"], "BENCHMARK_BLOCKED_PROTOCOL_OR_ENDPOINT_MISMATCH")
+        self.assertIs(swapped["consistency_conclusion_allowed"], False)
+        self.assertIsNone(swapped["effect_comparison"])
+        self.assertNotEqual(swapped["status"], "benchmarked")
+
+        same = execute_benchmark_request(
+            {"nct_id": "NCT01243424"},
+            run_record={
+                "gate_status": "passed",
+                "target_rct": _carolina_target(),
+                "estimates": _PASSED_ESTIMATES,
+            },
+        )
+        self.assertEqual(same["status"], "benchmarked")
+        self.assertEqual(same["source_receipt"]["nct_id"], "NCT01243424")
+
+    def test_sparse_negative_control_is_not_a_consistency_signoff(self):
+        sparse = pd.DataFrame(
+            {
+                "treatment": [1, 1, 1, 1, 0, 0, 0, 0],
+                "outcome_event": [0, 0, 0, 0, 0, 0, 0, 0],
+                "negative_control_outcome": [1, 0, 0, 0, 1, 0, 0, 0],
+            }
+        )
+        report = run_rct_benchmark_and_nco(
+            RWD_HR,
+            ALIGNED,
+            nct_id="NCT01243424",
+            cohort=sparse,
+            weights=np.ones(len(sparse)),
+            negative_control_outcome_col="negative_control_outcome",
+            outcome_col="outcome_event",
+        )
+        self.assertEqual(report["negative_control"]["status"], "insufficient_events_inconclusive")
+        self.assertIs(report["consistency_conclusion_allowed"], False)
+        self.assertEqual(report["overall_validity_flag"], "nco_inconclusive_underpowered")
+        self.assertIsNotNone(report["effect_comparison"])
+
+    def test_hostile_nct_and_source_url_fail_closed(self):
+        with self.assertRaises(ContractError) as caught:
+            parse_clinicaltrials_results_study({"nctId": "javascript:alert(1)", "hasResults": False})
+        self.assertEqual(caught.exception.code, "INVALID_NCT_ID")
+        with self.assertRaises(ContractError) as caught_url:
+            parse_clinicaltrials_results_study(
+                {
+                    "protocolSection": {"identificationModule": {"nctId": "NCT01243424"}},
+                    "source_url": "javascript:alert(1)",
+                    "hasResults": False,
+                }
+            )
+        self.assertEqual(caught_url.exception.code, "INVALID_SOURCE_URL")
+        with self.assertRaises(ContractError) as caught_curated:
+            resolve_rct_public_results(
+                "NCT01243424",
+                curated_published_summary={
+                    "effect_scale": "hr",
+                    "point_estimate": 0.9,
+                    "ci_lower": 0.8,
+                    "ci_upper": 1.1,
+                    "n_treatment": 100,
+                    "n_control": 100,
+                    "primary_outcome_label": "3P-MACE",
+                    "source_citation": "Example citation",
+                    "source_url": "javascript:alert(1)",
+                },
+            )
+        self.assertEqual(caught_curated.exception.code, "INVALID_SOURCE_URL")
+
+    def test_out_of_range_baseline_summaries_raise_structured_error(self):
+        with self.assertRaises(ContractError) as proportion:
+            compute_baseline_comparability(
+                {"female": {"proportion": 1.5}},
+                {"female": {"proportion": 0.4}},
+            )
+        self.assertEqual(proportion.exception.code, "INVALID_BASELINE_SUMMARY")
+        with self.assertRaises(ContractError) as negative:
+            compute_baseline_comparability(
+                {"age": {"mean": 70.0, "sd": -1.0}},
+                {"age": {"mean": 64.0, "sd": 9.5}},
+            )
+        self.assertEqual(negative.exception.code, "INVALID_BASELINE_SUMMARY")
+        with self.assertRaises(ContractError) as below:
+            compute_baseline_comparability(
+                {"female": {"proportion": -0.1}},
+                {"female": {"proportion": 0.4}},
+            )
+        self.assertEqual(below.exception.code, "INVALID_BASELINE_SUMMARY")
 
 
 if __name__ == "__main__":

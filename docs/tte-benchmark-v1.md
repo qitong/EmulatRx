@@ -51,7 +51,7 @@
 （比率尺度先取对数）。零或负的标准误直接拒绝。
 
 1. 标准化差 \(z=(\theta_{\mathrm{RWD}}-\theta_{\mathrm{RCT}})/\sqrt{\mathrm{SE}_{\mathrm{RWD}}^2+\mathrm{SE}_{\mathrm{RCT}}^2}\)，双侧 \(p=2\Phi(-|z|)\)，以及 \(|z|<1.959963984540054\)。
-2. 95% 预测区间以 **1.96** 计算：比率尺度为 \(\exp(\theta_{\mathrm{RCT}}\pm 1.96\sqrt{\mathrm{SE}_{\mathrm{RCT}}^2+\mathrm{SE}_{\mathrm{RWD}}^2})\)，风险差不加指数。
+2. 95% 预测区间与 \(|z|\) 阈值使用同一正态分位数 **1.959963984540054**：比率尺度为 \(\exp(\theta_{\mathrm{RCT}}\pm 1.959963984540054\sqrt{\mathrm{SE}_{\mathrm{RCT}}^2+\mathrm{SE}_{\mathrm{RWD}}^2})\)，风险差不加指数。
 3. 相对无效值（比率尺度为 1，风险差为 0）的统计显著性与方向是否一致。若给出 `ni_margin`，再比较两侧是否都满足 `ci_upper < ni_margin`（CAROLINA 界值为 1.3）。
 
 ## 阴性对照
