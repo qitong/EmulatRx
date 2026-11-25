@@ -35,7 +35,7 @@ from emulatrx_tte import (
 from emulatrx_tte._common import ContractError, MAX_USER_COHORT_BYTES
 from emulatrx_tte.llm_assist import extract_untrusted_Note_forbidden_tokens
 from .dualmode_views import render_dualmode_run_view, workbench_home_view
-from .mcp_tools import register_tools
+from .mcp_tools import detect_missing_clinical_semantics_from_profile, register_tools
 from .tte_runner import TTERunner
 from .tte_views import cohort_view, form, report_view, result_view, review_view
 from .web_protocol import FIELD_NAMES, FormError, protocol_from_fields
@@ -330,12 +330,14 @@ async def api_upload_or_load_session(request):
         else:
             raise ContractError("UNSUPPORTED_CONTENT_TYPE", "请通过文件上传表单或样表载入接口提交。")
 
+        semantics = detect_missing_clinical_semantics_from_profile(saved["profile"])
         return JSONResponse(
             {
                 "session_id": saved["session_id"],
                 "profile": saved["profile"],
                 "interpretation": _public_interpretation(saved["interpretation"]),
                 "default_mapping": saved["default_mapping"],
+                "missing_clinical_semantics": semantics.get("missing_clinical_semantics") or [],
                 "llm_status": get_llm_status(),
             },
             headers={"Cache-Control": "no-store"},
@@ -656,6 +658,14 @@ async def _launch_dual_run_payload(payload: dict, forced_mode: str | None = None
     )
 
 
+async def api_diagnose_preflight(request):
+    try:
+        payload = await _read_json_body(request, max_bytes=256 * 1024)
+        return JSONResponse(runner.diagnose_preflight(payload), headers={"Cache-Control": "no-store"})
+    except ContractError as exc:
+        return _contract_error_json(exc)
+
+
 async def api_start_dual_run(request):
     try:
         payload = await _read_json_body(request, max_bytes=128 * 1024)
@@ -816,6 +826,7 @@ inner = Starlette(
     routes=[
         Route("/healthz", health),
         Route("/", home),
+        Route("/dual", home),
         Route("/api/workbench/bootstrap", api_workbench_bootstrap),
         Route("/api/samples/{sample_id}/download", api_download_sample),
         Route("/api/sessions/upload", api_upload_or_load_session, methods=["POST"]),
@@ -828,6 +839,7 @@ inner = Starlette(
         Route("/api/idea/parse", api_parse_idea, methods=["POST"]),
         Route("/api/rcts/search", api_search_rcts, methods=["POST"]),
         Route("/api/rcts/draft", api_draft_mapping_or_protocol, methods=["POST"]),
+        Route("/api/v1/tte/diagnose-preflight", api_diagnose_preflight, methods=["POST"]),
         Route("/api/dual-runs", api_start_dual_run, methods=["POST"]),
         Route("/api/dual-runs/{run_id}", api_get_dual_run),
         Route("/api/v1/projects/user-cohort/runs", api_start_v1_user_cohort_run, methods=["POST"]),

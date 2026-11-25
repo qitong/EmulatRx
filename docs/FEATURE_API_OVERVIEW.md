@@ -92,3 +92,17 @@ PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python3 -m unittest discover -s
 | `main` | [`a9f98790`](https://github.com/qitong/EmulatRx/commit/a9f9879062f937e52b05fac6845571f4b1c0809d)（远端默认分支） | **已合并** [PR #4](https://github.com/qitong/EmulatRx/pull/4)、[PR #5](https://github.com/qitong/EmulatRx/pull/5)、[PR #6](https://github.com/qitong/EmulatRx/pull/6)、[PR #10](https://github.com/qitong/EmulatRx/pull/10)（[#8](https://github.com/qitong/EmulatRx/issues/8)）、[PR #12](https://github.com/qitong/EmulatRx/pull/12)（[#11](https://github.com/qitong/EmulatRx/issues/11)）、[PR #13](https://github.com/qitong/EmulatRx/pull/13)、[PR #14](https://github.com/qitong/EmulatRx/pull/14)（[#9](https://github.com/qitong/EmulatRx/issues/9)）及 **[PR #18](https://github.com/qitong/EmulatRx/pull/18)（[#17](https://github.com/qitong/EmulatRx/issues/17) P1 双侧宽限期治疗克隆–删失–加权 CCW，合并提交 `a9f98790`）** |
 | `qitong/emulatrx-dualmode-rct-workbench` | **当前 PR 分支**（已同步合入 `origin/main` [`a9f98790`](https://github.com/qitong/EmulatRx/commit/a9f9879062f937e52b05fac6845571f4b1c0809d)） | 关联开放 **[PR #16](https://github.com/qitong/EmulatRx/pull/16)**（[#15](https://github.com/qitong/EmulatRx/issues/15) 双入口、四维 PICO-T 目标 RCT 匹配与真/模双轨 TTE 工作台）；**当前分支在途待审阅合并，尚未合入 `main`** |
 | `qitong/emulatrx-p1-grace-period-ccw` 及早期功能分支 | 远端已合并历史分支 | 对应 [PR #18](https://github.com/qitong/EmulatRx/pull/18)（`a9f98790`）及 [PR #4](https://github.com/qitong/EmulatRx/pull/4)–[#14](https://github.com/qitong/EmulatRx/pull/14) **均已合并关闭**；`v1-codebase.ipynb` 与 `environment.yml` 按拍板保持冻结不修改 |
+
+---
+
+## 7. 五步可视化向导与秒级预检（Issue #19）
+
+工作台 `GET /` 与 `GET /dual` 使用同一单焦点五步向导，一次只展开当前步：
+
+1. **选择起点与队列**：脱敏 CSV/TSV 或 CAROLINA / FLAURA 样表，或两行研究想法。
+2. **锁定对标 RCT**：候选卡片上的五维 PICO-T 信号；双臂或方案偏离仍须显式确认。
+3. **时间轴与角色映射**：基线窗、t₀、地标窗与随访窗，以及治疗、时间、终点、协变量槽位。
+4. **秒级均衡预检**：`POST /api/v1/tte/diagnose-preflight` 返回纳排漏斗、加权前/后 `|SMD|` 与 `gate_passed`，不跑生存 bootstrap。
+5. **三阶去偏结果看板**：粗分析 → 1:1 PSM / sIPTW → 完整 TTE，并展示 `what_tte_controlled_beyond_psm`。
+
+`diagnose-preflight` 与 `POST /api/v1/projects/user-cohort/runs`、`POST /api/v1/projects/simulated/runs` 使用同一套 `verify_and_enrich_target_rct` 门禁。未确认的双臂偏离返回 `422 ARM_MISMATCH_CONFIRMATION_REQUIRED`，未确认的 PICO-T 偏离返回 `422 PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED`。`gate_passed=false` 时界面不放行最终估计。鉴权、CSP、`X-Content-Type-Options: nosniff` 与 `record_url` 的 `https://` 白名单保持不变。

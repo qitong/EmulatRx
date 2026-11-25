@@ -1697,5 +1697,64 @@ class CohortIngestAndDualModePipelineTests(unittest.TestCase):
         self.assertLessEqual(same_class["arm_alignment_score_cap"], 0.45)
 
 
+class VisualWizardPreflightTests(unittest.TestCase):
+    def test_workbench_markup_exposes_five_visual_steps(self):
+        from emulatrx_preview.dualmode_views import workbench_home_view
+
+        page = workbench_home_view()
+        for step in range(1, 6):
+            self.assertIn(f'data-wizard-step="{step}"', page)
+        for marker in ("study-timeline-svg", "preflight-loveplot", "clinical-ladder", "function safeRecordHref"):
+            self.assertIn(marker, page)
+        self.assertNotIn("escHtml(c.record_url)", page)
+
+    def test_runner_preflight_returns_funnel_smd_and_mismatch_codes(self):
+        from emulatrx_preview.tte_runner import TTERunner
+
+        with tempfile.TemporaryDirectory() as directory:
+            runner = TTERunner(directory)
+            _filename, raw = generate_sample_cohort_csv_bytes("t2dm_cv_carolina")
+            saved = runner.save_session_cohort(raw, "carolina.csv", sample_id="t2dm_cv_carolina")
+            with mock.patch.dict(os.environ, {"EMULATRX_OFFLINE_RCT_CATALOG": "1"}):
+                carolina = search_candidate_rcts("NCT01243424", project_mode="user_cohort", max_results=3)["candidates"][0]
+                flaura = search_candidate_rcts("NCT02296125", project_mode="user_cohort", max_results=3)["candidates"][0]
+            with self.assertRaises(ContractError) as blocked:
+                runner.diagnose_preflight(
+                    {
+                        "project_mode": "user_cohort",
+                        "session_id": saved["session_id"],
+                        "mapping": saved["default_mapping"],
+                        "target_rct": flaura,
+                    }
+                )
+            self.assertIn(
+                blocked.exception.code,
+                ("ARM_MISMATCH_CONFIRMATION_REQUIRED", "PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED"),
+            )
+            passed = runner.diagnose_preflight(
+                {
+                    "project_mode": "user_cohort",
+                    "session_id": saved["session_id"],
+                    "mapping": saved["default_mapping"],
+                    "target_rct": carolina,
+                }
+            )
+            self.assertIsInstance(passed["gate_passed"], bool)
+            self.assertEqual([row["id"] for row in passed["funnel"]], ["loaded", "eligible", "ess"])
+            self.assertGreater(passed["funnel"][0]["n"], 0)
+            self.assertTrue(passed["smd"])
+            self.assertIn("abs_smd_before", passed["smd"][0])
+            self.assertIn("abs_smd_after", passed["smd"][0])
+            simulated = runner.diagnose_preflight(
+                {
+                    "project_mode": "simulated_cohort",
+                    "idea_text": "比较达格列净与西格列汀对心衰住院的影响",
+                    "sim_config": {"cases": 120, "seed": 1, "weight_method": "overlap"},
+                }
+            )
+            self.assertIn("gate_passed", simulated)
+            self.assertGreaterEqual(simulated["funnel"][0]["n"], 100)
+
+
 if __name__ == "__main__":
     unittest.main()
