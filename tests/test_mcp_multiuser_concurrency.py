@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import io
 import json
 import os
@@ -317,6 +319,188 @@ class MultiUserAppTests(unittest.TestCase):
         self.assertIn("INVALID_USER_NAMESPACE", completed.stderr + completed.stdout)
 
 
+class Round2ReviewFixTests(unittest.TestCase):
+    """Cleanup race, raw namespace headers, missing-session 404, and CCW run reads."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        base = Path(self.temp.name)
+        (base / "web").write_text("w" * 40, encoding="utf-8")
+        (base / "agent").write_text("a" * 40, encoding="utf-8")
+        patch = mock.patch.dict(
+            os.environ,
+            {
+                "EMULATRX_RUNS_DIR": str(base / "runs"),
+                "EMULATRX_WEB_PASSWORD_FILE": str(base / "web"),
+                "EMULATRX_MCP_TOKEN_FILE": str(base / "agent"),
+                "EMULATRX_ALLOWED_HOSTS": "testserver",
+                "EMULATRX_OFFLINE_RCT_CATALOG": "1",
+                "EMULATRX_CODE_COMMIT": "b" * 40,
+                "EMULATRX_CODE_DIRTY": "false",
+            },
+        )
+        patch.start()
+        self.addCleanup(patch.stop)
+        import importlib
+
+        from emulatrx_preview import app
+
+        self.service = importlib.reload(app)
+        self.client = TestClient(self.service.app)
+        self.client.__enter__()
+        self.addCleanup(self.client.__exit__, None, None, None)
+        self.web_auth = {"Authorization": "Basic " + base64.b64encode(b"preview:" + b"w" * 40).decode()}
+
+    def _asgi_status(self, path: str, headers: list[tuple[bytes, bytes]], method: str = "GET") -> int:
+        sent: list[dict] = []
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            sent.append(message)
+
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": method,
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode("utf-8"),
+            "query_string": b"",
+            "headers": headers,
+            "client": ("127.0.0.1", 1),
+            "server": ("testserver", 80),
+        }
+        asyncio.run(self.service.app(scope, receive, send))
+        return next(message["status"] for message in sent if message["type"] == "http.response.start")
+
+    def test_raw_header_whitespace_is_rejected_and_empty_is_default(self):
+        from emulatrx_preview.user_context import InvalidUserNamespace, coerce_user_namespace, namespace_from_headers
+
+        self.assertEqual(coerce_user_namespace(None), "default")
+        self.assertEqual(coerce_user_namespace(""), "default")
+        self.assertEqual(namespace_from_headers({}), "default")
+        self.assertEqual(namespace_from_headers({b"x-emulatrx-user": b""}), "default")
+        for raw in ("   ", "\t", " dr_zhang", "dr_zhang ", "bad space"):
+            with self.assertRaises(InvalidUserNamespace):
+                coerce_user_namespace(raw)
+            with self.assertRaises(InvalidUserNamespace):
+                namespace_from_headers({b"x-emulatrx-user": raw.encode("latin-1")})
+            with self.assertRaises(InvalidUserNamespace):
+                namespace_from_headers({b"x-workbuddy-user": raw.encode("latin-1")})
+
+        basic = b"Basic " + base64.b64encode(b"preview:" + b"w" * 40)
+        for raw in (b"   ", b"\t", b" dr_zhang", b"dr_zhang "):
+            status = self._asgi_status(
+                "/api/workbench/bootstrap",
+                [(b"authorization", basic), (b"host", b"testserver"), (b"x-emulatrx-user", raw)],
+            )
+            self.assertEqual(status, 400, raw)
+        self.assertEqual(
+            self._asgi_status(
+                "/api/workbench/bootstrap",
+                [(b"authorization", basic), (b"host", b"testserver"), (b"x-emulatrx-user", b"")],
+            ),
+            200,
+        )
+        self.assertEqual(
+            self._asgi_status(
+                "/api/sessions/upload-ticket/../secret",
+                [(b"host", b"testserver")],
+                method="POST",
+            ),
+            401,
+        )
+        self.assertEqual(
+            self._asgi_status(
+                "/api/sessions/upload-ticket/..",
+                [(b"host", b"testserver")],
+                method="POST",
+            ),
+            401,
+        )
+
+    def test_missing_and_cross_user_delete_is_404(self):
+        missing = self.client.delete("/api/sessions/" + "cd" * 16, headers=self.web_auth)
+        self.assertEqual(missing.status_code, 404, missing.text)
+        self.assertEqual(missing.json()["code"], "SESSION_NOT_FOUND")
+        self.assertFalse(missing.json()["session_deleted"])
+        invalid = self.client.delete("/api/sessions/not-a-session", headers=self.web_auth)
+        self.assertEqual(invalid.status_code, 400, invalid.text)
+
+        runner = self.service.runner
+        from emulatrx_preview.user_context import CURRENT_USER_NAMESPACE
+
+        token = CURRENT_USER_NAMESPACE.set("dr_zhang")
+        try:
+            saved = runner.save_session_cohort(_tiny_csv("Z").encode("utf-8"), "z.csv")
+        finally:
+            CURRENT_USER_NAMESPACE.reset(token)
+        foreign = self.client.delete(
+            f"/api/sessions/{saved['session_id']}",
+            headers={**self.web_auth, "X-EmulatRx-User": "dr_li"},
+        )
+        self.assertEqual(foreign.status_code, 404, foreign.text)
+        self.assertEqual(foreign.json()["code"], "SESSION_NOT_FOUND")
+        self.assertTrue((runner.root / "users" / "dr_zhang" / "sessions" / saved["session_id"]).is_dir())
+        own = self.client.delete(
+            f"/api/sessions/{saved['session_id']}",
+            headers={**self.web_auth, "X-EmulatRx-User": "dr_zhang"},
+        )
+        self.assertEqual(own.status_code, 200, own.text)
+
+    def test_completed_ccw_run_get_and_namespaced_artifact(self):
+        from emulatrx_preview.user_context import CURRENT_USER_NAMESPACE
+
+        runner = self.service.runner
+        source = runner.root / "ccw-src"
+        source.mkdir()
+        (source / "ccw_preview_report.html").write_text("<html>ccw-report-body</html>", encoding="utf-8")
+        (source / "ccw_estimates.json").write_text("{}", encoding="utf-8")
+        token = CURRENT_USER_NAMESPACE.set("dr_zhang")
+        try:
+            status = runner.adopt_ccw_directory(source, gate_status="passed", seed=3, case_count=12)
+        finally:
+            CURRENT_USER_NAMESPACE.reset(token)
+        run_id = status["run_id"]
+        anonymous = self.client.get(f"/api/dual-runs/{run_id}", headers=self.web_auth)
+        self.assertEqual(anonymous.status_code, 404, anonymous.text)
+        fetched = self.client.get(
+            f"/api/dual-runs/{run_id}",
+            headers={**self.web_auth, "X-EmulatRx-User": "dr_zhang"},
+        )
+        self.assertEqual(fetched.status_code, 200, fetched.text)
+        body = fetched.json()
+        self.assertEqual(body["kind"], "grace_period_ccw")
+        self.assertNotIn("normalized_protocol", body)
+        self.assertIn("ccw-report-body", body["report_html"])
+        self.assertNotIn("rendered_html", body)
+        page = self.client.get(f"/runs/{run_id}", headers={**self.web_auth, "X-EmulatRx-User": "dr_zhang"})
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertIn("ccw-report-body", page.text)
+        artifact = self.client.get(
+            f"/runs/{run_id}/artifacts/ccw_preview_report.html",
+            headers={**self.web_auth, "X-EmulatRx-User": "dr_zhang"},
+        )
+        self.assertEqual(artifact.status_code, 200, artifact.text)
+        self.assertIn("ccw-report-body", artifact.text)
+        hidden = self.client.get(
+            f"/runs/{run_id}/artifacts/ccw_preview_report.html",
+            headers=self.web_auth,
+        )
+        self.assertEqual(hidden.status_code, 404, hidden.text)
+        bare = runner.root / "ccw-src-2"
+        bare.mkdir()
+        (bare / "ccw_diagnostics.json").write_text("{}", encoding="utf-8")
+        quiet = runner.adopt_ccw_directory(bare, gate_status="blocked", seed=4, case_count=8)
+        quiet_get = self.client.get(f"/api/dual-runs/{quiet['run_id']}", headers=self.web_auth)
+        self.assertEqual(quiet_get.status_code, 200, quiet_get.text)
+        self.assertNotIn("report_html", quiet_get.json())
+
+
 class SlotEnvTests(unittest.TestCase):
     def test_zero_wait_single_slot_is_busy(self):
         from emulatrx_preview.tte_runner import TTERunner
@@ -332,3 +516,104 @@ class SlotEnvTests(unittest.TestCase):
                     self.assertEqual(raised.exception.code, "BUSY")
                 finally:
                     runner._slot.release()
+
+    def test_cleanup_never_deletes_a_run_being_allocated_or_adopted(self):
+        from emulatrx_preview import tte_runner as runner_mod
+        from emulatrx_preview.tte_runner import TTERunner
+
+        protocol = json.loads(
+            (Path(__file__).resolve().parents[1] / "examples" / "tte_preview_v1.json").read_text(encoding="utf-8")
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            runner = TTERunner(directory)
+            fresh = Path(directory) / ("ab" * 16)
+            fresh.mkdir(mode=0o700)
+            (fresh / "keep.txt").write_text("alive", encoding="utf-8")
+            runner.cleanup()
+            self.assertTrue(fresh.is_dir())
+            self.assertTrue((fresh / "keep.txt").is_file())
+            old = time.time() - 120
+            os.utime(fresh, (old, old))
+            runner.cleanup()
+            self.assertFalse(fresh.exists())
+
+            removed: list[str] = []
+            real_rmtree = runner_mod.shutil.rmtree
+            real_copy = runner_mod.shutil.copyfile
+            real_allocate = runner._allocate_run_dir
+            allocate_entered = threading.Event()
+            allocate_release = threading.Event()
+            copy_entered = threading.Event()
+            copy_release = threading.Event()
+
+            def spy_rmtree(path, *args, **kwargs):
+                removed.append(Path(path).name)
+                return real_rmtree(path, *args, **kwargs)
+
+            def hooked_allocate(ns):
+                run_id, path = real_allocate(ns)
+                allocate_entered.set()
+                self.assertTrue(allocate_release.wait(5), "allocation hook was not released")
+                return run_id, path
+
+            def slow_copy(src, dst, *args, **kwargs):
+                copy_entered.set()
+                self.assertTrue(copy_release.wait(5), "adopt copy hook was not released")
+                return real_copy(src, dst, *args, **kwargs)
+
+            runner._execute = lambda *_args, **_kwargs: runner._slot.release()
+            runner._allocate_run_dir = hooked_allocate
+            holder: dict = {}
+
+            def run_start():
+                holder["status"] = runner.start(protocol, cases=100, seed=1, bootstrap_iterations=20)
+
+            starter = threading.Thread(target=run_start)
+            starter.start()
+            self.assertTrue(allocate_entered.wait(5))
+            cleanup_finished = threading.Event()
+
+            def run_cleanup():
+                runner.cleanup()
+                cleanup_finished.set()
+
+            with mock.patch.object(runner_mod.shutil, "rmtree", spy_rmtree):
+                cleaner = threading.Thread(target=run_cleanup)
+                cleaner.start()
+                time.sleep(0.2)
+                self.assertFalse(cleanup_finished.is_set(), "cleanup ran before the new run had status.json")
+                born = [path for path in Path(directory).iterdir() if len(path.name) == 32 and path.is_dir()]
+                self.assertEqual(len(born), 1)
+                self.assertTrue(born[0].is_dir())
+                allocate_release.set()
+                self.assertTrue(starter.join(5) is None and not starter.is_alive())
+                self.assertTrue(cleaner.join(5) is None and not cleaner.is_alive())
+                status = holder["status"]
+                published = Path(directory) / status["run_id"]
+                self.assertTrue((published / "status.json").is_file())
+                self.assertNotIn(status["run_id"], removed)
+
+                source = Path(directory) / "ccw-src"
+                source.mkdir()
+                (source / "ccw_preview_report.html").write_text("<html>kept</html>", encoding="utf-8")
+                adopted: dict = {}
+
+                def run_adopt():
+                    adopted["status"] = runner.adopt_ccw_directory(source, gate_status="passed", seed=9, case_count=11)
+
+                with mock.patch.object(runner_mod.shutil, "copyfile", slow_copy):
+                    adopter = threading.Thread(target=run_adopt)
+                    adopter.start()
+                    self.assertTrue(copy_entered.wait(5))
+                    for _ in range(20):
+                        runner.cleanup()
+                    copy_release.set()
+                    self.assertTrue(adopter.join(5) is None and not adopter.is_alive())
+                adopted_id = adopted["status"]["run_id"]
+                adopted_dir = Path(directory) / adopted_id
+                self.assertTrue(adopted_dir.is_dir())
+                self.assertTrue((adopted_dir / "status.json").is_file())
+                self.assertTrue((adopted_dir / "ccw_preview_report.html").is_file())
+                saved = json.loads((adopted_dir / "status.json").read_text(encoding="utf-8"))
+                self.assertEqual(saved["state"], "completed")
+                self.assertNotIn(adopted_id, removed)

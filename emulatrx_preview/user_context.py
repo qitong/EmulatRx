@@ -28,21 +28,24 @@ class InvalidUserNamespace(ValueError):
 
 
 def coerce_user_namespace(raw: str | None) -> str:
-    """Return a safe namespace. Missing or blank input is the legacy ``default`` user."""
+    """Return a safe namespace.
+
+    Missing input and a literally empty string are the legacy ``default`` user.
+    Any other value is matched raw: whitespace is not stripped, so padded or
+    whitespace-only headers fail ``USER_NAMESPACE_RE``.
+    """
     if raw is None:
         return "default"
     if not isinstance(raw, str):
         raise InvalidUserNamespace("INVALID_USER_NAMESPACE: user namespace must be a string")
-    text = raw.strip()
-    if text == "":
+    if raw == "":
         return "default"
-    segments = re.split(r"[/\\]", text)
-    if any(part in {".", ".."} for part in segments) or not USER_NAMESPACE_RE.fullmatch(text):
+    if not USER_NAMESPACE_RE.fullmatch(raw):
         raise InvalidUserNamespace(
             "INVALID_USER_NAMESPACE: user namespace must match "
             "^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$ and must not contain path segments"
         )
-    return text
+    return raw
 
 
 def resolve_user_namespace(explicit: str | None = None) -> str:

@@ -8,6 +8,7 @@ import html
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 from urllib.parse import parse_qs, urlsplit
 
@@ -44,6 +45,8 @@ from .web_protocol import FIELD_NAMES, FormError, protocol_from_fields
 
 UPLOAD_READ_CHUNK_BYTES = 65536
 MAX_MULTIPART_OVERHEAD_BYTES = 128 * 1024
+_UPLOAD_TICKET_PATH = re.compile(r"^/api/sessions/upload-ticket/[A-Za-z0-9_-]{16,128}\Z")
+_RUN_NAMESPACE_PATH = re.compile(r"^/runs/[0-9a-f]{32}(?:/artifacts(?:/.*)?)?\Z")
 
 
 class _UploadTooLargeError(Exception):
@@ -413,9 +416,10 @@ async def api_delete_session(request):
         res = runner.delete_session(request.path_params["session_id"])
         return JSONResponse(res, status_code=200, headers={"Cache-Control": "no-store"})
     except ContractError as exc:
+        status_http = 404 if exc.code == "SESSION_NOT_FOUND" else 400
         return JSONResponse(
             {"error": f"{exc.code}: {exc}", "code": exc.code, "session_deleted": False},
-            status_code=400,
+            status_code=status_http,
             headers={"Cache-Control": "no-store"},
         )
     except (OSError, RuntimeError) as exc:
@@ -705,6 +709,33 @@ async def api_start_v1_simulated_run(request):
         return _contract_error_json(exc)
 
 
+def _ccw_report_html(run_id: str) -> str | None:
+    """Read a published CCW report when the dual-mode renderer has no protocol payload."""
+    try:
+        path = runner._path(run_id) / "ccw_preview_report.html"
+    except ContractError:
+        return None
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+
+
+def _render_dualmode_or_ccw(result: dict, *, standalone_report: bool = False) -> str:
+    kind = result.get("run_kind") or result.get("kind")
+    if kind == "grace_period_ccw" or "normalized_protocol" not in result:
+        try:
+            return render_dualmode_run_view(result, runner.root, standalone_report=standalone_report)
+        except KeyError:
+            report = _ccw_report_html(str(result.get("run_id") or ""))
+            if report is not None:
+                return report
+            return f"<p>运行状态：{html.escape(str(result.get('state') or ''))}</p>"
+    return render_dualmode_run_view(result, runner.root, standalone_report=standalone_report)
+
+
 async def api_get_dual_run(request):
     try:
         result = runner.get(request.path_params["run_id"])
@@ -712,7 +743,16 @@ async def api_get_dual_run(request):
         return JSONResponse({"error": "运行不存在或已清除。"}, status_code=404)
     out = dict(result)
     if result.get("state") not in ("queued", "running") and result.get("kind") != "synthetic_tte":
-        out["rendered_html"] = render_dualmode_run_view(result, runner.root)
+        kind = result.get("run_kind") or result.get("kind")
+        if kind == "grace_period_ccw" or "normalized_protocol" not in result:
+            try:
+                out["rendered_html"] = render_dualmode_run_view(result, runner.root)
+            except KeyError:
+                report = _ccw_report_html(request.path_params["run_id"])
+                if report is not None:
+                    out["report_html"] = report
+        else:
+            out["rendered_html"] = render_dualmode_run_view(result, runner.root)
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
@@ -769,7 +809,7 @@ async def show_run(request):
         return page("运行不存在或已过期。", status=404)
     is_running = result["state"] in ("queued", "running")
     if result.get("kind", "synthetic_tte") != "synthetic_tte":
-        return page(render_dualmode_run_view(result, runner.root), refresh=is_running)
+        return page(_render_dualmode_or_ccw(result), refresh=is_running)
     return page(result_view(result, runner.root), refresh=is_running)
 
 
@@ -800,7 +840,7 @@ async def show_report(request):
                 else "目标试验模拟（无数据模拟预演项目）可行性报告"
             )
             response = page(
-                render_dualmode_run_view(result, runner.root, standalone_report=True),
+                _render_dualmode_or_ccw(result, standalone_report=True),
                 title=f"EmulatRx · {title_prefix}",
             )
             if request.query_params.get("download") == "1":
@@ -876,7 +916,8 @@ class AuthenticationGate:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope["path"] == "/healthz" or scope["path"].startswith("/api/sessions/upload-ticket/"):
+        path = scope.get("path") or ""
+        if scope["type"] != "http" or path == "/healthz" or _UPLOAD_TICKET_PATH.fullmatch(path):
             return await self.app(scope, receive, send)
         headers = {key.lower(): value for key, value in scope.get("headers", [])}
         authorization = headers.get(b"authorization", b"")
@@ -904,8 +945,7 @@ class AuthenticationGate:
                 headers={"WWW-Authenticate": challenge.decode("ascii"), "Cache-Control": "no-store"},
             )
             return await response(scope, receive, send)
-        path = scope.get("path") or ""
-        if path.startswith("/mcp") or path.startswith("/api/"):
+        if path.startswith("/mcp") or path.startswith("/api/") or _RUN_NAMESPACE_PATH.fullmatch(path):
             try:
                 namespace = namespace_from_headers(headers)
             except InvalidUserNamespace as exc:

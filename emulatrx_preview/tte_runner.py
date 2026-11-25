@@ -294,6 +294,18 @@ class TTERunner:
         self._assert_contained(path)
         return run_id, path
 
+    def _allocate_published_run(self, ns: str, status_for) -> tuple[str, Path, dict]:
+        """Create a run directory and its initial status while holding the user lock.
+
+        ``cleanup`` takes the same lock before it can delete a directory, so a
+        brand-new run is never observed without ``status.json``.
+        """
+        with self._user_lock(ns):
+            run_id, path = self._allocate_run_dir(ns)
+            status = status_for(run_id)
+            self._write_status(path, status)
+            return run_id, path, status
+
     def _path(self, run_id, user_namespace: str | None = None):
         if not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id):
             raise ContractError("INVALID_RUN_ID", "invalid run ID")
@@ -347,12 +359,20 @@ class TTERunner:
                         continue
                     if not path.is_dir() or not RUN_ID.fullmatch(path.name):
                         continue
-                    if now - path.stat().st_mtime > RETENTION_SECONDS:
+                    try:
+                        age = now - path.stat().st_mtime
+                    except OSError:
+                        continue
+                    if age > RETENTION_SECONDS:
                         shutil.rmtree(path, ignore_errors=True)
                         continue
                     try:
                         status = self._status(path)
                     except (OSError, ValueError):
+                        # A just-created run may not have status.json yet. Never
+                        # delete that directory inside the allocation race window.
+                        if age < 60.0:
+                            continue
                         shutil.rmtree(path, ignore_errors=True)
                         continue
                     if startup and status.get("state") in ("queued", "running"):
@@ -569,35 +589,68 @@ class TTERunner:
         session_id: str | None = None,
     ) -> dict:
         """Publish a finished CCW directory under the caller's run root so status and artifact tools can read it."""
-        ns = self._namespace()
-        self.cleanup()
-        run_id, dest = self._allocate_run_dir(ns)
-        for item in source.iterdir():
-            target = dest / item.name
-            if item.is_dir():
-                shutil.copytree(item, target)
-            elif item.is_file():
-                shutil.copyfile(item, target)
-        state = "completed" if gate_status == "passed" else "blocked"
-        status = {
-            "run_id": run_id,
-            "user_namespace": ns,
-            "state": state,
-            "kind": "grace_period_ccw",
-            "project_mode": SOURCE_MODE_SYNTHETIC_ONLY,
-            "gate_status": gate_status,
-            "stage": state,
-            "seed": seed,
-            "case_count": case_count,
-            "started_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "finished_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        }
         if session_id:
             if not isinstance(session_id, str) or not SESSION_ID.fullmatch(session_id):
                 raise ContractError("INVALID_SESSION_ID", "无效的会话编号。")
-            status["session_id"] = session_id
-        self._write_status(dest, status)
-        return status
+        ns = self._namespace()
+        self.cleanup()
+        parent = self._runs_parent(ns)
+        run_id = uuid.uuid4().hex
+        staging = parent / f".{run_id}.adopting.tmp"
+        dest = parent / run_id
+        now_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        _mkdir_0700(staging)
+        try:
+            if staging.is_symlink():
+                raise ContractError("PATH_TRAVERSAL_BLOCKED", "symlink traversal blocked")
+            with self._user_lock(ns):
+                self._write_status(
+                    staging,
+                    {
+                        "run_id": run_id,
+                        "user_namespace": ns,
+                        "state": "adopting",
+                        "kind": "grace_period_ccw",
+                        "project_mode": SOURCE_MODE_SYNTHETIC_ONLY,
+                        "gate_status": gate_status,
+                        "stage": "adopting",
+                        "seed": seed,
+                        "case_count": case_count,
+                        "started_utc": now_utc,
+                    },
+                )
+            for item in source.iterdir():
+                target = staging / item.name
+                if item.is_dir():
+                    shutil.copytree(item, target)
+                elif item.is_file():
+                    shutil.copyfile(item, target)
+            state = "completed" if gate_status == "passed" else "blocked"
+            status = {
+                "run_id": run_id,
+                "user_namespace": ns,
+                "state": state,
+                "kind": "grace_period_ccw",
+                "project_mode": SOURCE_MODE_SYNTHETIC_ONLY,
+                "gate_status": gate_status,
+                "stage": state,
+                "seed": seed,
+                "case_count": case_count,
+                "started_utc": now_utc,
+                "finished_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            }
+            if session_id:
+                status["session_id"] = session_id
+            with self._user_lock(ns):
+                self._write_status(staging, status)
+                os.replace(staging, dest)
+                os.chmod(dest, 0o700)
+                self._assert_contained(dest)
+            return status
+        except Exception:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+            raise
 
     def get_session_forbidden_values(self, session_id: str) -> tuple[str, ...]:
         """Return persisted forbidden cohort/note tokens for a session (fail-safe empty tuple if session not found)."""
@@ -774,23 +827,26 @@ class TTERunner:
         try:
             ns = self._namespace()
             self.cleanup()
-            run_id, path = self._allocate_run_dir(ns)
+            started_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+            def _queued(run_id: str) -> dict:
+                return {
+                    "run_id": run_id,
+                    "user_namespace": ns,
+                    "state": "queued",
+                    "kind": "synthetic_tte",
+                    "project_mode": SOURCE_MODE_SYNTHETIC_ONLY,
+                    "case_count": cases,
+                    "seed": seed,
+                    "bootstrap_iterations": bootstrap_iterations,
+                    "weight_method": weight_method,
+                    "gate_status": None,
+                    "stage": "queued",
+                    "started_utc": started_utc,
+                }
+
+            run_id, path, status = self._allocate_published_run(ns, _queued)
             (path / "protocol.json").write_bytes(_bytes(protocol))
-            status = {
-                "run_id": run_id,
-                "user_namespace": ns,
-                "state": "queued",
-                "kind": "synthetic_tte",
-                "project_mode": SOURCE_MODE_SYNTHETIC_ONLY,
-                "case_count": cases,
-                "seed": seed,
-                "bootstrap_iterations": bootstrap_iterations,
-                "weight_method": weight_method,
-                "gate_status": None,
-                "stage": "queued",
-                "started_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            }
-            self._write_status(path, status)
             threading.Thread(target=self._execute, args=(path, status, normalized), daemon=True).start()
             return status
         except Exception:
@@ -1165,29 +1221,32 @@ class TTERunner:
         try:
             ns = self._namespace()
             self.cleanup()
-            run_id, path = self._allocate_run_dir(ns)
+            started_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+            def _queued(run_id: str) -> dict:
+                return {
+                    "run_id": run_id,
+                    "user_namespace": ns,
+                    "state": "queued",
+                    "kind": "simulated_cohort_tte",
+                    "project_mode": SOURCE_MODE_SIMULATED_COHORT,
+                    "case_count": cases,
+                    "seed": seed,
+                    "bootstrap_iterations": bootstrap_iterations,
+                    "weight_method": weight_method,
+                    "sim_config": cfg,
+                    "gate_status": None,
+                    "stage": "queued",
+                    "started_utc": started_utc,
+                }
+
+            run_id, path, status = self._allocate_published_run(ns, _queued)
             _atomic_write_bytes(path / "protocol.json", _bytes(normalized_proto))
             _atomic_write_bytes(path / "dgp_params.json", _bytes(dgp_params))
             if target_rct:
                 _atomic_write_bytes(path / "target_rct.json", _bytes(target_rct))
             if eff_pico:
                 _atomic_write_bytes(path / "pico.json", _bytes(eff_pico))
-            status = {
-                "run_id": run_id,
-                "user_namespace": ns,
-                "state": "queued",
-                "kind": "simulated_cohort_tte",
-                "project_mode": SOURCE_MODE_SIMULATED_COHORT,
-                "case_count": cases,
-                "seed": seed,
-                "bootstrap_iterations": bootstrap_iterations,
-                "weight_method": weight_method,
-                "sim_config": cfg,
-                "gate_status": None,
-                "stage": "queued",
-                "started_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            }
-            self._write_status(path, status)
             threading.Thread(target=self._execute_simulated, args=(path, status), daemon=True).start()
             return status
         except Exception:
@@ -1262,7 +1321,25 @@ class TTERunner:
         try:
             ns = self._namespace()
             self.cleanup()
-            run_id, path = self._allocate_run_dir(ns)
+            started_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+            def _queued(run_id: str) -> dict:
+                return {
+                    "run_id": run_id,
+                    "user_namespace": ns,
+                    "session_id": session_id,
+                    "state": "queued",
+                    "kind": "user_cohort_tte",
+                    "project_mode": SOURCE_MODE_USER_COHORT,
+                    "seed": seed_i,
+                    "bootstrap_iterations": boot_i,
+                    "weight_method": chosen_weight,
+                    "gate_status": None,
+                    "stage": "queued",
+                    "started_utc": started_utc,
+                }
+
+            run_id, path, status = self._allocate_published_run(ns, _queued)
             _atomic_write_bytes(path / "mapping.json", _bytes(mapping))
             if target_rct:
                 _atomic_write_bytes(path / "target_rct.json", _bytes(target_rct))
@@ -1274,21 +1351,6 @@ class TTERunner:
                 smeta["user_namespace"] = ns
                 _atomic_write_bytes(sdir / "session_meta.json", _bytes(smeta))
 
-            status = {
-                "run_id": run_id,
-                "user_namespace": ns,
-                "session_id": session_id,
-                "state": "queued",
-                "kind": "user_cohort_tte",
-                "project_mode": SOURCE_MODE_USER_COHORT,
-                "seed": seed_i,
-                "bootstrap_iterations": boot_i,
-                "weight_method": chosen_weight,
-                "gate_status": None,
-                "stage": "queued",
-                "started_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            }
-            self._write_status(path, status)
             threading.Thread(
                 target=self._execute_user_cohort,
                 args=(path, status, cohort_path, mapping, target_rct),
