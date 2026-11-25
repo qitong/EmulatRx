@@ -417,6 +417,25 @@ class PreviewServiceTests(unittest.TestCase):
             removed = self.client.delete(f"/api/sessions/{session_id}", headers=self.web_auth)
             self.assertEqual(removed.status_code, 200, removed.text)
             self.assertEqual(self.client.get(f"/api/sessions/{session_id}", headers=self.web_auth).status_code, 404)
+            missing = self.client.post(
+                "/api/v1/tte/diagnose-preflight",
+                headers=self.web_auth,
+                json={"project_mode": "user_cohort", "session_id": "ab" * 16},
+            )
+            self.assertEqual(missing.status_code, 404, missing.text)
+            self.assertEqual(missing.json()["error_code"], "SESSION_NOT_FOUND")
+            inverted = self.client.post(
+                "/api/v1/tte/diagnose-preflight",
+                headers=self.web_auth,
+                json={
+                    "project_mode": "simulated_cohort",
+                    "landmark_time": 400,
+                    "horizon_days": [365],
+                    "sim_config": {"cases": 120, "seed": 1, "weight_method": "overlap"},
+                },
+            )
+            self.assertEqual(inverted.status_code, 400, inverted.text)
+            self.assertEqual(inverted.json()["error_code"], "INVALID_TIMELINE_WINDOW")
 
 
 class RoundTwoAuditPolishTests(unittest.TestCase):
@@ -435,8 +454,29 @@ class RoundTwoAuditPolishTests(unittest.TestCase):
         self.assertEqual(safe_record_href("javascript:alert(1)"), "#")
         self.assertEqual(safe_record_href("data:text/html,hi"), "#")
         self.assertTrue(safe_record_href("https://clinicaltrials.gov/study/NCT00000099").startswith("https://"))
+        self.assertTrue(safe_record_href("http://clinicaltrials.gov/study/NCT00000099").startswith("http://"))
+        overview_md = Path(__file__).resolve().parents[1].joinpath("docs/FEATURE_API_OVERVIEW.md").read_text(encoding="utf-8")
+        overview_html = Path(__file__).resolve().parents[1].joinpath("docs/FEATURE_API_OVERVIEW.html").read_text(encoding="utf-8")
+        for overview in (overview_md, overview_html):
+            self.assertIn("http://", overview)
+            self.assertIn("https://", overview)
+            self.assertIn("safe_record_href", overview)
+            self.assertIn("safeRecordHref", overview)
+            self.assertIn("Content-Security-Policy", overview)
         page = workbench_home_view()
         self.assertIn("function safeRecordHref", page)
+        self.assertIn("startsWith('http://')", page)
+        self.assertIn("step3Panel.addEventListener('change', (event) => { onStep3ConfigChanged(event); invalidateDownstream(4); })", page)
+        from emulatrx_preview.dualmode_views import _love_plot_svg
+
+        svg = _love_plot_svg(
+            [{"covariate": "age", "abs_smd_unweighted": float("nan"), "abs_smd_weighted": float("nan")}],
+            {"age": "年龄"},
+            0.1,
+        )
+        self.assertIn("<svg", svg)
+        self.assertIn("N/A", svg)
+        self.assertNotIn("nan", svg.lower())
         self.assertNotIn("escHtml(c.record_url)", page)
         self.assertNotIn("escHtml(activeRct.record_url)", page)
         result = {

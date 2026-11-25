@@ -30,6 +30,92 @@ from .protocol import validate_protocol_dict
 from .rct_matcher import normalize_intervention_spec
 
 
+def _finite_timeline_number(value: object, name: str) -> float:
+    if isinstance(value, bool) or value is None:
+        raise ContractError("INVALID_TIMELINE_WINDOW", f"{name} 必须是有限数字。")
+    if isinstance(value, (int, float)):
+        number = float(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            raise ContractError("INVALID_TIMELINE_WINDOW", f"{name} 必须是有限数字。")
+        try:
+            number = float(text)
+        except ValueError as exc:
+            raise ContractError("INVALID_TIMELINE_WINDOW", f"{name} 必须是有限数字。") from exc
+    else:
+        raise ContractError("INVALID_TIMELINE_WINDOW", f"{name} 必须是有限数字。")
+    if not math.isfinite(number):
+        raise ContractError("INVALID_TIMELINE_WINDOW", f"{name} 不能是 NaN 或无穷大。")
+    return number
+
+
+def _json_timeline_number(number: float) -> int | float:
+    rounded = round(number)
+    if abs(number - rounded) <= 1e-9:
+        return int(rounded)
+    return number
+
+
+def _parse_horizon_list(raw: object) -> list[float]:
+    if isinstance(raw, str):
+        items: list[object] = [part.strip() for part in raw.split(",") if part.strip()]
+    elif isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        items = [raw]
+    elif isinstance(raw, (list, tuple)):
+        items = list(raw)
+    else:
+        raise ContractError("INVALID_TIMELINE_WINDOW", "horizon 必须是大于 0 的有限天数。")
+    parsed: list[float] = []
+    for item in items:
+        number = _finite_timeline_number(item, "horizon")
+        if number <= 0:
+            raise ContractError("INVALID_TIMELINE_WINDOW", "horizon 必须大于 0。")
+        parsed.append(number)
+    if not parsed:
+        raise ContractError("INVALID_TIMELINE_WINDOW", "horizon 必须大于 0。")
+    return sorted(set(parsed))
+
+
+def apply_timeline_window(*sources: dict) -> tuple[int, list[int | float] | None]:
+    """Validate landmark_time and horizons. Later sources override earlier ones.
+
+    Writes ``landmark_day`` / ``landmark_time`` and, when horizons were supplied,
+    ``horizon_days`` onto the first mapping or sim-config dict. ``landmark_time >= min(horizons)``,
+    negative landmark, non-positive horizon, and non-finite values raise ``INVALID_TIMELINE_WINDOW``.
+    """
+    landmark_value = 0.0
+    horizons: list[float] | None = None
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        for key in ("landmark_day", "landmark_days", "landmark_time"):
+            if key in src and src[key] not in (None, ""):
+                landmark_value = _finite_timeline_number(src[key], "landmark_time")
+        for key in ("horizon", "horizons", "horizon_days"):
+            if key in src and src[key] not in (None, ""):
+                horizons = _parse_horizon_list(src[key])
+    if landmark_value < 0:
+        raise ContractError("INVALID_TIMELINE_WINDOW", "landmark_time 必须大于等于 0。")
+    if abs(landmark_value - round(landmark_value)) > 1e-6:
+        raise ContractError("INVALID_TIMELINE_WINDOW", "landmark_time 必须是整数天。")
+    landmark_day = int(round(landmark_value))
+    if horizons is not None and landmark_day >= min(horizons):
+        raise ContractError(
+            "INVALID_TIMELINE_WINDOW",
+            "landmark_time 必须小于最短 horizon，不能在图上静默夹紧。",
+        )
+    stored_horizons = [_json_timeline_number(item) for item in horizons] if horizons is not None else None
+    primary = next((src for src in sources if isinstance(src, dict)), None)
+    if primary is not None:
+        primary["landmark_day"] = landmark_day
+        primary["landmark_time"] = landmark_day
+        if stored_horizons is not None:
+            primary["horizon_days"] = stored_horizons
+            primary["horizons"] = stored_horizons
+    return landmark_day, stored_horizons
+
+
 TIME_UNIT_FACTORS = {
     "days": 1.0,
     "months": 30.4375,
@@ -825,14 +911,16 @@ def ingest_user_cohort(
     raw_days = pd.to_numeric(work_df[time_col], errors="raise").to_numpy(dtype=np.float64) * factor
     raw_events = _map_event_series(work_df[out_col]).to_numpy(dtype=np.int64)
 
-    raw_horizons = mapping.get("horizon_days") or [90.0, 180.0, 365.0]
-    horizons = sorted({float(h) for h in raw_horizons if float(h) > 0.0})
+    landmark_day, parsed_horizons = apply_timeline_window(mapping)
+    horizons = list(parsed_horizons or [90.0, 180.0, 365.0])
     if not horizons:
         raise ContractError("MISSING_HORIZON", "请至少指定 1 个正数评估时点（天）。")
+    if landmark_day >= min(float(h) for h in horizons):
+        raise ContractError("INVALID_TIMELINE_WINDOW", "landmark_time 必须小于最短 horizon。")
 
-    admin_end_day = float(mapping.get("administrative_end_day") or max(float(np.max(raw_days)) + 1.0, horizons[-1] + 30.0))
-    if admin_end_day <= horizons[-1]:
-        admin_end_day = round(horizons[-1] + 30.0, 2)
+    admin_end_day = float(mapping.get("administrative_end_day") or max(float(np.max(raw_days)) + 1.0, float(horizons[-1]) + 30.0))
+    if admin_end_day <= max(float(horizons[-1]), float(landmark_day)):
+        admin_end_day = round(max(float(horizons[-1]), float(landmark_day)) + 30.0, 2)
 
     beyond_admin = raw_days > admin_end_day
     duration_day = np.where(beyond_admin, admin_end_day, raw_days)
@@ -941,14 +1029,18 @@ def ingest_user_cohort(
         "time_zero": {
             "anchor_event": f"baseline_{_sanitize_identifier(trt_col, 'exposure')}_initiation",
             "day_offset": 0,
-            "landmark_day": 0,
-            "description": f"目标策略起始基线日（{trt_col}: {act_val} vs {comp_val}）",
+            "landmark_day": landmark_day,
+            "description": (
+                f"目标策略起始基线日（{trt_col}: {act_val} vs {comp_val}）"
+                if landmark_day <= 0
+                else f"地标风险集：排除事件或删失时间不超过 landmark_time={landmark_day} 天的受试者"
+            ),
         },
         "treatment_strategies": [
             {"id": comp_arm_id, "label": comp_val, "role": "control", "description": f"{trt_col} == '{comp_val}'"},
             {"id": act_arm_id, "label": act_val, "role": "active", "description": f"{trt_col} == '{act_val}'"},
         ],
-        "assignment_mode": "observational_baseline",
+        "assignment_mode": "observational_landmark" if landmark_day > 0 else "observational_baseline",
         "followup": {
             "horizon_days": horizons,
             "administrative_end_day": admin_end_day,

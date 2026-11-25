@@ -31,7 +31,7 @@ from ._common import (
     sha256_file,
     utc_now_iso,
 )
-from .cohort_ingest import ingest_user_cohort
+from .cohort_ingest import apply_timeline_window, ingest_user_cohort
 from .competing_risks import (
     ALLOWED_CENSORING_IPCW,
     estimate_competing_risks,
@@ -333,11 +333,19 @@ def build_simulated_protocol_and_dgp(
         or (f"模拟预演（对标 {nct_id}）：{act_label} vs {comp_label}" if nct_id else f"无数据目标试验模拟预演：{act_label} vs {comp_label}")
     ).strip()[:200]
 
-    horizons_raw = cfg.get("horizon_days") or trct.get("parsed_horizon_days") or [90.0, 180.0, 365.0]
-    horizons = sorted({float(h) for h in horizons_raw if float(h) > 0.0})
-    admin_end = float(cfg.get("administrative_end_day") or trct.get("parsed_admin_end_day") or max(540.0, horizons[-1] + 90.0))
-    if admin_end <= horizons[-1]:
-        admin_end = horizons[-1] + 90.0
+    landmark_day, parsed_horizons = apply_timeline_window(cfg)
+    if parsed_horizons is None:
+        horizons_raw = trct.get("parsed_horizon_days") or [90.0, 180.0, 365.0]
+        horizons = sorted({float(h) for h in horizons_raw if float(h) > 0.0})
+    else:
+        horizons = [float(h) for h in parsed_horizons]
+    if not horizons or any(h <= 0 for h in horizons):
+        raise ContractError("INVALID_TIMELINE_WINDOW", "horizon 必须大于 0。")
+    if landmark_day >= min(horizons):
+        raise ContractError("INVALID_TIMELINE_WINDOW", "landmark_time 必须小于最短 horizon。")
+    admin_end = float(cfg.get("administrative_end_day") or trct.get("parsed_admin_end_day") or max(540.0, horizons[-1] + 90.0, float(landmark_day) + 90.0))
+    if admin_end <= max(horizons[-1], float(landmark_day)):
+        admin_end = max(horizons[-1], float(landmark_day)) + 90.0
 
     weight_method = str(cfg.get("weight_method", "overlap"))
     protocol_obj: dict = {
@@ -361,14 +369,18 @@ def build_simulated_protocol_and_dgp(
         "time_zero": {
             "anchor_event": "simulated_strategy_initiation",
             "day_offset": 0,
-            "landmark_day": 0,
-            "description": "虚拟队列目标治疗策略起始日（第 0 天）",
+            "landmark_day": landmark_day,
+            "description": (
+                "虚拟队列目标治疗策略起始日（第 0 天）"
+                if landmark_day <= 0
+                else f"地标风险集：排除事件或删失时间不超过 landmark_time={landmark_day} 天的受试者"
+            ),
         },
         "treatment_strategies": [
             {"id": "arm_comparator", "label": comp_label, "role": "control"},
             {"id": "arm_active", "label": act_label, "role": "active"},
         ],
-        "assignment_mode": "observational_baseline",
+        "assignment_mode": "observational_landmark" if landmark_day > 0 else "observational_baseline",
         "followup": {
             "horizon_days": horizons,
             "administrative_end_day": admin_end,

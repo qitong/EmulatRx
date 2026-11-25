@@ -19,6 +19,7 @@ import threading
 import time
 import uuid
 
+from emulatrx_tte.cohort_ingest import apply_timeline_window
 from emulatrx_tte import (
     build_simulated_protocol_and_dgp,
     diagnose_cohort,
@@ -53,6 +54,13 @@ SESSION_ID = re.compile(r"[0-9a-f]{32}\Z")
 SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 MAX_PROTOCOL_BYTES = 16 * 1024
 MAX_CASES = 5000
+
+
+def _timeline_overlay(payload: dict | None) -> dict:
+    if not isinstance(payload, dict):
+        return {}
+    keys = ("landmark_time", "landmark_days", "landmark_day", "horizons", "horizon_days", "horizon")
+    return {key: payload[key] for key in keys if key in payload}
 
 
 def _optional_float(value: object) -> float | None:
@@ -971,6 +979,7 @@ class TTERunner:
         confirm_protocol_mismatch: bool = False,
     ) -> dict:
         cfg = dict(sim_config or {})
+        apply_timeline_window(cfg)
         if str(intervention or "").strip():
             cfg.setdefault("intervention", str(intervention).strip())
         if str(comparator or "").strip():
@@ -1085,6 +1094,8 @@ class TTERunner:
                 target_followup_days=target_followup_days_override,
             )
         sess = self.get_session(session_id)
+        mapping = dict(mapping)
+        apply_timeline_window(mapping)
         cohort_path = sess["cohort_path"]
         if not cohort_path.is_file():
             raise ContractError("SESSION_COHORT_MISSING", "会话中的队列数据文件已不存在，请重新上传。")
@@ -1600,6 +1611,8 @@ class TTERunner:
         if not isinstance(payload, dict):
             raise ContractError("INVALID_TYPE", "preflight payload must be an object")
         mode = str(payload.get("project_mode") or "")
+        applied_landmark = 0
+        applied_horizons: list = []
         target_rct = payload.get("target_rct") if isinstance(payload.get("target_rct"), dict) else None
         confirm_arm = bool(payload.get("confirm_arm_mismatch") is True)
         confirm_proto = bool(payload.get("confirm_protocol_mismatch") is True)
@@ -1620,6 +1633,8 @@ class TTERunner:
                     mapping = recommend_column_mapping(sess["profile"], target_rct=target_rct)
                 if not isinstance(mapping, dict):
                     raise ContractError("INVALID_MAPPING", "mapping must be an object")
+                mapping = dict(mapping)
+                apply_timeline_window(mapping, _timeline_overlay(payload))
                 if target_rct:
                     pctx = self.resolve_user_cohort_pico_context(
                         sess,
@@ -1649,6 +1664,7 @@ class TTERunner:
                 pico = payload.get("pico") if isinstance(payload.get("pico"), dict) else None
                 proto_in = payload.get("protocol") if isinstance(payload.get("protocol"), dict) else None
                 cfg = dict(payload.get("sim_config")) if isinstance(payload.get("sim_config"), dict) else {}
+                apply_timeline_window(cfg, _timeline_overlay(payload))
                 if intr_ovr:
                     cfg.setdefault("intervention", intr_ovr)
                 if comp_ovr:
@@ -1743,6 +1759,9 @@ class TTERunner:
                                 "excluded_n": int(float(row["excluded_n"])) if row.get("excluded_n") else 0,
                             }
                         )
+            applied_proto = json.loads(protocol_path.read_text(encoding="utf-8"))
+            applied_landmark = int(applied_proto["time_zero"]["landmark_day"])
+            applied_horizons = list(applied_proto["followup"]["horizon_days"])
         loaded_n = int(summary.get("initial_n") or 0)
         eligible_n = int(summary.get("retained_n") or 0)
         ess_n, ess_ratio = _ess_funnel(summary.get("ess_diagnostics") or {}, eligible_n)
@@ -1768,4 +1787,7 @@ class TTERunner:
             "ess_ratio": ess_ratio,
             "waterfall": waterfall,
             "weight_method": summary.get("weight_method"),
+            "landmark_time": applied_landmark,
+            "horizon_days": applied_horizons,
+            "landmark_excluded_n": int(summary.get("landmark_excluded_n") or 0),
         }

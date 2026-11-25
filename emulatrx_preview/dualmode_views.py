@@ -82,20 +82,33 @@ def _step_cif_svg(curve_paths: list[Path], column: str, title: str, arm_labels: 
     )
 
 
+def _finite_smd(val: object) -> float | None:
+    if isinstance(val, bool) or val is None:
+        return None
+    if isinstance(val, str):
+        text = val.strip().lower()
+        if text in {"", "inf", "-inf", "+inf", "nan"}:
+            return None
+    try:
+        number = float(val)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
 def _love_plot_svg(balance_rows: list[dict], cov_labels: dict[str, str], max_gate_smd: float) -> str:
     if not balance_rows:
         return ""
     h = max(180, 56 + 28 * len(balance_rows))
-    max_smd = max(
-        max_gate_smd * 2.0,
-        *(
-            float(r[k])
-            for r in balance_rows
-            for k in ("abs_smd_unweighted", "abs_smd_weighted")
-            if r.get(k) not in (None, "", "inf")
-        ),
-        0.25,
-    )
+    finite_smds = [
+        value
+        for row in balance_rows
+        for key in ("abs_smd_unweighted", "abs_smd_weighted")
+        if (value := _finite_smd(row.get(key))) is not None
+    ]
+    max_smd = max(max_gate_smd * 2.0, 0.25, *finite_smds)
     x0, xw = 220.0, 420.0
     gate_x = x0 + xw * min(max_gate_smd / max_smd, 1.0)
     elems = [
@@ -106,15 +119,22 @@ def _love_plot_svg(balance_rows: list[dict], cov_labels: dict[str, str], max_gat
     for idx, r in enumerate(balance_rows):
         cy = 48 + idx * 26
         lbl = cov_labels.get(r["covariate"], r["covariate"])[:26]
-        su = float(r["abs_smd_unweighted"]) if r.get("abs_smd_unweighted") not in (None, "", "inf") else 0.0
-        sw = float(r["abs_smd_weighted"]) if r.get("abs_smd_weighted") not in (None, "", "inf") else 0.0
-        xu = x0 + xw * min(su / max_smd, 1.0)
-        x_wt = x0 + xw * min(sw / max_smd, 1.0)
+        su = _finite_smd(r.get("abs_smd_unweighted"))
+        sw = _finite_smd(r.get("abs_smd_weighted"))
+        if su is None or sw is None:
+            lbl = f"{lbl} N/A"
         elems.append(f"<line x1='{x0}' y1='{cy}' x2='{x0 + xw}' y2='{cy}' stroke='#f1f5f9'/>")
         elems.append(f"<text x='{x0 - 8}' y='{cy + 4}' text-anchor='end' font-size='11.5' fill='#1e293b'>{esc(lbl)}</text>")
-        elems.append(f"<line x1='{xu:.1f}' y1='{cy}' x2='{x_wt:.1f}' y2='{cy}' stroke='#94a3b8' stroke-width='1.4'/>")
-        elems.append(f"<circle cx='{xu:.1f}' cy='{cy}' r='4.5' fill='#f59e0b'/>")
-        elems.append(f"<circle cx='{x_wt:.1f}' cy='{cy}' r='4.5' fill='#0f766e'/>")
+        if su is not None and sw is not None:
+            xu = x0 + xw * min(su / max_smd, 1.0)
+            x_wt = x0 + xw * min(sw / max_smd, 1.0)
+            elems.append(f"<line x1='{xu:.1f}' y1='{cy}' x2='{x_wt:.1f}' y2='{cy}' stroke='#94a3b8' stroke-width='1.4'/>")
+        if su is not None:
+            xu = x0 + xw * min(su / max_smd, 1.0)
+            elems.append(f"<circle cx='{xu:.1f}' cy='{cy}' r='4.5' fill='#f59e0b'/>")
+        if sw is not None:
+            x_wt = x0 + xw * min(sw / max_smd, 1.0)
+            elems.append(f"<circle cx='{x_wt:.1f}' cy='{cy}' r='4.5' fill='#0f766e'/>")
     return (
         "<figure class='chart-card'><figcaption>协变量均衡 Love Plot（加权前 vs 加权后 |SMD|）</figcaption>"
         f"<svg viewBox='0 0 675 {h}' role='img' aria-label='Love Plot'>"
@@ -526,7 +546,7 @@ def workbench_home_view() -> str:
   <button type="button" class="step-tab" id="tab-step-2" data-wizard-step="2" onclick="goStep(2)">② 锁定对标 RCT<small>五维 PICO-T 信号</small></button>
   <button type="button" class="step-tab" id="tab-step-3" data-wizard-step="3" onclick="goStep(3)">③ 时间轴与角色映射<small>t₀ · 地标 · 随访</small></button>
   <button type="button" class="step-tab" id="tab-step-4" data-wizard-step="4" onclick="goStep(4)">④ 秒级均衡预检<small>漏斗与 |SMD|</small></button>
-  <button type="button" class="step-tab" id="tab-step-5" data-wizard-step="5" onclick="goStep(5)">⑤ 三阶去偏结果看板<small>粗分析 → PSM → TTE</small></button>
+  <button type="button" class="step-tab" id="tab-step-5" data-wizard-step="5" onclick="goStep(5)" disabled aria-disabled="true">⑤ 三阶去偏结果看板<small>粗分析 → PSM → TTE</small></button>
 </div>
 <div id="wizard-summary-chips" class="chip-strip" data-summary-chips="1"></div>
 
@@ -651,9 +671,10 @@ def workbench_home_view() -> str:
     </div>
     <svg id="study-timeline-svg" viewBox="0 0 760 92" role="img" aria-label="研究时间轴"></svg>
     <div class="field-grid">
-      <label class="control"><span>地标 / 宽限期 landmark_time（天）</span><input type="number" id="timeline-landmark" min="0" max="3650" value="0" oninput="renderStudyTimeline()"></label>
-      <label class="control"><span>随访窗 horizon_time（天）</span><input type="number" id="timeline-horizon" min="1" max="7300" value="365" oninput="renderStudyTimeline()"></label>
+      <label class="control"><span>地标 / 宽限期 landmark_time（天）</span><input type="number" id="timeline-landmark" min="0" max="3650" value="0"></label>
+      <label class="control"><span>随访窗 horizon_time（天）</span><input type="number" id="timeline-horizon" min="1" max="7300" value="365"></label>
     </div>
+    <p id="timeline-window-error" class="error hidden" role="alert"></p>
   </div>
   <input type="hidden" id="step3-cond-hidden" name="condition" value="">
   <input type="hidden" id="step3-intr-hidden" name="intervention" value="">
@@ -782,7 +803,7 @@ def workbench_home_view() -> str:
   <div id="preflight-loveplot" data-loveplot="smd" data-smd-preview="1"></div>
   <div id="preflight-gate"></div>
   <div class="actions">
-    <button type="button" id="btn-open-tier-dashboard" onclick="launchFromPreflight()">生成临床三阶去偏对比报告 →</button>
+    <button type="button" id="btn-open-tier-dashboard" onclick="launchFromPreflight()" disabled>生成临床三阶去偏对比报告 →</button>
     <button type="button" class="secondary" onclick="goStep(3)">← 返回调整协变量或地标窗</button>
   </div>
 </section>
@@ -818,6 +839,8 @@ const STATE = {{
   confirmArmMismatch: false,
   outcomeCategoryCache: {{}},
   currentRunId: null,
+  preflight: null,
+  lastRun: null,
 }};
 
 function showError(msg) {{
@@ -828,7 +851,25 @@ function showError(msg) {{
   window.scrollTo({{ top: 0, behavior: 'smooth' }});
 }}
 
+function preflightFreshPassed() {{
+  return Boolean(STATE.preflight && STATE.preflight.gate_passed === true && STATE.preflight.gate_status === 'passed');
+}}
+
+function setStep5Enabled(enabled) {{
+  const tab5 = document.getElementById('tab-step-5');
+  const launch = document.getElementById('btn-open-tier-dashboard');
+  if (tab5) {{
+    tab5.disabled = !enabled;
+    tab5.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+  }}
+  if (launch) launch.disabled = !enabled;
+}}
+
 function goStep(n) {{
+  if (n === 5 && !preflightFreshPassed()) {{
+    showError('请先完成并通过当前配置的秒级均衡预检，再打开第 5 步。');
+    return;
+  }}
   showError('');
   for (let i = 1; i <= 5; i++) {{
     const panel = document.getElementById('panel-step-' + i);
@@ -843,19 +884,30 @@ function goStep(n) {{
   if (n === 3) renderStudyTimeline();
 }}
 
-function invalidateDownstream() {{
+function invalidateDownstream(fromStep) {{
   STATE.preflight = null;
+  STATE.lastRun = null;
   STATE.currentRunId = null;
+  const status = document.getElementById('preflight-status');
   const funnel = document.getElementById('preflight-funnel');
   const love = document.getElementById('preflight-loveplot');
   const gate = document.getElementById('preflight-gate');
   const ladder = document.getElementById('clinical-ladder');
   const box = document.getElementById('step5-result-container');
+  if (status) {{
+    status.classList.remove('hidden');
+    status.textContent = '配置已变更，请重新运行秒级均衡预检';
+  }}
   if (funnel) funnel.innerHTML = '';
   if (love) love.innerHTML = '';
   if (gate) gate.innerHTML = '';
   if (ladder) ladder.innerHTML = '';
-  if (box) box.innerHTML = '<p>请先通过第 4 步均衡预检，再生成三阶对比。</p>';
+  if (box) box.innerHTML = '';
+  setStep5Enabled(false);
+  if (fromStep && Number(fromStep) < 5) {{
+    const panel5 = document.getElementById('panel-step-5');
+    if (panel5 && panel5.classList.contains('is-active')) goStep(Math.min(4, Number(fromStep) + 1));
+  }}
 }}
 
 function renderSummaryChips() {{
@@ -872,18 +924,97 @@ function renderSummaryChips() {{
     chips.push({{ step: 2, text: `✓ 对标：${{STATE.selectedRct.nct_id}} · ${{aligned}}` }});
   }}
   if (STATE.selectedRct) {{
-    const horizon = document.getElementById('timeline-horizon');
-    const landmark = document.getElementById('timeline-landmark');
-    chips.push({{ step: 3, text: `✓ 时间轴：t₀=0d → 随访 ${{horizon ? horizon.value : '—'}}d` + (landmark && Number(landmark.value) > 0 ? ` · 地标 ${{landmark.value}}d` : '') }});
+    const tl = currentTimeline();
+    const err = timelineWindowError(tl);
+    chips.push({{ step: 3, text: err ? '时间轴配置无效，请修正地标与随访窗' : (`✓ 时间轴：t₀=0d → 随访 ${{tl.horizon}}d` + (tl.landmark > 0 ? ` · 地标 ${{tl.landmark}}d` : '')) }});
   }}
   host.innerHTML = chips.map(chip => `<button type="button" class="summary-chip" onclick="goStep(${{chip.step}})">${{escHtml(chip.text)}} <span style="font-weight:600">[修改]</span></button>`).join('');
+}}
+
+function horizonsListId() {{
+  return STATE.mode === 'simulated_cohort' ? 'sim-horizons' : 'map-horizons';
+}}
+
+function parseHorizonList(text) {{
+  return String(text || '').split(',').map(part => Number(String(part).trim())).filter(n => Number.isFinite(n));
+}}
+
+function currentTimeline() {{
+  const landmark = Number(document.getElementById('timeline-landmark') && document.getElementById('timeline-landmark').value);
+  const horizon = Number(document.getElementById('timeline-horizon') && document.getElementById('timeline-horizon').value);
+  const listEl = document.getElementById(horizonsListId());
+  const listed = parseHorizonList(listEl && listEl.value).filter(n => n > 0);
+  const horizons = listed.length ? listed : (Number.isFinite(horizon) ? [horizon] : []);
+  return {{ landmark, horizon, horizons }};
+}}
+
+function timelineWindowError(tl) {{
+  const landmark = tl ? tl.landmark : NaN;
+  const horizons = (tl && tl.horizons) || [];
+  if (!Number.isFinite(landmark) || landmark < 0) return '地标时间必须是大于等于 0 的有限天数。';
+  if (!horizons.length || horizons.some(h => !Number.isFinite(h) || h <= 0)) return '随访 horizon 必须是大于 0 的有限天数。';
+  if (landmark >= Math.min(...horizons)) return '地标时间必须小于最短评估时点（landmark < horizon）。';
+  return '';
+}}
+
+let timelineSyncing = false;
+function syncTimelineHorizonIntoList() {{
+  if (timelineSyncing) return;
+  const horizon = Number(document.getElementById('timeline-horizon').value);
+  const el = document.getElementById(horizonsListId());
+  if (!el || !Number.isFinite(horizon)) return;
+  timelineSyncing = true;
+  try {{
+    const nums = parseHorizonList(el.value).filter(n => n > 0);
+    if (!nums.length) {{
+      el.value = String(horizon);
+      return;
+    }}
+    const max = Math.max(...nums);
+    el.value = nums.map(n => (n === max ? horizon : n)).join(', ');
+  }} finally {{
+    timelineSyncing = false;
+  }}
+}}
+
+function syncListIntoTimelineHorizon() {{
+  if (timelineSyncing) return;
+  const el = document.getElementById(horizonsListId());
+  const box = document.getElementById('timeline-horizon');
+  if (!el || !box) return;
+  const nums = parseHorizonList(el.value).filter(n => n > 0);
+  if (!nums.length) return;
+  timelineSyncing = true;
+  try {{
+    box.value = String(Math.max(...nums));
+  }} finally {{
+    timelineSyncing = false;
+  }}
+}}
+
+function onStep3ConfigChanged(event) {{
+  const id = event && event.target ? event.target.id : '';
+  if (id === 'timeline-horizon') syncTimelineHorizonIntoList();
+  if (id === 'map-horizons' || id === 'sim-horizons') syncListIntoTimelineHorizon();
+  renderStudyTimeline();
 }}
 
 function renderStudyTimeline() {{
   const svg = document.getElementById('study-timeline-svg');
   if (!svg) return;
-  const landmark = Math.max(0, Number(document.getElementById('timeline-landmark').value) || 0);
-  const horizon = Math.max(landmark + 1, Number(document.getElementById('timeline-horizon').value) || 365);
+  const tl = currentTimeline();
+  const err = timelineWindowError(tl);
+  const errBox = document.getElementById('timeline-window-error');
+  if (errBox) {{
+    errBox.textContent = err || '';
+    errBox.classList.toggle('hidden', !err);
+  }}
+  if (err || !Number.isFinite(tl.horizon) || tl.horizon <= 0) {{
+    svg.innerHTML = `<text x="36" y="48" font-size="13" fill="#991b1b">${{escHtml(err || '时间轴无效')}}</text>`;
+    return;
+  }}
+  const landmark = tl.landmark;
+  const horizon = tl.horizon;
   const covariateW = 90;
   const total = covariateW + horizon;
   const x = (day) => 36 + 680 * (day / total);
@@ -927,7 +1058,7 @@ function renderPicoPreview(text) {{
 }}
 
 function selectMode(mode) {{
-  invalidateDownstream();
+  invalidateDownstream(4);
   STATE.mode = mode;
   document.getElementById('card-mode-user').className = 'entry-card' + (mode === 'user_cohort' ? ' selected-user' : '');
   document.getElementById('card-mode-sim').className = 'entry-card' + (mode === 'simulated_cohort' ? ' selected-sim' : '');
@@ -980,6 +1111,11 @@ function initBootCards() {{
     ideaBox.addEventListener('input', () => renderPicoPreview(ideaBox.value));
     renderPicoPreview(ideaBox.value);
   }}
+  const step3Panel = document.getElementById('panel-step-3');
+  if (step3Panel) {{
+    step3Panel.addEventListener('change', (event) => {{ onStep3ConfigChanged(event); invalidateDownstream(4); }});
+    step3Panel.addEventListener('input', (event) => {{ onStep3ConfigChanged(event); invalidateDownstream(4); }});
+  }}
   renderStudyTimeline();
 }}
 
@@ -1000,6 +1136,7 @@ function updateSessionBar() {{
 }}
 
 async function wipeCurrentSession() {{
+  invalidateDownstream(4);
   if (!STATE.sessionId) return;
   const resp = await fetch('/api/sessions/' + STATE.sessionId, {{ method: 'DELETE' }});
   const data = await resp.json();
@@ -1037,7 +1174,7 @@ async function uploadCohortFile(file) {{
 }}
 
 function onCohortProfileLoaded(data) {{
-  invalidateDownstream();
+  invalidateDownstream(4);
   STATE.sessionId = data.session_id;
   STATE.profile = data.profile;
   STATE.interpretation = data.interpretation;
@@ -1081,7 +1218,7 @@ function onCohortProfileLoaded(data) {{
         <span class="metric-pill">字段数 ${{p.column_count}}</span>
         <span class="metric-pill">编码 UTF-8 / GB18030</span>
       </div>
-      ${{(data.missing_clinical_semantics || []).length ? `<div class="notice"><strong>临床语义待确认</strong>${{(data.missing_clinical_semantics || []).map(item => `<label class="cov-item"><input type="checkbox" style="width:auto"> ${{escHtml(item.question_zh || item.field || item.column || '字段')}}</label>`).join('')}}</div>` : ''}}
+      ${{(data.missing_clinical_semantics || []).length ? `<div class="notice"><strong>临床语义待确认</strong>${{(data.missing_clinical_semantics || []).map(item => `<label class="cov-item"><input type="checkbox" style="width:auto" onchange="invalidateDownstream(4)"> ${{escHtml(item.question_zh || item.field || item.column || '字段')}}</label>`).join('')}}</div>` : ''}}
       <p><strong>临床领域与干预线索识别：</strong>${{escHtml(data.interpretation.domain_summary_zh)}}（推荐检索词：<code>${{escHtml(data.interpretation.search_query_en)}}</code>）</p>
       <div class="field-grid" style="margin:12px 0">
         <div class="sample-card"><strong>候选暴露/治疗分组列</strong>${{trtHtml}}</div>
@@ -1123,6 +1260,7 @@ async function searchRCTsFromProfile() {{
 
 async function parseIdeaAndSearchRCTs() {{
   showError('');
+  invalidateDownstream(4);
   const ideaText = document.getElementById('idea-input-box').value;
   const resp = await fetch('/api/idea/parse', {{
     method: 'POST',
@@ -1167,6 +1305,7 @@ function needsRctConfirmation(cand) {{
 }}
 
 function onSelectRCTRadio(idx) {{
+  invalidateDownstream(4);
   STATE.selectedRctIdx = idx;
   STATE.confirmArmMismatch = false;
   const cb = document.getElementById('confirm-arm-mismatch-checkbox');
@@ -1191,6 +1330,7 @@ function onSelectRCTRadio(idx) {{
 
 function onToggleMismatchConfirm(checked) {{
   STATE.confirmArmMismatch = Boolean(checked);
+  invalidateDownstream(4);
 }}
 
 async function executeRCTSearch(cond='', intr='', comp='', out='') {{
@@ -1329,7 +1469,7 @@ async function confirmSelectedTargetRCT() {{
 async function chooseTargetRCT(idx) {{
   const rct = STATE.rctCandidates[idx];
   if (!rct) return;
-  invalidateDownstream();
+  invalidateDownstream(4);
   if (STATE.selectedRctIdx !== idx) {{
     onSelectRCTRadio(idx);
   }}
@@ -1387,8 +1527,8 @@ async function chooseTargetRCT(idx) {{
     document.getElementById('step3-sim-config').classList.remove('hidden');
     populateSimConfigForm(data.protocol, rct);
   }}
-  const horizons = rct.parsed_horizon_days || [];
-  if (horizons.length) document.getElementById('timeline-horizon').value = String(Math.max(...horizons.map(Number)));
+  syncListIntoTimelineHorizon();
+  renderStudyTimeline();
   goStep(3);
 }}
 
@@ -1546,14 +1686,28 @@ function renderPreflight(data) {{
   const rows = data.smd || [];
   const width = 420;
   const height = Math.max(120, 36 + rows.length * 22);
-  const maxS = Math.max(0.2, ...rows.map(r => Math.max(Number(r.abs_smd_before) || 0, Number(r.abs_smd_after) || 0)));
+  const finiteSmds = [];
+  rows.forEach(r => {{
+    [r.abs_smd_before, r.abs_smd_after, r.abs_smd_unweighted, r.abs_smd_weighted].forEach(v => {{
+      const n = Number(v);
+      if (Number.isFinite(n)) finiteSmds.push(n);
+    }});
+  }});
+  const maxS = Math.max(0.2, ...(finiteSmds.length ? finiteSmds : [0.2]));
   const gx = 160 + width * Math.min(0.1 / maxS, 1);
   const marks = rows.map((r, i) => {{
     const y = 28 + i * 22;
-    const xb = 160 + width * Math.min((Number(r.abs_smd_before) || 0) / maxS, 1);
-    const xa = 160 + width * Math.min((Number(r.abs_smd_after) || 0) / maxS, 1);
-    const afterColor = (Number(r.abs_smd_after) || 0) > 0.1 ? '#dc2626' : '#0f766e';
-    return `<text x="152" y="${{y + 4}}" text-anchor="end" font-size="11">${{escHtml(r.covariate)}}</text><circle cx="${{xb}}" cy="${{y}}" r="4" fill="none" stroke="#94a3b8"/><circle cx="${{xa}}" cy="${{y}}" r="4" fill="${{afterColor}}"/>`;
+    const before = Number(r.abs_smd_before != null ? r.abs_smd_before : r.abs_smd_unweighted);
+    const after = Number(r.abs_smd_after != null ? r.abs_smd_after : r.abs_smd_weighted);
+    const beforeOk = Number.isFinite(before);
+    const afterOk = Number.isFinite(after);
+    const label = escHtml(r.covariate) + (beforeOk && afterOk ? '' : ' N/A');
+    const xb = beforeOk ? 160 + width * Math.min(before / maxS, 1) : null;
+    const xa = afterOk ? 160 + width * Math.min(after / maxS, 1) : null;
+    const afterColor = afterOk && after > 0.1 ? '#dc2626' : '#0f766e';
+    const beforeDot = beforeOk ? `<circle cx="${{xb}}" cy="${{y}}" r="4" fill="none" stroke="#94a3b8"/>` : '';
+    const afterDot = afterOk ? `<circle cx="${{xa}}" cy="${{y}}" r="4" fill="${{afterColor}}"/>` : '';
+    return `<text x="152" y="${{y + 4}}" text-anchor="end" font-size="11">${{label}}</text>${{beforeDot}}${{afterDot}}`;
   }}).join('');
   document.getElementById('preflight-loveplot').innerHTML = `<figure class="chart-card"><figcaption>协变量 |SMD| 加权前（空心）vs 加权后（实心），虚线 = 0.10</figcaption><svg viewBox="0 0 640 ${{height}}" role="img" aria-label="Love plot"><line x1="160" y1="16" x2="160" y2="${{height - 16}}" stroke="#64748b"/><line x1="${{gx}}" y1="16" x2="${{gx}}" y2="${{height - 16}}" stroke="#64748b" stroke-dasharray="4 3"/>${{marks}}</svg></figure>`;
   const gate = document.getElementById('preflight-gate');
@@ -1564,6 +1718,18 @@ function renderPreflight(data) {{
     gate.innerHTML = `<div class="gate-bad"><strong>预检未通过，不能进入未调整的最终估计。</strong><ul>${{fails}}</ul><button type="button" class="secondary" onclick="goStep(3)">← 返回调整协变量或地标窗</button></div>`;
   }}
   document.getElementById('preflight-status').classList.add('hidden');
+  setStep5Enabled(data.gate_passed === true && data.gate_status === 'passed');
+}}
+
+function timelinePayloadFields() {{
+  const tl = currentTimeline();
+  return {{
+    landmark_time: tl.landmark,
+    landmark_days: tl.landmark,
+    horizon: tl.horizon,
+    horizons: tl.horizons,
+    horizon_days: tl.horizons,
+  }};
 }}
 
 function preflightPayload(mapping, simConfig) {{
@@ -1574,6 +1740,7 @@ function preflightPayload(mapping, simConfig) {{
     pico: STATE.pico,
     sim_config: simConfig,
     target_rct: STATE.selectedRct,
+    ...timelinePayloadFields(),
     condition: document.getElementById('step3-cond-hidden').value.trim() || document.getElementById('rct-cond-input').value.trim(),
     intervention: document.getElementById('step3-intr-hidden').value.trim() || document.getElementById('rct-intr-input').value.trim(),
     comparator: document.getElementById('step3-comp-hidden').value.trim() || document.getElementById('rct-comp-input').value.trim(),
@@ -1621,6 +1788,8 @@ function readUserMapping() {{
     censor_values: censVals,
     covariate_columns: getSelectedCovariates(),
     eligibility_criteria: elig,
+    landmark_time: Number(document.getElementById('timeline-landmark').value),
+    landmark_day: Number(document.getElementById('timeline-landmark').value),
     horizon_days: horizons,
     administrative_end_day: parseFloat(document.getElementById('map-admin-end').value) || 540,
     weight_method: document.getElementById('map-weight-method').value,
@@ -1641,6 +1810,8 @@ function readSimConfig() {{
     confounding_strength: document.getElementById('sim-confounding').value,
     effect_direction: document.getElementById('sim-effect').value,
     competing_rate_level: document.getElementById('sim-competing-level').value,
+    landmark_time: Number(document.getElementById('timeline-landmark').value),
+    landmark_day: Number(document.getElementById('timeline-landmark').value),
     horizon_days: horizons,
     weight_method: document.getElementById('sim-weight-method').value,
     seed: parseInt(document.getElementById('sim-seed').value, 10) || 42,
@@ -1650,6 +1821,13 @@ function readSimConfig() {{
 
 async function runPreflight() {{
   showError('');
+  const tlErr = timelineWindowError(currentTimeline());
+  const errBox = document.getElementById('timeline-window-error');
+  if (tlErr) {{
+    if (errBox) {{ errBox.textContent = tlErr; errBox.classList.remove('hidden'); }}
+    showError(tlErr);
+    return;
+  }}
   const mapping = STATE.mode === 'user_cohort' ? readUserMapping() : null;
   const simConfig = STATE.mode === 'simulated_cohort' ? readSimConfig() : null;
   goStep(4);
@@ -1670,7 +1848,7 @@ function renderTierDashboard(payload) {{
   const note = payload && payload.estimates && payload.estimates.what_tte_controlled_beyond_psm;
   const host = document.getElementById('clinical-ladder');
   if (!host) return;
-  if (!ladder) {{
+  if (!payload || payload.gate_status !== 'passed' || !ladder) {{
     host.innerHTML = '<div class="notice">门禁未通过时不展示三阶点估计。</div>';
     return;
   }}
@@ -1693,8 +1871,13 @@ function renderTierDashboard(payload) {{
 }}
 
 async function launchFromPreflight() {{
-  if (!STATE.preflight || !STATE.preflight.gate_passed) {{
+  if (!preflightFreshPassed()) {{
     showError('均衡预检未通过，不能生成最终估计。');
+    return;
+  }}
+  const tlErr = timelineWindowError(currentTimeline());
+  if (tlErr) {{
+    showError(tlErr);
     return;
   }}
   if (STATE.mode === 'user_cohort') return launchUserCohortRun();
@@ -1705,13 +1888,14 @@ async function launchUserCohortRun() {{
   showError('');
   const mapping = readUserMapping();
 
-  const resp = await fetch('/api/dual-runs', {{
+  const resp = await fetch('/api/v1/tte/run', {{
     method: 'POST',
     headers: {{ 'Content-Type': 'application/json' }},
     body: JSON.stringify({{
       project_mode: 'user_cohort',
       session_id: STATE.sessionId,
       mapping: mapping,
+      ...timelinePayloadFields(),
       target_rct: STATE.selectedRct,
       condition: document.getElementById('step3-cond-hidden').value.trim() || document.getElementById('rct-cond-input').value.trim(),
       intervention: document.getElementById('step3-intr-hidden').value.trim() || document.getElementById('rct-intr-input').value.trim(),
@@ -1731,10 +1915,11 @@ async function launchSimulatedRun() {{
   const simConfig = readSimConfig();
   simConfig.cases = parseInt(document.getElementById('sim-cases').value, 10) || 1500;
   simConfig.bootstrap_iterations = 80;
-  const resp = await fetch('/api/dual-runs', {{
+  const resp = await fetch('/api/v1/tte/run', {{
     method: 'POST',
     headers: {{ 'Content-Type': 'application/json' }},
     body: JSON.stringify({{
+      ...timelinePayloadFields(),
       project_mode: 'simulated_cohort',
       target_rct: STATE.selectedRct,
       pico: STATE.pico,
@@ -1761,6 +1946,7 @@ async function pollDualRun(runId) {{
     const r = await fetch(`/api/dual-runs/${{runId}}`);
     const d = await r.json();
     if (d.state !== 'queued' && d.state !== 'running') {{
+      STATE.lastRun = d;
       renderTierDashboard(d);
       const report = d.rendered_html || `<p>已完成：<a href="/runs/${{escHtml(runId)}}">打开完整结果页</a></p>`;
       box.innerHTML = `<div class="actions"><a class="primary-link" href="/runs/${{escHtml(runId)}}/report?download=1">导出独立离线 HTML 审计报告</a><a class="secondary-link" href="/runs/${{escHtml(runId)}}/artifacts/bundle/estimates.json">导出 JSON 结果单</a></div><details><summary>方案 JSON、CIF 曲线与方法学说明</summary>${{report}}</details>`;

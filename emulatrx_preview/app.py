@@ -33,6 +33,7 @@ from emulatrx_tte import (
     verify_and_enrich_target_rct,
 )
 from emulatrx_tte._common import ContractError, MAX_USER_COHORT_BYTES
+from emulatrx_tte.cohort_ingest import apply_timeline_window
 from emulatrx_tte.llm_assist import extract_untrusted_Note_forbidden_tokens
 from .dualmode_views import render_dualmode_run_view, workbench_home_view
 from .mcp_tools import detect_missing_clinical_semantics_from_profile, register_tools
@@ -60,6 +61,8 @@ def _contract_error_json(exc: ContractError) -> JSONResponse:
         status_http = 413
     elif exc.code == "BUSY":
         status_http = 429
+    elif exc.code == "SESSION_NOT_FOUND":
+        status_http = 404
     else:
         status_http = 400
     return JSONResponse(
@@ -610,6 +613,8 @@ async def _launch_dual_run_payload(payload: dict, forced_mode: str | None = None
             mapping = recommend_column_mapping(sess["profile"], target_rct=target_rct)
         if not isinstance(mapping, dict):
             raise ContractError("INVALID_MAPPING", "mapping must be an object")
+        mapping = dict(mapping)
+        apply_timeline_window(mapping, {key: payload[key] for key in ("landmark_time", "landmark_days", "landmark_day", "horizons", "horizon_days", "horizon") if key in payload})
         status = runner.start_user_cohort(
             session_id,
             mapping,
@@ -631,6 +636,7 @@ async def _launch_dual_run_payload(payload: dict, forced_mode: str | None = None
             sim_config["intervention"] = intr_ovr
         if comp_ovr:
             sim_config["comparator"] = comp_ovr
+        apply_timeline_window(sim_config, {key: payload[key] for key in ("landmark_time", "landmark_days", "landmark_day", "horizons", "horizon_days", "horizon") if key in payload})
         status = runner.start_simulated_cohort(
             target_rct=target_rct,
             pico=pico,
@@ -840,6 +846,7 @@ inner = Starlette(
         Route("/api/rcts/search", api_search_rcts, methods=["POST"]),
         Route("/api/rcts/draft", api_draft_mapping_or_protocol, methods=["POST"]),
         Route("/api/v1/tte/diagnose-preflight", api_diagnose_preflight, methods=["POST"]),
+        Route("/api/v1/tte/run", api_start_dual_run, methods=["POST"]),
         Route("/api/dual-runs", api_start_dual_run, methods=["POST"]),
         Route("/api/dual-runs/{run_id}", api_get_dual_run),
         Route("/api/v1/projects/user-cohort/runs", api_start_v1_user_cohort_run, methods=["POST"]),
