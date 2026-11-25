@@ -299,8 +299,8 @@
         </tr>
         <tr>
           <td class="code-err">HTTP <code>400</code></td>
-          <td><code>PRIVACY_VIOLATION_BLOCKED</code> · <code>ORIGIN_MISMATCH</code> · <code>INVALID_MAPPING</code></td>
-          <td>外发 LLM 请求体隐私守卫检出潜在个体标识/非白名单单元格值、跨站 Origin 不符或映射/协议参数非法。</td>
+          <td><code>PRIVACY_VIOLATION_BLOCKED</code> · <code>ORIGIN_MISMATCH</code> · <code>INVALID_MAPPING</code> · <code>INVALID_USER_NAMESPACE</code></td>
+          <td>外发 LLM 请求体隐私守卫检出潜在个体标识/非白名单单元格值、跨站 Origin 不符或映射/协议参数非法。用户头 <code>X-EmulatRx-User</code>（缺省时 <code>X-WorkBuddy-User</code>）若含路径、空白或超过 63 字符，在进入路由前返回 <code>400</code>；省略或空字符串视为 <code>default</code>。</td>
         </tr>
         <tr>
           <td class="code-warn">HTTP <code>422</code></td>
@@ -354,6 +354,11 @@
   <div class="callout">
     <strong>CI 隔离与线上实机核验边界：</strong>GitHub Actions 全程使用确定性合成队列（<code>SYN-*</code> 与合成临床表头夹具）、公开注册试验 <code>NCT*</code> 静态 JSON 夹具及本地 <code>127.0.0.1</code> 回环模拟网关，零真实患者 IPD、零外网脆弱依赖、零外部 API 密钥；<code>ymadmin</code> 部署保留最小实机冒烟收据（精确 OCI 镜像 SHA、<code>127.0.0.1:18602/healthz</code> 探针、<code>/run/secrets/llm_api_key</code> <code>0400</code> 只读挂载检查与一键回滚命令）。遗留 <code>v1-codebase.ipynb</code> 与 <code>environment.yml</code> 保持冻结不动。
   </div>
+
+  <h2>6. WorkBuddy 多用户 MCP</h2>
+  <p>离线步骤说明见 <a href="WORKBUDDY_MCP_SETUP.html"><code>docs/WORKBUDDY_MCP_SETUP.html</code></a>。已认证的 <code>/mcp</code> 与 <code>/api/*</code> 用 <code>X-EmulatRx-User</code> 区分物理目录；该头不存在时才读 <code>X-WorkBuddy-User</code>。<code>default</code>（省略或空字符串）继续使用原来的 <code>sessions/</code> 与运行根目录，因此既有单用户调用不变。命名用户写入 <code>users/&lt;user_namespace&gt;/sessions</code> 与 <code>users/&lt;user_namespace&gt;/runs</code>，模式 <code>0700</code>。别人的 <code>session_id</code> / <code>run_id</code> 得到 <code>SESSION_NOT_FOUND</code> 或 <code>RUN_NOT_FOUND</code>。</p>
+  <p>并发池由 <code>EMULATRX_MAX_CONCURRENT_RUNS</code>（默认 <code>8</code>，夹在 1–32）和 <code>EMULATRX_SLOT_WAIT_SECONDS</code>（默认 <code>60</code>）控制。<code>run_static_or_landmark_tte</code> 与 <code>run_grace_period_ccw</code> 在槽位耗尽并超过等待时间后才返回 <code>429 BUSY</code>。每个命名空间单独保留最多 60 个会话和 100 次运行。</p>
+  <p>队列文件支持 UTF-8/GB18030 CSV、TSV 以及 <code>.xlsx</code>（<code>openpyxl==3.1.5</code>）。上传票据记录签发时的 <code>user_namespace</code>，<code>POST /api/sessions/upload-ticket/{ticket_id}</code> 本身不需要用户头。<code>stdio</code> 用 <code>python -m emulatrx_tte mcp-serve --user-namespace &lt;slug&gt;</code> 或 <code>EMULATRX_DEFAULT_USER_NAMESPACE</code>。通过门禁的运行会在运行目录写入 <code>dualmode_report.html</code>，<code>get_tte_result_summary</code> 仍返回三阶梯队与 <code>user_namespace</code>。</p>
 </main>
 </body>
 </html>

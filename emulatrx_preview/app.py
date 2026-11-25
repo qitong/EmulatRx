@@ -37,6 +37,7 @@ from emulatrx_tte.llm_assist import extract_untrusted_Note_forbidden_tokens
 from .dualmode_views import render_dualmode_run_view, workbench_home_view
 from .mcp_tools import register_tools
 from .tte_runner import TTERunner
+from .user_context import CURRENT_USER_NAMESPACE, InvalidUserNamespace, namespace_from_headers
 from .tte_views import cohort_view, form, report_view, result_view, review_view
 from .web_protocol import FIELD_NAMES, FormError, protocol_from_fields
 
@@ -244,14 +245,38 @@ async def api_upload_with_ticket(request):
     """Single-use ticket stream. Authentication is the unguessable ticket, not Web Basic."""
     try:
         content_length = request.headers.get("content-length")
-        if content_length is not None and int(content_length) > MAX_USER_COHORT_BYTES:
+        if content_length is not None and int(content_length) > MAX_USER_COHORT_BYTES + MAX_MULTIPART_OVERHEAD_BYTES:
             raise ContractError("COHORT_FILE_TOO_LARGE", "上传数据文件超过 25 MB 限制。")
-        body = bytearray()
-        async for chunk in request.stream():
-            if len(body) + len(chunk) > MAX_USER_COHORT_BYTES:
+        ctype = request.headers.get("content-type", "").lower()
+        upload_name = None
+        if ctype.startswith("multipart/form-data"):
+            form = await request.form()
+            upload = form.get("file")
+            if upload is None:
+                upload = next((value for value in form.values() if hasattr(value, "read")), None)
+            if upload is None or not hasattr(upload, "read"):
+                raise ContractError("UPLOAD_TICKET_INVALID", "multipart upload requires a file field")
+            try:
+                raw = await upload.read()
+                upload_name = getattr(upload, "filename", None) or None
+            finally:
+                close = getattr(upload, "close", None)
+                if close is not None:
+                    closed = close()
+                    if hasattr(closed, "__await__"):
+                        await closed
+        else:
+            if content_length is not None and int(content_length) > MAX_USER_COHORT_BYTES:
                 raise ContractError("COHORT_FILE_TOO_LARGE", "上传数据文件超过 25 MB 限制。")
-            body.extend(chunk)
-        saved = runner.consume_upload_ticket(request.path_params["ticket_id"], bytes(body))
+            body = bytearray()
+            async for chunk in request.stream():
+                if len(body) + len(chunk) > MAX_USER_COHORT_BYTES:
+                    raise ContractError("COHORT_FILE_TOO_LARGE", "上传数据文件超过 25 MB 限制。")
+                body.extend(chunk)
+            raw = bytes(body)
+        if len(raw) > MAX_USER_COHORT_BYTES:
+            raise ContractError("COHORT_FILE_TOO_LARGE", "上传数据文件超过 25 MB 限制。")
+        saved = runner.consume_upload_ticket(request.path_params["ticket_id"], raw, filename=upload_name)
         from .mcp_tools import _session_view
 
         return JSONResponse(_session_view(saved), headers={"Cache-Control": "no-store"})
@@ -879,7 +904,28 @@ class AuthenticationGate:
                 headers={"WWW-Authenticate": challenge.decode("ascii"), "Cache-Control": "no-store"},
             )
             return await response(scope, receive, send)
-        return await self.app(scope, receive, send)
+        path = scope.get("path") or ""
+        if path.startswith("/mcp") or path.startswith("/api/"):
+            try:
+                namespace = namespace_from_headers(headers)
+            except InvalidUserNamespace as exc:
+                response = JSONResponse(
+                    {
+                        "error": str(exc),
+                        "code": "INVALID_USER_NAMESPACE",
+                        "error_code": "INVALID_USER_NAMESPACE",
+                    },
+                    status_code=400,
+                    headers={"Cache-Control": "no-store"},
+                )
+                return await response(scope, receive, send)
+        else:
+            namespace = "default"
+        token = CURRENT_USER_NAMESPACE.set(namespace)
+        try:
+            return await self.app(scope, receive, send)
+        finally:
+            CURRENT_USER_NAMESPACE.reset(token)
 
 
 app = AuthenticationGate(inner)

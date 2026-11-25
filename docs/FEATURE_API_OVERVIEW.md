@@ -28,7 +28,9 @@
    - `emulatrx_tte/llm_assist.py` 按优先级读取只读挂载文件 `EMULATRX_LLM_API_KEY_FILE=/run/secrets/llm_api_key`（`0400`，容器非特权用户 `UID 10001`）> `EMULATRX_LLM_API_KEY` > `OPENAI_API_KEY`；未挂载密钥或网络异常时 100% 自动回退本地确定性规则引擎，任何接口与日志零密钥回显。
    - 外发载荷严格执行三层隔离（`system` 提示词 / `cohort_outbound_context` 白名单表头汇总与匿名 `CATEGORY_LEVEL_*` 占位符 / `public_reference_context` 公开试验元数据），经 `sanitize_profile_for_llm` 与 `assert_llm_payload_privacy_safe` 双重校验，**确保个体患者行记录与非白名单单元格值 0 外发**。
 4. **会话级隔离存储与一键物理清除**：
-   - 上传队列按 `sessions/<session_id>/` 私网隔离落盘（`0700`），调用 `DELETE /api/cohorts/{session_id}`（或 `DELETE /api/sessions/{session_id}`、MCP `delete_cohort_session`）即使在 `session_meta.json` 损坏时仍无条件全盘扫描 `status.json` 同步物理擦除全部派生运行目录，删除后再次读取会话、运行或下载产物一律返回 `404`。
+   - 未携带用户头时仍落在历史单用户目录 `sessions/<session_id>/` 与 `<runs>/<run_id>/`（`0700`）。携带 `X-EmulatRx-User`（别名 `X-WorkBuddy-User`）的命名用户改写入 `users/<user_namespace>/sessions/` 与 `users/<user_namespace>/runs/`，跨用户读取或删除返回 `SESSION_NOT_FOUND` / `RUN_NOT_FOUND`。
+   - 调用 `DELETE /api/cohorts/{session_id}`（或 `DELETE /api/sessions/{session_id}`、MCP `delete_cohort_session`）只擦除**当前用户命名空间**内的会话与派生运行；`session_meta.json` 损坏时仍扫描该用户自己的 `status.json`。删除后再次读取返回 `404`。
+   - 单次上传票据把 `user_namespace` 写进票据。`POST /api/sessions/upload-ticket/{ticket_id}` 不要求用户头，消费票据时仍写入签发者的目录。
 
 ---
 
@@ -60,7 +62,8 @@
 | **HTTP / MCP 服务** | `400` | `PRIVACY_VIOLATION_BLOCKED`、`ORIGIN_MISMATCH`、`INVALID_MAPPING` 等 | 发送前隐私拦截器检出个体 ID/敏感词泄漏风险、跨源请求或非法字段参数时阻断请求 |
 | **HTTP / MCP 服务** | `422` | `ARM_MISMATCH_CONFIRMATION_REQUIRED` | 目标 RCT 双臂与研究干预/对照不一致（如 `NCT06642272` 同类互比、缺联合背景药、单臂/`0` 分组或匿名 `0/1` 队列未声明通用名）且未传 `confirm_arm_mismatch=true` |
 | **HTTP / MCP 服务** | `422` | `PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED` | 双臂药物虽匹配但四维 PICO-T 任一维度偏离——健康受试者/药代试验（如 `NCT00842556` 上限 `0.20`）、缺失核心合并症如心衰（上限 `0.55`，含 `Exclusion Criteria` 陷阱拦截）、主要终点为血酮/HbA1c 等短期替代指标（如 `NCT03959501` 上限 `0.48`）或随访窗过短——且未传 `confirm_protocol_mismatch=true` |
-| **HTTP / MCP 服务** | `429` | `BUSY` | 单容器有界并发槽位占用时拒绝超额并发计算请求 |
+| **HTTP / MCP 服务** | `400` | `INVALID_USER_NAMESPACE` | `X-EmulatRx-User` / `X-WorkBuddy-User` 含路径片段、空白、控制字符或超过 63 字符。省略或空字符串视为 `default`，不报错 |
+| **HTTP / MCP 服务** | `429` | `BUSY` | 执行池 `EMULATRX_MAX_CONCURRENT_RUNS`（默认 `8`，范围 1–32）在 `EMULATRX_SLOT_WAIT_SECONDS`（默认 `60`）内仍无空闲槽位时拒绝。`run_static_or_landmark_tte` 与 `run_grace_period_ccw` 共用该池 |
 
 ---
 
@@ -92,3 +95,18 @@ PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python3 -m unittest discover -s
 | `main` | [`a9f98790`](https://github.com/qitong/EmulatRx/commit/a9f9879062f937e52b05fac6845571f4b1c0809d)（远端默认分支） | **已合并** [PR #4](https://github.com/qitong/EmulatRx/pull/4)、[PR #5](https://github.com/qitong/EmulatRx/pull/5)、[PR #6](https://github.com/qitong/EmulatRx/pull/6)、[PR #10](https://github.com/qitong/EmulatRx/pull/10)（[#8](https://github.com/qitong/EmulatRx/issues/8)）、[PR #12](https://github.com/qitong/EmulatRx/pull/12)（[#11](https://github.com/qitong/EmulatRx/issues/11)）、[PR #13](https://github.com/qitong/EmulatRx/pull/13)、[PR #14](https://github.com/qitong/EmulatRx/pull/14)（[#9](https://github.com/qitong/EmulatRx/issues/9)）及 **[PR #18](https://github.com/qitong/EmulatRx/pull/18)（[#17](https://github.com/qitong/EmulatRx/issues/17) P1 双侧宽限期治疗克隆–删失–加权 CCW，合并提交 `a9f98790`）** |
 | `qitong/emulatrx-dualmode-rct-workbench` | **当前 PR 分支**（已同步合入 `origin/main` [`a9f98790`](https://github.com/qitong/EmulatRx/commit/a9f9879062f937e52b05fac6845571f4b1c0809d)） | 关联开放 **[PR #16](https://github.com/qitong/EmulatRx/pull/16)**（[#15](https://github.com/qitong/EmulatRx/issues/15) 双入口、四维 PICO-T 目标 RCT 匹配与真/模双轨 TTE 工作台）；**当前分支在途待审阅合并，尚未合入 `main`** |
 | `qitong/emulatrx-p1-grace-period-ccw` 及早期功能分支 | 远端已合并历史分支 | 对应 [PR #18](https://github.com/qitong/EmulatRx/pull/18)（`a9f98790`）及 [PR #4](https://github.com/qitong/EmulatRx/pull/4)–[#14](https://github.com/qitong/EmulatRx/pull/14) **均已合并关闭**；`v1-codebase.ipynb` 与 `environment.yml` 按拍板保持冻结不修改 |
+
+---
+
+## 7. WorkBuddy 多用户 MCP（`X-EmulatRx-User`、并发池、`.xlsx`）
+
+完整接入说明见 [`docs/WORKBUDDY_MCP_SETUP.html`](WORKBUDDY_MCP_SETUP.html)。
+
+| 机制 | 行为 |
+| --- | --- |
+| 用户头 | 已认证的 `/mcp` 与 `/api/*` 读取 `X-EmulatRx-User`；该头缺失时才接受 `X-WorkBuddy-User`。正则 `^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`，拒绝 `.` / `..` 路径段。空值 = `default` |
+| 物理目录 | `default` 保持 `<runs>/sessions` 与 `<runs>/<run_id>`。命名用户使用 `<runs>/users/<user_namespace>/{sessions,runs}`，目录模式 `0700`，解析后必须仍在 runs 根目录内 |
+| 上传票据 | `issue_upload_ticket` 把 `user_namespace` 写入票据。无头 `curl -F file=@cohort.xlsx` 仍落到签发者目录 |
+| 并发 | `EMULATRX_MAX_CONCURRENT_RUNS` 默认 `8`；`EMULATRX_SLOT_WAIT_SECONDS` 默认 `60`。每用户会话上限 60、运行上限 100，互不挤占 |
+| 表格 | `requirements-preview.txt` 固定 `openpyxl==3.1.5`。`.xlsx` 与 CSV/TSV 走同一 `ingest_cohort_session` → `run_static_or_landmark_tte` → `get_tte_result_summary` 路径，并写出 `dualmode_report.html` |
+| stdio | `python -m emulatrx_tte mcp-serve --user-namespace <slug>`，也可用环境变量 `EMULATRX_DEFAULT_USER_NAMESPACE` |

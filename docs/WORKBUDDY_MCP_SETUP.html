@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WorkBuddy 多用户 MCP 接入说明</title>
+  <style>
+    :root { color-scheme: light; --ink: #142622; --muted: #4d635e; --line: #d5e0db; --paper: #f7f6f2; --accent: #0f6a5c; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 16px/1.65 "Iowan Old Style", "Palatino Linotype", Palatino, "Songti SC", serif; color: var(--ink); background: #e7eee9; }
+    main { max-width: 880px; margin: 28px auto; padding: 36px 40px 48px; background: var(--paper); border: 1px solid var(--line); }
+    h1, h2 { font-weight: 600; line-height: 1.25; }
+    h1 { font-size: 1.8rem; margin: 0 0 0.4rem; }
+    h2 { font-size: 1.2rem; margin: 2rem 0 0.6rem; color: var(--accent); }
+    p, li { color: var(--ink); }
+    .lede { color: var(--muted); margin-top: 0; }
+    code, pre { font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 0.86rem; }
+    code { background: #e7f2ee; padding: 0.05rem 0.3rem; }
+    pre { background: #102420; color: #e7f6f1; padding: 14px 16px; overflow: auto; }
+    table { width: 100%; border-collapse: collapse; margin: 0.6rem 0 1rem; font-size: 0.95rem; }
+    th, td { border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; padding: 8px 10px; }
+    th { font-size: 0.82rem; letter-spacing: 0.02em; color: var(--muted); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>WorkBuddy 多用户 MCP</h1>
+  <p class="lede">让最多约十名分析者同时调用同一套 EmulatRx HTTP MCP，每个人的队列和运行落在自己的目录里。省略用户头时行为与原来的单用户服务相同。</p>
+
+  <h2>1. 用户是谁</h2>
+  <p>已认证的 <code>/mcp</code> 和 <code>/api/*</code> 读取请求头 <code>X-EmulatRx-User</code>。只有这个头不存在时，才读取 <code>X-WorkBuddy-User</code>。两个头都给了，以 <code>X-EmulatRx-User</code> 为准。</p>
+  <p>合法名字是 1–63 个字符，匹配 <code>^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$</code>，并且不能是 <code>.</code>、<code>..</code> 或带斜杠的路径。省略、空字符串会落到 <code>default</code>。不合法的值在进入工具之前返回 HTTP 400：</p>
+  <pre>{
+  "error": "INVALID_USER_NAMESPACE: ...",
+  "code": "INVALID_USER_NAMESPACE",
+  "error_code": "INVALID_USER_NAMESPACE"
+}</pre>
+  <p>本地 stdio 没有 HTTP 头，用启动参数或环境变量：</p>
+  <pre>python -m emulatrx_tte mcp-serve --user-namespace dr_zhang
+EMULATRX_DEFAULT_USER_NAMESPACE=dr_zhang python -m emulatrx_tte mcp-serve</pre>
+
+  <h2>2. 文件放在哪里</h2>
+  <table>
+    <thead><tr><th>命名空间</th><th>会话</th><th>运行</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>default</code></td>
+        <td><code>&lt;runs&gt;/sessions/&lt;session_id&gt;</code></td>
+        <td><code>&lt;runs&gt;/&lt;run_id&gt;</code></td>
+      </tr>
+      <tr>
+        <td>其他用户，例如 <code>dr_zhang</code></td>
+        <td><code>&lt;runs&gt;/users/dr_zhang/sessions/&lt;session_id&gt;</code></td>
+        <td><code>&lt;runs&gt;/users/dr_zhang/runs/&lt;run_id&gt;</code></td>
+      </tr>
+    </tbody>
+  </table>
+  <p><code>users/&lt;name&gt;</code>、<code>sessions</code>、<code>runs</code> 都以模式 <code>0700</code> 创建，并且解析符号链接之后必须仍在 runs 根目录里面。<code>get_tte_run_status</code>、<code>get_tte_result_summary</code> 和会话视图都带 <code>user_namespace</code>。甲的 <code>session_id</code> 或 <code>run_id</code> 对乙是 <code>SESSION_NOT_FOUND</code> / <code>RUN_NOT_FOUND</code>（HTTP 侧为 404）。每个用户最多保留 60 个会话和 100 次运行，不会清掉别人的目录。</p>
+
+  <h2>3. 上传票据</h2>
+  <p><code>ingest_cohort_session</code> 设 <code>issue_upload_ticket=true</code> 时，票据里记下当时的 <code>user_namespace</code>。后面的上传地址不检查用户头，因为票据本身就是能力令牌：</p>
+  <pre>curl -F "file=@cohort.xlsx" \
+  http://127.0.0.1:8000/api/sessions/upload-ticket/&lt;ticket_id&gt;</pre>
+  <p>文件写入 <code>users/&lt;票据里的用户&gt;/sessions/&lt;session_id&gt;/raw/</code>。<code>.xlsx</code> 与 <code>.csv</code> / <code>.tsv</code> 都可以。Excel 依赖 <code>openpyxl==3.1.5</code>（已列入 <code>requirements-preview.txt</code>）。</p>
+
+  <h2>4. 并发</h2>
+  <p>计算槽位数是 <code>EMULATRX_MAX_CONCURRENT_RUNS</code>，默认 <code>8</code>，允许 1–32。<code>run_static_or_landmark_tte</code> 和 <code>run_grace_period_ccw</code> 都会占用一个槽。槽位满了会等到 <code>EMULATRX_SLOT_WAIT_SECONDS</code>（默认 <code>60</code>，上限 300）。等到超时才返回 <code>429</code> / <code>BUSY</code>。把等待设为 <code>0</code> 且槽位数设为 <code>1</code> 时，第二次计算会立刻 <code>BUSY</code>，便于测试。</p>
+  <pre>EMULATRX_MAX_CONCURRENT_RUNS=8
+EMULATRX_SLOT_WAIT_SECONDS=60</pre>
+
+  <h2>5. 从表格到三阶结果</h2>
+  <ol>
+    <li>用上面的用户头调用 <code>ingest_cohort_session</code>（直接给表，或先拿票据再上传 <code>.xlsx</code>）。</li>
+    <li><code>diagnose_tte_feasibility</code> 做可行性预检。</li>
+    <li><code>run_static_or_landmark_tte</code>，<code>project_mode=user_cohort</code>。</li>
+    <li><code>get_tte_result_summary</code> 在门禁通过时给出 <code>tier_1_unadjusted_crude</code>、<code>tier_2_conventional_ps</code>（含 <code>psm_1to1</code> 与 <code>simple_iptw</code>）、<code>tier_3_target_trial_emulation</code> 和 <code>what_tte_controlled_beyond_psm</code>。</li>
+    <li><code>export_tte_artifact</code> 读取 <code>dualmode_report.html</code> 或 <code>audit_report.md</code>。</li>
+  </ol>
+  <p>HTTP MCP 仍使用 <code>Authorization: Bearer &lt;MCP_TOKEN&gt;</code>。用户头不能代替令牌。</p>
+</main>
+</body>
+</html>
