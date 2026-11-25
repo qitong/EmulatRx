@@ -102,6 +102,8 @@ SAMPLE_ID_ALIASES = {
     "sample_cardiorenal_sglt2_dpp4": "cardiorenal_sglt2i",
     "sample_nsclc_egfr_tki": "nsclc_egfr_flaura",
     "sample_t2dm_cv_carolina": "t2dm_cv_carolina",
+    "nsclc_io_keynote189": "oncology_io_nsclc",
+    "sample_nsclc_io_keynote189": "oncology_io_nsclc",
 }
 
 

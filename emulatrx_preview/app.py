@@ -35,6 +35,7 @@ from emulatrx_tte import (
 from emulatrx_tte._common import ContractError, MAX_USER_COHORT_BYTES
 from emulatrx_tte.llm_assist import extract_untrusted_Note_forbidden_tokens
 from .dualmode_views import render_dualmode_run_view, workbench_home_view
+from .mcp_tools import register_tools
 from .tte_runner import TTERunner
 from .tte_views import cohort_view, form, report_view, result_view, review_view
 from .web_protocol import FIELD_NAMES, FormError, protocol_from_fields
@@ -116,248 +117,13 @@ mcp = FastMCP(
 )
 
 
-# ----------------------------------------------------------------------
-# MCP Tools (Legacy Synthetic + New Dual-Mode RCT Matching & Execution)
-# ----------------------------------------------------------------------
-
-
-@mcp.tool(description="Validate and normalize a seven-element synthetic TTE protocol. No patient data is accepted.")
-def validate_tte_protocol(protocol: dict) -> dict:
-    return {
-        "status": "valid",
-        "source_mode": "synthetic_only",
-        "normalized_protocol": runner.validate(protocol),
-        "analysis_dependency_commit": DEPENDENCY_COMMIT,
-    }
-
-
-@mcp.tool(description="Start an asynchronous, fully synthetic TTE protocol → cohort → diagnostics → estimates → report run. The default is 2,000 synthetic rows.")
-def start_synthetic_tte(protocol: dict, cases: int = 2000, seed: int = 42, bootstrap_iterations: int = 100) -> dict:
-    return runner.start(protocol, cases=cases, seed=seed, bootstrap_iterations=bootstrap_iterations)
-
-
-@mcp.tool(description="Search ClinicalTrials.gov API v2 (with explicit offline curated fallback) for target RCTs matching a clinical research idea or condition/intervention/comparator/outcome keywords.")
-def search_target_rcts(
-    query: str = "",
-    condition: str = "",
-    intervention: str = "",
-    comparator: str = "",
-    outcome: str = "",
-    idea_text: str = "",
-    session_id: str = "",
-    max_results: int = 5,
-) -> dict:
-    pico = None
-    ctx_summary = None
-    sid = session_id.strip()
-    cond_in = condition.strip()
-    intr_in = intervention.strip()
-    comp_in = comparator.strip()
-    out_in = outcome.strip()
-    if sid and any((cond_in, intr_in, comp_in, out_in)):
-        runner.save_session_pico_overrides(
-            sid,
-            condition=cond_in,
-            intervention=intr_in,
-            comparator=comp_in,
-            outcome=out_in,
-        )
-    if idea_text.strip():
-        pico = parse_research_idea_pico(idea_text, explicit_comparator=comp_in)
-        query = query or pico["search_query_en"]
-        condition = cond_in or pico["condition_query_en"]
-        intervention = intr_in or pico["intervention_query_en"]
-        comparator = comp_in or pico.get("comparator_query_en", "")
-        outcome = out_in or pico.get("primary_outcome", "")
-        ctx_summary = pico
-    elif sid:
-        try:
-            sess = runner.get_session(sid)
-            interp = sess["interpretation"]
-            meta = sess.get("meta") or {}
-            ctx_summary = interp
-            query = query or interp.get("search_query_en", "")
-            condition = cond_in or str(meta.get("override_condition") or interp.get("condition_query_en", ""))
-            intervention = intr_in or str(meta.get("override_intervention") or interp.get("intervention_query_en", ""))
-            comparator = comp_in or str(meta.get("override_comparator") or interp.get("comparator_query_en", ""))
-            outcome = out_in or str(meta.get("override_outcome") or interp.get("outcome_query_en", ""))
-        except ContractError:
-            pass
-    forbidden_list = list(runner.get_session_forbidden_values(sid)) if sid else []
-    if sid:
-        for tok in extract_untrusted_Note_forbidden_tokens(f"{query} {condition} {intervention} {comparator} {outcome}"):
-            if tok not in forbidden_list:
-                forbidden_list.append(tok)
-    res = search_candidate_rcts(
-        query,
-        condition=condition,
-        intervention=intervention,
-        comparator=comparator,
-        outcome=outcome,
-        project_mode=SOURCE_MODE_USER_COHORT if sid else SOURCE_MODE_SIMULATED_COHORT,
-        context_summary=ctx_summary,
-        max_results=max(1, min(int(max_results), 8)),
-        forbidden_values=tuple(forbidden_list),
-    )
-    return {"pico": pico, "llm_status": get_llm_status(), **res}
-
-
-@mcp.tool(description="Start a no-data simulated target-RCT feasibility rehearsal TTE run (source_mode='simulated_cohort').")
-def start_simulated_rct_tte(
-    nct_id: str = "",
-    idea_text: str = "",
-    condition: str = "",
-    intervention: str = "",
-    comparator: str = "",
-    outcome: str = "",
-    cases: int = 1200,
-    confounding_strength: str = "medium",
-    effect_direction: str = "protective_moderate",
-    competing_rate_level: str = "medium",
-    weight_method: str = "overlap",
-    seed: int = 42,
-    bootstrap_iterations: int = 80,
-    confirm_arm_mismatch: bool = False,
-    confirm_protocol_mismatch: bool = False,
-) -> dict:
-    pico = parse_research_idea_pico(idea_text, explicit_comparator=comparator.strip()) if idea_text.strip() else None
-    target_rct = None
-    if nct_id.strip():
-        target_rct = fetch_rct_by_nct(nct_id.strip())
-    elif pico or condition.strip() or intervention.strip() or comparator.strip() or outcome.strip():
-        q_str = (pico or {}).get("search_query_en") or f"{intervention} {comparator} {condition}".strip()
-        found = search_candidate_rcts(
-            q_str,
-            condition=condition.strip() or (pico or {}).get("condition_query_en", ""),
-            intervention=intervention.strip() or (pico or {}).get("intervention_query_en", ""),
-            comparator=comparator.strip() or (pico or {}).get("comparator_query_en", ""),
-            outcome=outcome.strip() or (pico or {}).get("primary_outcome", ""),
-            project_mode=SOURCE_MODE_SIMULATED_COHORT,
-            context_summary=pico,
-            max_results=1,
-        )
-        if found["candidates"]:
-            target_rct = found["candidates"][0]
-    return runner.start_simulated_cohort(
-        target_rct=target_rct,
-        pico=pico,
-        idea_text=idea_text,
-        condition=condition,
-        intervention=intervention,
-        comparator=comparator,
-        outcome=outcome,
-        sim_config={
-            "cases": cases,
-            "confounding_strength": confounding_strength,
-            "effect_direction": effect_direction,
-            "competing_rate_level": competing_rate_level,
-            "weight_method": weight_method,
-            "seed": seed,
-            "bootstrap_iterations": bootstrap_iterations,
-        },
-        confirm_arm_mismatch=confirm_arm_mismatch,
-        confirm_protocol_mismatch=confirm_protocol_mismatch,
-    )
-
-
-@mcp.tool(description="Create an isolated user-cohort session from a built-in demo sample ('cardiorenal_sglt2i' or 'oncology_io_nsclc') or base64 CSV/TSV bytes, returning a privacy-safe CohortProfile and default ColumnMappingSpec.")
-def profile_cohort_session(
-    sample_id: str = "",
-    csv_base64: str = "",
-    filename: str = "cohort.csv",
-    user_note: str = "",
-) -> dict:
-    if sample_id.strip():
-        fname, raw = generate_sample_cohort_csv_bytes(sample_id.strip())
-    elif csv_base64.strip():
-        raw = base64.b64decode(csv_base64.encode("ascii"), validate=True)
-        fname = filename
-    else:
-        raise ContractError("MISSING_COHORT_INPUT", "Provide sample_id or csv_base64")
-    saved = runner.save_session_cohort(raw, fname, user_note=user_note, sample_id=sample_id.strip() or None)
-    return {
-        "session_id": saved["session_id"],
-        "profile": {
-            "filename": saved["profile"]["filename"],
-            "row_count": saved["profile"]["row_count"],
-            "column_count": saved["profile"]["column_count"],
-            "input_sha256": saved["profile"]["input_sha256"],
-            "candidate_treatment_columns": saved["profile"]["candidate_treatment_columns"],
-            "candidate_time_columns": saved["profile"]["candidate_time_columns"],
-            "candidate_outcome_columns": saved["profile"]["candidate_outcome_columns"],
-        },
-        "interpretation": {
-            k: v for k, v in saved["interpretation"].items() if k != "sanitized_llm_payload"
-        },
-        "default_mapping": saved["default_mapping"],
-    }
-
-
-@mcp.tool(description="Start an owned-cohort real TTE analysis run (source_mode='user_cohort') on a previously profiled session_id.")
-def start_user_cohort_tte(
-    session_id: str,
-    mapping: dict | None = None,
-    nct_id: str = "",
-    condition: str = "",
-    intervention: str = "",
-    comparator: str = "",
-    outcome: str = "",
-    weight_method: str = "overlap",
-    seed: int = 42,
-    bootstrap_iterations: int = 80,
-    confirm_arm_mismatch: bool = False,
-    confirm_protocol_mismatch: bool = False,
-) -> dict:
-    sess = runner.get_session(session_id)
-    target_rct = fetch_rct_by_nct(nct_id.strip()) if nct_id.strip() else None
-    active_mapping = mapping or recommend_column_mapping(sess["profile"], target_rct=target_rct)
-    return runner.start_user_cohort(
-        session_id,
-        active_mapping,
-        target_rct=target_rct,
-        seed=seed,
-        bootstrap_iterations=bootstrap_iterations,
-        weight_method=weight_method,
-        condition_override=condition,
-        intervention_override=intervention,
-        comparator_override=comparator,
-        outcome_override=outcome,
-        confirm_arm_mismatch=confirm_arm_mismatch,
-        confirm_protocol_mismatch=confirm_protocol_mismatch,
-    )
-
-
-@mcp.tool(description="Physically delete an isolated user-cohort session and all derived cohort/run files.")
-def delete_cohort_session(session_id: str) -> dict:
-    return runner.delete_session(session_id)
-
-
-@mcp.tool(description="Read the status and bounded summary of any TTE run (synthetic_only, simulated_cohort, or user_cohort). Estimates are omitted when the diagnostic gate blocks.")
-def get_tte_run(run_id: str) -> dict:
-    result = runner.get(run_id)
-    if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 32 * 1024:
-        compact = {
-            "run_id": result["run_id"],
-            "state": result["state"],
-            "project_mode": result.get("project_mode"),
-            "gate_status": result.get("gate_status"),
-            "cohort_rows": result.get("cohort_rows"),
-            "eligible_rows": result.get("eligible_rows"),
-            "available_artifacts": result.get("available_artifacts", []),
-            "truncated": True,
-            "hint": "Read specific artifacts with read_tte_artifact",
-        }
-        if "estimates" in result and isinstance(result["estimates"], dict):
-            compact["co_presented_comparison_table"] = result["estimates"].get("co_presented_comparison_table", [])
-            compact["source_mode"] = result["estimates"].get("source_mode")
-            compact["report_badge"] = result["estimates"].get("report_badge")
-        return compact
-    return result
-
-
-@mcp.tool(description="Read a permitted run artifact in base64 chunks of at most 16 KiB; use next_offset for pagination.")
-def read_tte_artifact(run_id: str, name: str, offset: int = 0, limit: int = 16384) -> dict:
-    return runner.read_artifact(run_id, name, offset=offset, limit=limit)
+# MCP tools and resources are registered once and shared with `python -m emulatrx_tte mcp-serve`.
+_allow_ingest = [
+    Path(item).expanduser().resolve()
+    for item in os.environ.get("EMULATRX_MCP_ALLOWED_INGEST_DIR", "").split(os.pathsep)
+    if item.strip()
+]
+register_tools(mcp, runner, transport="http", allow_ingest_dirs=_allow_ingest)
 
 
 # ----------------------------------------------------------------------
@@ -472,6 +238,27 @@ async def api_download_sample(request):
             "Cache-Control": "no-store",
         },
     )
+
+
+async def api_upload_with_ticket(request):
+    """Single-use ticket stream. Authentication is the unguessable ticket, not Web Basic."""
+    try:
+        content_length = request.headers.get("content-length")
+        if content_length is not None and int(content_length) > MAX_USER_COHORT_BYTES:
+            raise ContractError("COHORT_FILE_TOO_LARGE", "上传数据文件超过 25 MB 限制。")
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > MAX_USER_COHORT_BYTES:
+                raise ContractError("COHORT_FILE_TOO_LARGE", "上传数据文件超过 25 MB 限制。")
+            body.extend(chunk)
+        saved = runner.consume_upload_ticket(request.path_params["ticket_id"], bytes(body))
+        from .mcp_tools import _session_view
+
+        return JSONResponse(_session_view(saved), headers={"Cache-Control": "no-store"})
+    except ContractError as exc:
+        return _contract_error_json(exc)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400, headers={"Cache-Control": "no-store"})
 
 
 async def api_upload_or_load_session(request):
@@ -1032,6 +819,7 @@ inner = Starlette(
         Route("/api/workbench/bootstrap", api_workbench_bootstrap),
         Route("/api/samples/{sample_id}/download", api_download_sample),
         Route("/api/sessions/upload", api_upload_or_load_session, methods=["POST"]),
+        Route("/api/sessions/upload-ticket/{ticket_id}", api_upload_with_ticket, methods=["POST"]),
         Route("/api/sessions/{session_id}/note", api_update_session_note, methods=["POST"]),
         Route("/api/sessions/{session_id}", api_get_session, methods=["GET"]),
         Route("/api/sessions/{session_id}", api_delete_session, methods=["DELETE"]),
@@ -1063,7 +851,7 @@ class AuthenticationGate:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope["path"] == "/healthz":
+        if scope["type"] != "http" or scope["path"] == "/healthz" or scope["path"].startswith("/api/sessions/upload-ticket/"):
             return await self.app(scope, receive, send)
         headers = {key.lower(): value for key, value in scope.get("headers", [])}
         authorization = headers.get(b"authorization", b"")

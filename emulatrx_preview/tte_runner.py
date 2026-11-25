@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -349,6 +350,63 @@ class TTERunner:
             "interpretation": interpretation,
             "default_mapping": default_mapping,
         }
+
+    def issue_upload_ticket(self, filename: str = "cohort.csv") -> dict:
+        """Reserve a single-use 600s upload ticket and a session id for a remote CSV stream."""
+        ticket = secrets.token_urlsafe(32)
+        session_id = uuid.uuid4().hex
+        folder = self.root / "upload_tickets"
+        folder.mkdir(mode=0o700, exist_ok=True)
+        (self.sessions_root / session_id).mkdir(mode=0o700, exist_ok=True)
+        record = {
+            "ticket_id": ticket,
+            "session_id": session_id,
+            "filename": filename or "cohort.csv",
+            "expires_at": time.time() + 600,
+            "used": False,
+        }
+        _atomic_write_bytes(folder / f"{ticket}.json", _bytes(record))
+        return record
+
+    def consume_upload_ticket(self, ticket_id: str, raw: bytes) -> dict:
+        if not isinstance(ticket_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", ticket_id):
+            raise ContractError("UPLOAD_TICKET_INVALID", "upload ticket is unknown or already used")
+        path = self.root / "upload_tickets" / f"{ticket_id}.json"
+        if path.is_symlink() or not path.is_file():
+            raise ContractError("UPLOAD_TICKET_INVALID", "upload ticket is unknown or already used")
+        record = json.loads(path.read_text(encoding="utf-8"))
+        path.unlink()
+        if time.time() > float(record["expires_at"]):
+            raise ContractError("UPLOAD_TICKET_EXPIRED", "upload ticket expired")
+        return self.save_session_cohort(raw, str(record.get("filename") or "cohort.csv"), session_id=record["session_id"])
+
+    def adopt_ccw_directory(self, source: Path, *, gate_status: str, seed: int, case_count: int) -> dict:
+        """Publish a finished CCW directory under the preview run root so status and artifact tools can read it."""
+        self.cleanup()
+        run_id = uuid.uuid4().hex
+        dest = self.root / run_id
+        dest.mkdir(mode=0o700)
+        for item in source.iterdir():
+            target = dest / item.name
+            if item.is_dir():
+                shutil.copytree(item, target)
+            elif item.is_file():
+                shutil.copyfile(item, target)
+        state = "completed" if gate_status == "passed" else "blocked"
+        status = {
+            "run_id": run_id,
+            "state": state,
+            "kind": "grace_period_ccw",
+            "project_mode": SOURCE_MODE_SYNTHETIC_ONLY,
+            "gate_status": gate_status,
+            "stage": state,
+            "seed": seed,
+            "case_count": case_count,
+            "started_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "finished_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        self._write_status(dest, status)
+        return status
 
     def get_session_forbidden_values(self, session_id: str) -> tuple[str, ...]:
         """Return persisted forbidden cohort/note tokens for a session (fail-safe empty tuple if session not found)."""
@@ -1302,6 +1360,8 @@ class TTERunner:
             return status
 
         kind = status.get("kind", "synthetic_tte")
+        if kind == "grace_period_ccw":
+            return {**status, "available_artifacts": self.artifacts(run_id)}
         if kind == "synthetic_tte":
             diagnostic = json.loads((path / "diagnostics" / "diagnostics_summary.json").read_text(encoding="utf-8"))
             _, screening_attrition = _csv_rows(path / "screen" / "eligibility_attrition.csv", limit=30)
@@ -1377,6 +1437,19 @@ class TTERunner:
         if status["state"] not in ("completed", "blocked"):
             return []
         kind = status.get("kind", "synthetic_tte")
+        if kind == "grace_period_ccw":
+            names = [
+                "status.json",
+                "ccw_estimates.json",
+                "ccw_preview_report.html",
+                "audit_report.md",
+                "run_manifest.json",
+                "ccw_diagnostics.json",
+                "ccw_attrition.json",
+                "curves/ccw_cif_curves.csv",
+                "curves/naive_cif_curves.csv",
+            ]
+            return [name for name in names if (path / name).is_file() and not (path / name).is_symlink()]
         if kind == "synthetic_tte":
             names = [
                 "protocol.json",
