@@ -550,7 +550,7 @@ class BenchmarkServiceTests(unittest.TestCase):
         self.assertEqual(denied.status_code, 401)
         home = self.client.get("/", headers=self.web)
         self.assertEqual(home.status_code, 200)
-        self.assertIn("benchmark-diagnostic-panel", home.text)
+        self.assertNotIn("benchmark-diagnostic-panel", home.text)
         self.assertIn("方案 → 运行 → 结果", home.text)
         created = self.client.post(
             "/api/v1/tte/benchmark",
@@ -597,8 +597,6 @@ class BenchmarkServiceTests(unittest.TestCase):
         self.assertIn("interpretive_guardrail", tool_report)
         self.assertIs(tool_report["interpretive_guardrail"]["numerical_proximity_proves_causality"], False)
         with mock.patch.dict(os.environ, {"EMULATRX_ENABLE_BENCHMARKING": "0"}):
-            hidden = self.client.get("/", headers=self.web)
-            self.assertNotIn("benchmark-diagnostic-panel", hidden.text)
             disabled = self.client.post(
                 "/api/v1/tte/benchmark",
                 headers=self.web,

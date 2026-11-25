@@ -698,7 +698,7 @@ async def api_get_dual_run(request):
 
 
 async def home(request):
-    return page(workbench_home_view(benchmarking_enabled=is_benchmarking_enabled()))
+    return page(workbench_home_view())
 
 
 async def api_v1_tte_benchmark(request):

@@ -7,7 +7,7 @@
 - `numerical_proximity_proves_causality: false`
 - `clinical_efficacy_claim_prohibited: true`
 
-独立回滚开关：`EMULATRX_ENABLE_BENCHMARKING=0`（也接受 `false` / `off` / `no`）。关闭后 `POST /api/v1/tte/benchmark` 返回 HTTP `503`，MCP 工具返回 `BENCHMARKING_FEATURE_DISABLED`，工作台对标面板隐藏。默认开启，无需重新部署即可切回。
+独立回滚开关：`EMULATRX_ENABLE_BENCHMARKING=0`（也接受 `false` / `off` / `no`）。关闭后 `POST /api/v1/tte/benchmark` 返回 HTTP `503`，MCP 工具返回 `BENCHMARKING_FEATURE_DISABLED`。工作台页面不增加对标面板，诊断只走 CLI、REST 与 MCP。默认开启，无需重新部署即可切回。
 
 ## 失败关闭
 
