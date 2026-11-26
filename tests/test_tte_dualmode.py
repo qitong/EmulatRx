@@ -1697,5 +1697,195 @@ class CohortIngestAndDualModePipelineTests(unittest.TestCase):
         self.assertLessEqual(same_class["arm_alignment_score_cap"], 0.45)
 
 
+class VisualWizardPreflightTests(unittest.TestCase):
+    def test_workbench_markup_exposes_five_visual_steps(self):
+        from emulatrx_preview.dualmode_views import workbench_home_view
+
+        page = workbench_home_view()
+        for step in range(1, 6):
+            self.assertIn(f'data-wizard-step="{step}"', page)
+        for marker in ("study-timeline-svg", "preflight-loveplot", "clinical-ladder", "function safeRecordHref"):
+            self.assertIn(marker, page)
+        self.assertNotIn("escHtml(c.record_url)", page)
+
+    def test_runner_preflight_returns_funnel_smd_and_mismatch_codes(self):
+        from emulatrx_preview.tte_runner import TTERunner
+
+        with tempfile.TemporaryDirectory() as directory:
+            runner = TTERunner(directory)
+            _filename, raw = generate_sample_cohort_csv_bytes("t2dm_cv_carolina")
+            saved = runner.save_session_cohort(raw, "carolina.csv", sample_id="t2dm_cv_carolina")
+            with mock.patch.dict(os.environ, {"EMULATRX_OFFLINE_RCT_CATALOG": "1"}):
+                carolina = search_candidate_rcts("NCT01243424", project_mode="user_cohort", max_results=3)["candidates"][0]
+                flaura = search_candidate_rcts("NCT02296125", project_mode="user_cohort", max_results=3)["candidates"][0]
+            with self.assertRaises(ContractError) as blocked:
+                runner.diagnose_preflight(
+                    {
+                        "project_mode": "user_cohort",
+                        "session_id": saved["session_id"],
+                        "mapping": saved["default_mapping"],
+                        "target_rct": flaura,
+                    }
+                )
+            self.assertIn(
+                blocked.exception.code,
+                ("ARM_MISMATCH_CONFIRMATION_REQUIRED", "PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED"),
+            )
+            passed = runner.diagnose_preflight(
+                {
+                    "project_mode": "user_cohort",
+                    "session_id": saved["session_id"],
+                    "mapping": saved["default_mapping"],
+                    "target_rct": carolina,
+                }
+            )
+            self.assertIsInstance(passed["gate_passed"], bool)
+            self.assertEqual([row["id"] for row in passed["funnel"]], ["loaded", "eligible", "ess"])
+            self.assertGreater(passed["funnel"][0]["n"], 0)
+            self.assertTrue(passed["smd"])
+            self.assertIn("abs_smd_before", passed["smd"][0])
+            self.assertIn("abs_smd_after", passed["smd"][0])
+            simulated = runner.diagnose_preflight(
+                {
+                    "project_mode": "simulated_cohort",
+                    "idea_text": "比较达格列净与西格列汀对心衰住院的影响",
+                    "sim_config": {"cases": 120, "seed": 1, "weight_method": "overlap"},
+                }
+            )
+            self.assertIn("gate_passed", simulated)
+            self.assertGreaterEqual(simulated["funnel"][0]["n"], 100)
+
+    def test_step3_timeline_drives_preflight_run_and_rejects_inverted_window(self):
+        import time
+        from emulatrx_preview.dualmode_views import workbench_home_view
+        from emulatrx_preview.tte_runner import TTERunner
+
+        page = workbench_home_view()
+        self.assertIn(
+            "step3Panel.addEventListener('change', (event) => { onStep3ConfigChanged(event); invalidateDownstream(4); })",
+            page,
+        )
+        self.assertIn("配置已变更，请重新运行秒级均衡预检", page)
+
+        with tempfile.TemporaryDirectory() as directory:
+            runner = TTERunner(directory)
+            _filename, raw = generate_sample_cohort_csv_bytes("t2dm_cv_carolina")
+            saved = runner.save_session_cohort(raw, "carolina.csv", sample_id="t2dm_cv_carolina")
+            with mock.patch.dict(os.environ, {"EMULATRX_OFFLINE_RCT_CATALOG": "1"}):
+                carolina = search_candidate_rcts("NCT01243424", project_mode="user_cohort", max_results=3)["candidates"][0]
+            base_mapping = dict(saved["default_mapping"])
+            base_mapping["bootstrap_iterations"] = 20
+            base_mapping["horizon_days"] = [90, 180, 365]
+            baseline = runner.diagnose_preflight(
+                {
+                    "project_mode": "user_cohort",
+                    "session_id": saved["session_id"],
+                    "mapping": base_mapping,
+                    "target_rct": carolina,
+                    "landmark_time": 0,
+                    "horizon_days": [90, 180, 365],
+                }
+            )
+            sliced = runner.diagnose_preflight(
+                {
+                    "project_mode": "user_cohort",
+                    "session_id": saved["session_id"],
+                    "mapping": dict(base_mapping),
+                    "target_rct": carolina,
+                    "landmark_time": 180,
+                    "horizon_days": [365],
+                }
+            )
+            self.assertEqual(sliced["landmark_time"], 180)
+            self.assertEqual(sliced["horizon_days"], [365])
+            self.assertGreater(sliced["landmark_excluded_n"], 0)
+            self.assertLess(sliced["funnel"][1]["n"], baseline["funnel"][1]["n"])
+            with self.assertRaises(ContractError) as blocked:
+                runner.diagnose_preflight(
+                    {
+                        "project_mode": "user_cohort",
+                        "session_id": saved["session_id"],
+                        "mapping": dict(base_mapping),
+                        "target_rct": carolina,
+                        "landmark_time": 365,
+                        "horizon_days": [365],
+                    }
+                )
+            self.assertEqual(blocked.exception.code, "INVALID_TIMELINE_WINDOW")
+
+            sim_base = runner.diagnose_preflight(
+                {
+                    "project_mode": "simulated_cohort",
+                    "sim_config": {"cases": 160, "seed": 3, "weight_method": "overlap", "horizon_days": [365], "landmark_time": 0},
+                }
+            )
+            sim_sliced = runner.diagnose_preflight(
+                {
+                    "project_mode": "simulated_cohort",
+                    "landmark_time": 120,
+                    "horizons": [240],
+                    "sim_config": {"cases": 160, "seed": 3, "weight_method": "overlap", "bootstrap_iterations": 20},
+                }
+            )
+            self.assertEqual(sim_sliced["landmark_time"], 120)
+            self.assertEqual(sim_sliced["horizon_days"], [240])
+            self.assertGreater(sim_sliced["landmark_excluded_n"], 0)
+            self.assertLess(sim_sliced["funnel"][1]["n"], sim_base["funnel"][1]["n"])
+            with self.assertRaises(ContractError) as sim_blocked:
+                runner.diagnose_preflight(
+                    {
+                        "project_mode": "simulated_cohort",
+                        "sim_config": {"cases": 120, "seed": 1, "landmark_time": float("nan"), "horizon_days": [100]},
+                    }
+                )
+            self.assertEqual(sim_blocked.exception.code, "INVALID_TIMELINE_WINDOW")
+
+            started = runner.start_simulated_cohort(
+                sim_config={
+                    "cases": 120,
+                    "seed": 4,
+                    "weight_method": "overlap",
+                    "bootstrap_iterations": 20,
+                    "landmark_time": 45,
+                    "horizon_days": [200],
+                }
+            )
+            finished = None
+            for _ in range(400):
+                finished = runner.get(started["run_id"])
+                if finished["state"] not in ("queued", "running"):
+                    break
+                time.sleep(0.1)
+            self.assertEqual(finished["state"], "completed", finished.get("error"))
+            self.assertEqual(finished["normalized_protocol"]["time_zero"]["landmark_day"], 45)
+            self.assertEqual(finished["normalized_protocol"]["followup"]["horizon_days"], [200])
+            horizon_keys = set()
+            for summary in (finished.get("estimates") or {}).get("arm_cif_summaries", {}).values():
+                horizon_keys.update((summary.get("horizons") or {}).keys())
+            self.assertIn("200", horizon_keys)
+            self.assertNotIn("365", horizon_keys)
+            self.assertGreater(int(finished["diagnostics"].get("landmark_excluded_n") or 0), 0)
+
+            user_started = runner.start_user_cohort(
+                saved["session_id"],
+                {**base_mapping, "landmark_time": 180, "horizon_days": [400], "bootstrap_iterations": 20},
+                target_rct=carolina,
+            )
+            user_finished = None
+            for _ in range(600):
+                user_finished = runner.get(user_started["run_id"])
+                if user_finished["state"] not in ("queued", "running"):
+                    break
+                time.sleep(0.1)
+            self.assertEqual(user_finished["state"], "completed", user_finished.get("error"))
+            self.assertEqual(user_finished["normalized_protocol"]["time_zero"]["landmark_day"], 180)
+            self.assertEqual(user_finished["normalized_protocol"]["followup"]["horizon_days"], [400])
+            user_keys = set()
+            for summary in (user_finished.get("estimates") or {}).get("arm_cif_summaries", {}).values():
+                user_keys.update((summary.get("horizons") or {}).keys())
+            self.assertIn("400", user_keys)
+            self.assertGreater(int(user_finished["diagnostics"].get("landmark_excluded_n") or 0), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

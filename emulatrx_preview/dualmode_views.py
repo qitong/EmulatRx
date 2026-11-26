@@ -1,4 +1,4 @@
-"""Modern Chinese four-step Dual-Mode Workbench UI and server-rendered dual-mode report views."""
+"""Single-focus five-step visual TTE wizard and server-rendered dual-mode report views."""
 
 from __future__ import annotations
 
@@ -82,20 +82,33 @@ def _step_cif_svg(curve_paths: list[Path], column: str, title: str, arm_labels: 
     )
 
 
+def _finite_smd(val: object) -> float | None:
+    if isinstance(val, bool) or val is None:
+        return None
+    if isinstance(val, str):
+        text = val.strip().lower()
+        if text in {"", "inf", "-inf", "+inf", "nan"}:
+            return None
+    try:
+        number = float(val)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
 def _love_plot_svg(balance_rows: list[dict], cov_labels: dict[str, str], max_gate_smd: float) -> str:
     if not balance_rows:
         return ""
     h = max(180, 56 + 28 * len(balance_rows))
-    max_smd = max(
-        max_gate_smd * 2.0,
-        *(
-            float(r[k])
-            for r in balance_rows
-            for k in ("abs_smd_unweighted", "abs_smd_weighted")
-            if r.get(k) not in (None, "", "inf")
-        ),
-        0.25,
-    )
+    finite_smds = [
+        value
+        for row in balance_rows
+        for key in ("abs_smd_unweighted", "abs_smd_weighted")
+        if (value := _finite_smd(row.get(key))) is not None
+    ]
+    max_smd = max(max_gate_smd * 2.0, 0.25, *finite_smds)
     x0, xw = 220.0, 420.0
     gate_x = x0 + xw * min(max_gate_smd / max_smd, 1.0)
     elems = [
@@ -106,15 +119,22 @@ def _love_plot_svg(balance_rows: list[dict], cov_labels: dict[str, str], max_gat
     for idx, r in enumerate(balance_rows):
         cy = 48 + idx * 26
         lbl = cov_labels.get(r["covariate"], r["covariate"])[:26]
-        su = float(r["abs_smd_unweighted"]) if r.get("abs_smd_unweighted") not in (None, "", "inf") else 0.0
-        sw = float(r["abs_smd_weighted"]) if r.get("abs_smd_weighted") not in (None, "", "inf") else 0.0
-        xu = x0 + xw * min(su / max_smd, 1.0)
-        x_wt = x0 + xw * min(sw / max_smd, 1.0)
+        su = _finite_smd(r.get("abs_smd_unweighted"))
+        sw = _finite_smd(r.get("abs_smd_weighted"))
+        if su is None or sw is None:
+            lbl = f"{lbl} N/A"
         elems.append(f"<line x1='{x0}' y1='{cy}' x2='{x0 + xw}' y2='{cy}' stroke='#f1f5f9'/>")
         elems.append(f"<text x='{x0 - 8}' y='{cy + 4}' text-anchor='end' font-size='11.5' fill='#1e293b'>{esc(lbl)}</text>")
-        elems.append(f"<line x1='{xu:.1f}' y1='{cy}' x2='{x_wt:.1f}' y2='{cy}' stroke='#94a3b8' stroke-width='1.4'/>")
-        elems.append(f"<circle cx='{xu:.1f}' cy='{cy}' r='4.5' fill='#f59e0b'/>")
-        elems.append(f"<circle cx='{x_wt:.1f}' cy='{cy}' r='4.5' fill='#0f766e'/>")
+        if su is not None and sw is not None:
+            xu = x0 + xw * min(su / max_smd, 1.0)
+            x_wt = x0 + xw * min(sw / max_smd, 1.0)
+            elems.append(f"<line x1='{xu:.1f}' y1='{cy}' x2='{x_wt:.1f}' y2='{cy}' stroke='#94a3b8' stroke-width='1.4'/>")
+        if su is not None:
+            xu = x0 + xw * min(su / max_smd, 1.0)
+            elems.append(f"<circle cx='{xu:.1f}' cy='{cy}' r='4.5' fill='#f59e0b'/>")
+        if sw is not None:
+            x_wt = x0 + xw * min(sw / max_smd, 1.0)
+            elems.append(f"<circle cx='{x_wt:.1f}' cy='{cy}' r='4.5' fill='#0f766e'/>")
     return (
         "<figure class='chart-card'><figcaption>协变量均衡 Love Plot（加权前 vs 加权后 |SMD|）</figcaption>"
         f"<svg viewBox='0 0 675 {h}' role='img' aria-label='Love Plot'>"
@@ -413,7 +433,7 @@ def render_dualmode_run_view(result: dict, root: Path, *, standalone_report: boo
 
 
 def workbench_home_view() -> str:
-    """Render the interactive 4-step Chinese Dual-Mode Target Trial Emulation Workbench."""
+    """Render the single-focus 5-step visual Target Trial Emulation wizard."""
     llm_info = get_llm_status()
     samples_list = list(SAMPLE_COHORT_SPECS.values())
     ideas_list = list(CLINICAL_IDEA_PRESETS)
@@ -435,7 +455,7 @@ def workbench_home_view() -> str:
 .pill-ai{{background:#dcfce7;color:#166534;border:1px solid #86efac}}
 .pill-local{{background:#e0f2fe;color:#075985;border:1px solid #7dd3fc}}
 .pill-priv{{background:#fef3c7;color:#92400e;border:1px solid #fcd34d}}
-.stepper{{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:18px 0 24px}}
+.stepper{{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin:18px 0 12px}}
 .step-tab{{padding:11px 12px;border:1px solid var(--line);background:#fff;border-radius:6px;font-size:.9rem;font-weight:700;color:var(--muted);cursor:pointer;text-align:left;transition:.15s}}
 .step-tab.active{{border-color:var(--accent);background:#e6f4f0;color:var(--ink);box-shadow:0 2px 8px #176b5e1a}}
 .step-tab small{{display:block;font-weight:400;font-size:.76rem;color:var(--muted)}}
@@ -483,9 +503,31 @@ def workbench_home_view() -> str:
 .cov-item input{{width:auto;margin-top:4px}}
 .elig-row{{display:grid;grid-template-columns:1fr 1.4fr 1fr 1fr auto;gap:8px;margin:8px 0;align-items:center}}
 .hidden{{display:none!important}}
+.wizard-rail{{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin:8px 0 12px}}
+.wizard-rail .step-tab{{min-height:64px}}
+.wizard-rail .step-tab.is-done{{border-color:#86efac;background:#f0fdf4}}
+.chip-strip{{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px}}
+.summary-chip{{border:1px solid #99f6e4;background:#f0fdfa;color:#115e59;border-radius:999px;padding:4px 10px;font-size:.8rem;font-weight:700;cursor:pointer}}
+.metric-pills{{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}}
+.metric-pill{{background:#ecfeff;border:1px solid #a5f3fc;border-radius:999px;padding:3px 10px;font-size:.78rem;font-weight:700;color:#155e75}}
+.score-ring{{width:42px;height:42px;border-radius:50%;display:inline-grid;place-items:center;font-size:.72rem;font-weight:800;background:conic-gradient(#0f766e calc(var(--p) * 1%), #e2e8f0 0);color:#134e4a}}
+.score-ring span{{background:#fff;border-radius:50%;width:30px;height:30px;display:grid;place-items:center}}
+.funnel{{display:grid;gap:8px;margin:12px 0}}
+.funnel-row{{display:grid;grid-template-columns:180px 1fr 90px;gap:8px;align-items:center;font-size:.86rem}}
+.funnel-bar{{height:16px;background:#e2e8f0;border-radius:8px;overflow:hidden}}
+.funnel-bar i{{display:block;height:100%;background:#0f766e}}
+.gate-ok{{background:#ecfdf5;border:1px solid #86efac;color:#166534;border-radius:8px;padding:12px 14px;font-weight:700}}
+.gate-bad{{background:#fef2f2;border:1px solid #fca5a5;color:#991b1b;border-radius:8px;padding:12px 14px}}
+.tier-row{{display:grid;grid-template-columns:1fr auto 1fr auto 1.15fr;gap:8px;align-items:stretch;margin:12px 0}}
+.tier-card{{border:1px solid #cbd5e1;border-radius:10px;padding:12px 14px;background:#fff}}
+.tier-card.hero{{border:2px solid #0f766e;background:#f0fdfa}}
+.tier-arrow{{align-self:center;font-weight:800;color:#64748b}}
+.timeline-card{{background:#fff;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:10px 0}}
+.role-grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px}}
+@media(max-width:900px){{.wizard-rail,.tier-row,.role-grid{{grid-template-columns:1fr}}.tier-arrow{{transform:rotate(90deg);justify-self:center}}}}
 .idea-input{{width:100%;min-height:92px;padding:10px 12px;border:1px solid #94a3b8;border-radius:5px;font:inherit;line-height:1.5}}
 .chart-card{{background:#fff;border:1px solid var(--line);padding:12px;border-radius:6px}}
-@media(max-width:760px){{.stepper{{grid-template-columns:1fr 1fr}}.elig-row,.outcome-chip-row{{grid-template-columns:1fr}}}}
+@media(max-width:760px){{.stepper,.wizard-rail{{grid-template-columns:1fr 1fr}}.elig-row,.outcome-chip-row{{grid-template-columns:1fr}}}}
 </style>
 
 <div class="wb-topbar">
@@ -499,27 +541,29 @@ def workbench_home_view() -> str:
   </div>
 </div>
 
-<div class="stepper" role="tablist" aria-label="目标试验模拟四步向导">
-  <button type="button" class="step-tab active" id="tab-step-1" onclick="goStep(1)">第 1 步 · 选择起点<small>自有队列上传 / 临床研究想法</small></button>
-  <button type="button" class="step-tab" id="tab-step-2" onclick="goStep(2)">第 2 步 · 匹配目标 RCT<small>ClinicalTrials.gov 实时检索选定</small></button>
-  <button type="button" class="step-tab" id="tab-step-3" onclick="goStep(3)">第 3 步 · 方案与字段对齐<small>零 JSON 映射 / 模拟预演参数</small></button>
-  <button type="button" class="step-tab" id="tab-step-4" onclick="goStep(4)">第 4 步 · 双态分析报告<small>门禁诊断、CIF 曲线与审计包</small></button>
+<div class="stepper wizard-rail" role="tablist" aria-label="目标试验模拟五步向导">
+  <button type="button" class="step-tab active" id="tab-step-1" data-wizard-step="1" onclick="goStep(1)">① 选择起点与队列<small>脱敏数据或研究想法</small></button>
+  <button type="button" class="step-tab" id="tab-step-2" data-wizard-step="2" onclick="goStep(2)">② 锁定对标 RCT<small>五维 PICO-T 信号</small></button>
+  <button type="button" class="step-tab" id="tab-step-3" data-wizard-step="3" onclick="goStep(3)">③ 时间轴与角色映射<small>t₀ · 地标 · 随访</small></button>
+  <button type="button" class="step-tab" id="tab-step-4" data-wizard-step="4" onclick="goStep(4)">④ 秒级均衡预检<small>漏斗与 |SMD|</small></button>
+  <button type="button" class="step-tab" id="tab-step-5" data-wizard-step="5" onclick="goStep(5)" disabled aria-disabled="true">⑤ 三阶去偏结果看板<small>粗分析 → PSM → TTE</small></button>
 </div>
+<div id="wizard-summary-chips" class="chip-strip" data-summary-chips="1"></div>
 
 <div id="wb-alert" class="error hidden" role="alert"></div>
 
 <!-- ==================== STEP 1 ==================== -->
-<section id="panel-step-1">
+<section id="panel-step-1" data-wizard-step="1" class="wizard-panel is-active">
   <div class="entry-cards">
     <div id="card-mode-user" class="entry-card selected-user" onclick="selectMode('user_cohort')">
-      <span class="badge-user">🟢 路径一 · 真项目模式 (user_cohort)</span>
-      <h3 style="margin:10px 0 6px">我有一批自有队列数据 → 匹配目标 RCT → 跑真项目 TTE</h3>
-      <p style="margin:0;font-size:.92rem;color:var(--muted)">拖拽上传医院/专病脱敏 CSV/TSV（或一键载入下方真实临床表头样表演示），自动完成隐私安全画像、匹配对标 RCT、可视化映射列名并输出真项目因果分析报告。</p>
+      <span class="badge-user">真项目 · user_cohort</span>
+      <h3 style="margin:10px 0 6px">我有脱敏数据 · 真项目</h3>
+      <p style="margin:0;font-size:.92rem;color:var(--muted)">我有一批自有队列数据。拖入 CSV/TSV，或点样表芯片。</p>
     </div>
     <div id="card-mode-sim" class="entry-card" onclick="selectMode('simulated_cohort')">
-      <span class="badge-sim">🟣 路径二 · 无数据模拟预演 (simulated_cohort)</span>
-      <h3 style="margin:10px 0 6px">我只有研究想法（尚无数据）→ 匹配目标 RCT → 模拟预演可行性</h3>
-      <p style="margin:0;font-size:.92rem;color:var(--muted)">用中文描述临床问题，自动提取 PICO 并实时检索 ClinicalTrials.gov 对标试验，虚拟生成带混杂与竞争死亡的队列预演方案可行性与样本量需求。</p>
+      <span class="badge-sim">模拟预演 · simulated_cohort</span>
+      <h3 style="margin:10px 0 6px">我只有研究想法 · 模拟预演</h3>
+      <p style="margin:0;font-size:.92rem;color:var(--muted)">两行临床问题，先看 PICO-T 标签，再匹配候选 RCT。</p>
     </div>
   </div>
 
@@ -533,7 +577,11 @@ def workbench_home_view() -> str:
         <input type="file" id="cohort-file-input" accept=".csv,.tsv,.txt,.xlsx" style="max-width:340px">
       </div>
 
-      <h3 style="margin-top:18px">手头没带数据？一键载入真实医院/肿瘤专病表头样表当场演示（也可先下载 CSV 再手动上传）：</h3>
+      <div class="preset-chips">
+        <button type="button" class="preset-chip" onclick="loadSampleCohort('t2dm_cv_carolina')">加载 CAROLINA 心血管样表</button>
+        <button type="button" class="preset-chip" onclick="loadSampleCohort('nsclc_egfr_flaura')">加载 FLAURA 肿瘤样表</button>
+        <button type="button" class="danger-btn" style="padding:8px 12px" onclick="wipeCurrentSession()">一键物理清除会话</button>
+      </div>
       <div class="sample-box" id="sample-cards-container"></div>
 
       <label class="control" style="margin-top:14px">
@@ -549,7 +597,11 @@ def workbench_home_view() -> str:
   <div id="subpanel-sim" class="hidden">
     <fieldset>
       <legend>输入临床研究方向 / 立项想法（中文自由文本）</legend>
-      <p>点击下方多学科示例可一键填入，也可直接输入您自己的临床对比设想：</p>
+      <div class="preset-chips">
+        <button type="button" class="preset-chip" onclick="applyNamedIdea('sglt2')">SGLT2i / DPP-4i 心血管结局</button>
+        <button type="button" class="preset-chip" onclick="applyNamedIdea('egfr')">EGFRm 晚期非小细胞肺癌一线靶向</button>
+      </div>
+      <div id="pico-preview-chips" class="pico-pills" data-pico-preview="1"></div>
       <div class="preset-chips" id="idea-presets-container"></div>
       <label class="control" style="margin-top:12px">
         <span>研究问题与目标人群、干预对比描述</span>
@@ -558,7 +610,7 @@ def workbench_home_view() -> str:
         </div>
       </label>
       <div class="actions">
-        <button type="button" id="btn-parse-idea" onclick="parseIdeaAndSearchRCTs()">解析 PICO 并实时检索 ClinicalTrials.gov 目标 RCT →</button>
+        <button type="button" id="btn-parse-idea" onclick="parseIdeaAndSearchRCTs()">下一步：匹配候选 RCT →</button>
       </div>
     </fieldset>
     <div id="pico-result-box" class="hidden"></div>
@@ -566,7 +618,7 @@ def workbench_home_view() -> str:
 </section>
 
 <!-- ==================== STEP 2 ==================== -->
-<section id="panel-step-2" class="hidden">
+<section id="panel-step-2" data-wizard-step="2" class="wizard-panel hidden">
   <fieldset>
     <legend>ClinicalTrials.gov 候选目标随机对照试验（Target RCT）检索与选定</legend>
     <div class="field-grid" style="grid-template-columns:repeat(auto-fit,minmax(210px,1fr))">
@@ -604,14 +656,26 @@ def workbench_home_view() -> str:
       <p id="rct-mismatch-detail-text" style="margin:6px 0 0 26px;font-size:.86rem;color:#92400e"></p>
     </div>
     <div class="actions" id="rct-step2-actions">
-      <button type="button" id="btn-confirm-selected-rct" onclick="confirmSelectedTargetRCT()">使用所选目标 RCT 进入第 3 步（方案与字段对齐） →</button>
+      <button type="button" id="btn-confirm-selected-rct" onclick="confirmSelectedTargetRCT()">锁定此目标试验，进入时间轴配置 →</button>
     </div>
   </fieldset>
 </section>
 
 <!-- ==================== STEP 3 ==================== -->
-<section id="panel-step-3" class="hidden">
+<section id="panel-step-3" data-wizard-step="3" class="wizard-panel hidden">
   <div id="selected-rct-summary"></div>
+  <div id="study-timeline" class="timeline-card" data-timeline-svg="1">
+    <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:end">
+      <strong>研究时间轴</strong>
+      <span id="timeline-rule-badge" class="metric-pill">地标窗内发生终点者按方案排除，严禁事后偷看未来给药</span>
+    </div>
+    <svg id="study-timeline-svg" viewBox="0 0 760 92" role="img" aria-label="研究时间轴"></svg>
+    <div class="field-grid">
+      <label class="control"><span>地标 / 宽限期 landmark_time（天）</span><input type="number" id="timeline-landmark" min="0" max="3650" value="0"></label>
+      <label class="control"><span>随访窗 horizon_time（天）</span><input type="number" id="timeline-horizon" min="1" max="7300" value="365"></label>
+    </div>
+    <p id="timeline-window-error" class="error hidden" role="alert"></p>
+  </div>
   <input type="hidden" id="step3-cond-hidden" name="condition" value="">
   <input type="hidden" id="step3-intr-hidden" name="intervention" value="">
   <input type="hidden" id="step3-comp-hidden" name="comparator" value="">
@@ -620,7 +684,7 @@ def workbench_home_view() -> str:
   <!-- Step 3A: User Cohort Visual Mapping -->
   <div id="step3-user-mapping" class="hidden">
     <fieldset>
-      <legend>1 · 暴露分组列与两臂角色映射（对照臂锚定 Index 0）</legend>
+      <legend>💊 治疗分组 A</legend>
       <div class="field-grid">
         <label class="control"><span>暴露/治疗分组列</span><select id="map-trt-col" onchange="onTrtColChange()"></select></label>
         <label class="control"><span>对照臂取值（Comparator，参考组 0）</span><select id="map-comp-val"></select></label>
@@ -629,7 +693,7 @@ def workbench_home_view() -> str:
     </fieldset>
 
     <fieldset>
-      <legend>2 · 随访时间列与时间单位自动换算</legend>
+      <legend>⏱ 随访时间 T</legend>
       <div class="field-grid">
         <label class="control"><span>随访时长列</span><select id="map-time-col"></select></label>
         <label class="control"><span>原始时间单位（自动换算为标准「天」）</span>
@@ -644,14 +708,13 @@ def workbench_home_view() -> str:
     </fieldset>
 
     <fieldset>
-      <legend>3 · 结局状态列与竞争风险事件编码映射（1=主要结局 / 2=竞争风险 / 0=删失存活）</legend>
-      <p>系统已自动识别结局类别；若您的数据集无竞争风险事件，可将全部非主要事件映射为「删失/存活 (0)」，引擎将自动优雅退化为标准加权生存估计并给出明确说明。</p>
+      <legend>🎯 终点事件 Y（含竞争事件 2）</legend>
       <label class="control" style="max-width:360px;margin-bottom:12px"><span>结局状态列</span><select id="map-out-col" onchange="onOutColChange()"></select></label>
       <div id="outcome-values-mapper" style="border:1px solid #cbd5e1;border-radius:6px;background:#f8fafc"></div>
     </fieldset>
 
     <fieldset>
-      <legend>4 · 基线混杂协变量勾选（自动处理多分类 One-Hot 编码、缺失值剔除与零方差保护）</legend>
+      <legend>⚖ 基线混杂协变量 X</legend>
       <div id="covariate-checkbox-list" class="cov-grid"></div>
     </fieldset>
 
@@ -666,10 +729,10 @@ def workbench_home_view() -> str:
       <div class="field-grid">
         <label class="control"><span>评估时点（天，逗号分隔，已按队列有效随访裁剪）</span><input type="text" id="map-horizons" value="90, 180, 365"></label>
         <label class="control"><span>行政随访截尾上限（天，须大于最大评估时点）</span><input type="number" id="map-admin-end" step="any" min="10" value="540"></label>
-        <label class="control"><span>倾向得分加权方法</span>
+        <label class="control"><span>加权</span>
           <select id="map-weight-method">
-            <option value="overlap">重叠加权 Overlap Weighting（推荐 · 聚焦临床均势重叠人群 ATO）</option>
-            <option value="stabilized_iptw">稳定化逆概率加权 Stabilized IPTW（全人群平均效应 ATE）</option>
+            <option value="overlap">重叠加权 OW（推荐）</option>
+            <option value="stabilized_iptw">稳定化 sIPTW</option>
           </select>
         </label>
         <label class="control"><span>最大加权 |SMD| 门禁</span><input type="number" id="map-max-smd" step="0.01" min="0.01" value="0.10"></label>
@@ -679,7 +742,7 @@ def workbench_home_view() -> str:
     </fieldset>
 
     <div class="actions">
-      <button type="button" id="btn-run-user-tte" onclick="launchUserCohortRun()">🟢 运行自有队列真项目 TTE 分析 →</button>
+      <button type="button" id="btn-run-user-tte" onclick="runPreflight()">下一步：运行秒级可行性与均衡预检 →</button>
       <button type="button" class="secondary" onclick="goStep(2)">← 返回重选目标 RCT</button>
       <button type="button" class="danger-btn" onclick="wipeCurrentSession()">🗑️ 一键清除本次会话上传数据</button>
     </div>
@@ -719,25 +782,39 @@ def workbench_home_view() -> str:
         <label class="control"><span>随访评估时点（天，源自对标 RCT TimeFrame）</span><input type="text" id="sim-horizons" value="90, 180, 365"></label>
         <label class="control"><span>加权方法</span>
           <select id="sim-weight-method">
-            <option value="overlap" selected>重叠加权 Overlap Weighting（ATO）</option>
-            <option value="stabilized_iptw">稳定化逆概率加权 Stabilized IPTW（ATE）</option>
+            <option value="overlap" selected>重叠加权 OW（推荐）</option>
+            <option value="stabilized_iptw">稳定化 sIPTW</option>
           </select>
         </label>
         <label class="control"><span>随机种子 Seed（保障逐字节可复现）</span><input type="number" id="sim-seed" min="0" max="99999999" value="42"></label>
       </div>
     </fieldset>
     <div class="actions">
-      <button type="button" id="btn-run-sim-tte" onclick="launchSimulatedRun()">🟣 虚拟生成队列并运行模拟 TTE 预演 →</button>
+      <button type="button" id="btn-run-sim-tte" onclick="runPreflight()">下一步：运行秒级可行性与均衡预检 →</button>
       <button type="button" class="secondary" onclick="goStep(2)">← 返回重选目标 RCT</button>
     </div>
   </div>
 </section>
 
 <!-- ==================== STEP 4 ==================== -->
-<section id="panel-step-4" class="hidden">
-  <div id="step4-result-container">
-    <p>请先完成前序步骤并启动真项目或模拟预演分析。</p>
+<section id="panel-step-4" data-wizard-step="4" class="wizard-panel hidden">
+  <div id="preflight-status" class="notice">完成时间轴配置后，这里在一秒内给出纳排漏斗与加权前后 |SMD|。</div>
+  <div id="preflight-funnel" class="funnel" data-attrition-funnel="1"></div>
+  <div id="preflight-loveplot" data-loveplot="smd" data-smd-preview="1"></div>
+  <div id="preflight-gate"></div>
+  <div class="actions">
+    <button type="button" id="btn-open-tier-dashboard" onclick="launchFromPreflight()" disabled>生成临床三阶去偏对比报告 →</button>
+    <button type="button" class="secondary" onclick="goStep(3)">← 返回调整协变量或地标窗</button>
   </div>
+</section>
+
+<!-- ==================== STEP 5 ==================== -->
+<section id="panel-step-5" data-wizard-step="5" class="wizard-panel hidden">
+  <div id="clinical-ladder" data-clinical-ladder="3tier" data-tier-dashboard="1"></div>
+  <div id="step5-result-container">
+    <p>请先通过第 4 步均衡预检，再生成三阶对比。</p>
+  </div>
+  <div id="step4-result-container" class="hidden"></div>
 </section>
 
 <details class="compat-drawer print-hide" style="margin-top:38px">
@@ -762,6 +839,8 @@ const STATE = {{
   confirmArmMismatch: false,
   outcomeCategoryCache: {{}},
   currentRunId: null,
+  preflight: null,
+  lastRun: null,
 }};
 
 function showError(msg) {{
@@ -772,15 +851,214 @@ function showError(msg) {{
   window.scrollTo({{ top: 0, behavior: 'smooth' }});
 }}
 
+function preflightFreshPassed() {{
+  return Boolean(STATE.preflight && STATE.preflight.gate_passed === true && STATE.preflight.gate_status === 'passed');
+}}
+
+function setStep5Enabled(enabled) {{
+  const tab5 = document.getElementById('tab-step-5');
+  const launch = document.getElementById('btn-open-tier-dashboard');
+  if (tab5) {{
+    tab5.disabled = !enabled;
+    tab5.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+  }}
+  if (launch) launch.disabled = !enabled;
+}}
+
 function goStep(n) {{
+  if (n === 5 && !preflightFreshPassed()) {{
+    showError('请先完成并通过当前配置的秒级均衡预检，再打开第 5 步。');
+    return;
+  }}
   showError('');
-  for (let i = 1; i <= 4; i++) {{
-    document.getElementById('panel-step-' + i).classList.toggle('hidden', i !== n);
-    document.getElementById('tab-step-' + i).classList.toggle('active', i === n);
+  for (let i = 1; i <= 5; i++) {{
+    const panel = document.getElementById('panel-step-' + i);
+    const tab = document.getElementById('tab-step-' + i);
+    const active = i === n;
+    panel.classList.toggle('hidden', !active);
+    panel.classList.toggle('is-active', active);
+    tab.classList.toggle('active', active);
+    tab.classList.toggle('is-done', i < n);
+  }}
+  renderSummaryChips();
+  if (n === 3) renderStudyTimeline();
+}}
+
+function invalidateDownstream(fromStep) {{
+  STATE.preflight = null;
+  STATE.lastRun = null;
+  STATE.currentRunId = null;
+  const status = document.getElementById('preflight-status');
+  const funnel = document.getElementById('preflight-funnel');
+  const love = document.getElementById('preflight-loveplot');
+  const gate = document.getElementById('preflight-gate');
+  const ladder = document.getElementById('clinical-ladder');
+  const box = document.getElementById('step5-result-container');
+  if (status) {{
+    status.classList.remove('hidden');
+    status.textContent = '配置已变更，请重新运行秒级均衡预检';
+  }}
+  if (funnel) funnel.innerHTML = '';
+  if (love) love.innerHTML = '';
+  if (gate) gate.innerHTML = '';
+  if (ladder) ladder.innerHTML = '';
+  if (box) box.innerHTML = '';
+  setStep5Enabled(false);
+  if (fromStep && Number(fromStep) < 5) {{
+    const panel5 = document.getElementById('panel-step-5');
+    if (panel5 && panel5.classList.contains('is-active')) goStep(Math.min(4, Number(fromStep) + 1));
   }}
 }}
 
+function renderSummaryChips() {{
+  const host = document.getElementById('wizard-summary-chips');
+  if (!host) return;
+  const chips = [];
+  if (STATE.profile) {{
+    chips.push({{ step: 1, text: `✓ 起点：脱敏队列 ${{STATE.profile.filename || '队列'}} (${{STATE.profile.row_count}} 例)` }});
+  }} else if (STATE.pico) {{
+    chips.push({{ step: 1, text: '✓ 起点：研究想法 · 模拟预演' }});
+  }}
+  if (STATE.selectedRct) {{
+    const aligned = STATE.selectedRct.overall_alignment_status === 'protocol_aligned' ? '五维一致' : '已确认偏离';
+    chips.push({{ step: 2, text: `✓ 对标：${{STATE.selectedRct.nct_id}} · ${{aligned}}` }});
+  }}
+  if (STATE.selectedRct) {{
+    const tl = currentTimeline();
+    const err = timelineWindowError(tl);
+    chips.push({{ step: 3, text: err ? '时间轴配置无效，请修正地标与随访窗' : (`✓ 时间轴：t₀=0d → 随访 ${{tl.horizon}}d` + (tl.landmark > 0 ? ` · 地标 ${{tl.landmark}}d` : '')) }});
+  }}
+  host.innerHTML = chips.map(chip => `<button type="button" class="summary-chip" onclick="goStep(${{chip.step}})">${{escHtml(chip.text)}} <span style="font-weight:600">[修改]</span></button>`).join('');
+}}
+
+function horizonsListId() {{
+  return STATE.mode === 'simulated_cohort' ? 'sim-horizons' : 'map-horizons';
+}}
+
+function parseHorizonList(text) {{
+  return String(text || '').split(',').map(part => Number(String(part).trim())).filter(n => Number.isFinite(n));
+}}
+
+function currentTimeline() {{
+  const landmark = Number(document.getElementById('timeline-landmark') && document.getElementById('timeline-landmark').value);
+  const horizon = Number(document.getElementById('timeline-horizon') && document.getElementById('timeline-horizon').value);
+  const listEl = document.getElementById(horizonsListId());
+  const listed = parseHorizonList(listEl && listEl.value);
+  const horizons = listed.length ? listed : (Number.isFinite(horizon) ? [horizon] : []);
+  return {{ landmark, horizon, horizons }};
+}}
+
+function timelineWindowError(tl) {{
+  const landmark = tl ? tl.landmark : NaN;
+  const horizons = (tl && tl.horizons) || [];
+  if (!Number.isFinite(landmark) || landmark < 0) return '地标时间必须是大于等于 0 的有限天数。';
+  if (!horizons.length || horizons.some(h => !Number.isFinite(h) || h <= 0)) return '随访 horizon 必须是大于 0 的有限天数。';
+  if (landmark >= Math.min(...horizons)) return '地标时间必须小于最短评估时点（landmark < horizon）。';
+  return '';
+}}
+
+let timelineSyncing = false;
+function syncTimelineHorizonIntoList() {{
+  if (timelineSyncing) return;
+  const horizon = Number(document.getElementById('timeline-horizon').value);
+  const el = document.getElementById(horizonsListId());
+  if (!el || !Number.isFinite(horizon)) return;
+  timelineSyncing = true;
+  try {{
+    const nums = parseHorizonList(el.value);
+    if (!nums.length) {{
+      el.value = String(horizon);
+      return;
+    }}
+    const max = Math.max(...nums);
+    el.value = nums.map(n => (n === max ? horizon : n)).join(', ');
+  }} finally {{
+    timelineSyncing = false;
+  }}
+}}
+
+function syncListIntoTimelineHorizon() {{
+  if (timelineSyncing) return;
+  const el = document.getElementById(horizonsListId());
+  const box = document.getElementById('timeline-horizon');
+  if (!el || !box) return;
+  const nums = parseHorizonList(el.value).filter(n => n > 0);
+  if (!nums.length) return;
+  timelineSyncing = true;
+  try {{
+    box.value = String(Math.max(...nums));
+  }} finally {{
+    timelineSyncing = false;
+  }}
+}}
+
+function onStep3ConfigChanged(event) {{
+  const id = event && event.target ? event.target.id : '';
+  if (id === 'timeline-horizon') syncTimelineHorizonIntoList();
+  if (id === 'map-horizons' || id === 'sim-horizons') syncListIntoTimelineHorizon();
+  renderStudyTimeline();
+}}
+
+function renderStudyTimeline() {{
+  const svg = document.getElementById('study-timeline-svg');
+  if (!svg) return;
+  const tl = currentTimeline();
+  const err = timelineWindowError(tl);
+  const errBox = document.getElementById('timeline-window-error');
+  if (errBox) {{
+    errBox.textContent = err || '';
+    errBox.classList.toggle('hidden', !err);
+  }}
+  if (err || !Number.isFinite(tl.horizon) || tl.horizon <= 0) {{
+    svg.innerHTML = `<text x="36" y="48" font-size="13" fill="#991b1b">${{escHtml(err || '时间轴无效')}}</text>`;
+    return;
+  }}
+  const landmark = tl.landmark;
+  const horizon = tl.horizon;
+  const covariateW = 90;
+  const total = covariateW + horizon;
+  const x = (day) => 36 + 680 * (day / total);
+  const x0 = x(covariateW);
+  const xL = x(covariateW + landmark);
+  const xT = x(covariateW + horizon);
+  const showLandmark = landmark > 0;
+  svg.innerHTML = `
+    <line x1="36" y1="48" x2="724" y2="48" stroke="#94a3b8" stroke-width="3"/>
+    <rect x="36" y="36" width="${{Math.max(8, x0 - 36)}}" height="24" fill="#e2e8f0"/>
+    <rect x="${{x0}}" y="34" width="${{Math.max(8, xT - x0)}}" height="28" fill="#ccfbf1"/>
+    ${{showLandmark ? `<rect x="${{x0}}" y="34" width="${{Math.max(6, xL - x0)}}" height="28" fill="#fde68a"/>` : ''}}
+    <circle cx="${{x0}}" cy="48" r="7" fill="#0f766e"/>
+    <text x="40" y="24" font-size="12" fill="#334155">基线协变量窗</text>
+    <text x="${{x0 - 18}}" y="78" font-size="12" fill="#0f766e">t₀</text>
+    ${{showLandmark ? `<text x="${{(x0 + xL) / 2}}" y="24" font-size="12" fill="#92400e">地标窗</text>` : ''}}
+    <text x="${{Math.min(620, (xL + xT) / 2)}}" y="24" font-size="12" fill="#115e59">结局随访窗</text>
+    <text x="690" y="78" font-size="12" fill="#334155">τ</text>
+  `;
+}}
+
+function applyNamedIdea(kind) {{
+  const box = document.getElementById('idea-input-box');
+  if (kind === 'sglt2' && BOOT.ideas[0]) box.value = BOOT.ideas[0].idea_text;
+  if (kind === 'egfr') box.value = 'EGFR 突变晚期非小细胞肺癌一线，比较奥希替尼（Osimertinib）与吉非替尼或厄洛替尼（Gefitinib or Erlotinib）的无进展生存和总生存，非肿瘤死亡作为竞争事件。';
+  renderPicoPreview(box.value);
+}}
+
+function renderPicoPreview(text) {{
+  const host = document.getElementById('pico-preview-chips');
+  if (!host) return;
+  const raw = text || '';
+  const tags = [
+    ['P', /心衰|肺癌|糖尿病|EGFR|NSCLC|房颤|肾病/.test(raw) ? '人群已识别' : '人群'],
+    ['I', /达格列净|奥希替尼|Dapagliflozin|Osimertinib|帕博利珠/.test(raw) ? '试验臂已识别' : '试验臂'],
+    ['C', /西格列汀|吉非替尼|Sitagliptin|Gefitinib|化疗|华法林/.test(raw) ? '对照臂已识别' : '对照臂'],
+    ['O', /死亡|生存|MACE|住院|进展/.test(raw) ? '终点已识别' : '终点'],
+    ['T', /个月|年|随访/.test(raw) ? '随访已识别' : '随访窗'],
+  ];
+  host.innerHTML = tags.map(([k, label]) => `<span class="pico-pill pico-pill-ok">${{k}} ${{escHtml(label)}}</span>`).join('');
+}}
+
 function selectMode(mode) {{
+  invalidateDownstream(4);
   STATE.mode = mode;
   document.getElementById('card-mode-user').className = 'entry-card' + (mode === 'user_cohort' ? ' selected-user' : '');
   document.getElementById('card-mode-sim').className = 'entry-card' + (mode === 'simulated_cohort' ? ' selected-sim' : '');
@@ -828,6 +1106,17 @@ function initBootCards() {{
     if (e.dataTransfer.files && e.dataTransfer.files[0]) uploadCohortFile(e.dataTransfer.files[0]);
   }});
   fi.addEventListener('change', () => {{ if (fi.files && fi.files[0]) uploadCohortFile(fi.files[0]); }});
+  const ideaBox = document.getElementById('idea-input-box');
+  if (ideaBox) {{
+    ideaBox.addEventListener('input', () => renderPicoPreview(ideaBox.value));
+    renderPicoPreview(ideaBox.value);
+  }}
+  const step3Panel = document.getElementById('panel-step-3');
+  if (step3Panel) {{
+    step3Panel.addEventListener('change', (event) => {{ onStep3ConfigChanged(event); invalidateDownstream(4); }});
+    step3Panel.addEventListener('input', (event) => {{ onStep3ConfigChanged(event); invalidateDownstream(4); }});
+  }}
+  renderStudyTimeline();
 }}
 
 function pickIdeaPreset(idx) {{
@@ -847,6 +1136,7 @@ function updateSessionBar() {{
 }}
 
 async function wipeCurrentSession() {{
+  invalidateDownstream(4);
   if (!STATE.sessionId) return;
   const resp = await fetch('/api/sessions/' + STATE.sessionId, {{ method: 'DELETE' }});
   const data = await resp.json();
@@ -884,6 +1174,7 @@ async function uploadCohortFile(file) {{
 }}
 
 function onCohortProfileLoaded(data) {{
+  invalidateDownstream(4);
   STATE.sessionId = data.session_id;
   STATE.profile = data.profile;
   STATE.interpretation = data.interpretation;
@@ -922,12 +1213,12 @@ function onCohortProfileLoaded(data) {{
   box.innerHTML = `
     <fieldset style="border-color:#0f766e;background:#f0fdfa">
       <legend>自动隐私安全数据画像（Data Profiling · 0 行个体记录外发）</legend>
-      <div class="metric-grid">
-        <div><strong>${{p.row_count}} 行</strong><span>总观测样本数</span></div>
-        <div><strong>${{p.column_count}} 列</strong><span>数据表字段数</span></div>
-        <div><strong><code>${{escHtml((p.input_sha256||'').slice(0,12))}}…</code></strong><span>输入文件 SHA-256</span></div>
-        <div><strong>${{escHtml(data.interpretation.assist_mode === 'llm_assisted' ? 'AI 表头辅助' : '确定性规则画像')}}</strong><span>画像解析模式</span></div>
+      <div class="metric-pills">
+        <span class="metric-pill">样本量 N ${{p.row_count}}</span>
+        <span class="metric-pill">字段数 ${{p.column_count}}</span>
+        <span class="metric-pill">编码 UTF-8 / GB18030</span>
       </div>
+      ${{(data.missing_clinical_semantics || []).length ? `<div class="notice"><strong>临床语义待确认</strong>${{(data.missing_clinical_semantics || []).map(item => `<label class="cov-item"><input type="checkbox" style="width:auto" onchange="invalidateDownstream(4)"> ${{escHtml(item.question_zh || item.field || item.column || '字段')}}</label>`).join('')}}</div>` : ''}}
       <p><strong>临床领域与干预线索识别：</strong>${{escHtml(data.interpretation.domain_summary_zh)}}（推荐检索词：<code>${{escHtml(data.interpretation.search_query_en)}}</code>）</p>
       <div class="field-grid" style="margin:12px 0">
         <div class="sample-card"><strong>候选暴露/治疗分组列</strong>${{trtHtml}}</div>
@@ -938,7 +1229,7 @@ function onCohortProfileLoaded(data) {{
         <div class="scroll"><table><thead><tr><th>字段名</th><th>自动推断角色</th><th>缺失率</th><th>分布汇总（均值±SD / 分类占比）</th></tr></thead><tbody>${{covRows}}</tbody></table></div>
       </details>
       <div class="actions">
-        <button type="button" onclick="searchRCTsFromProfile()">下一步：基于队列线索实时检索 ClinicalTrials.gov 目标 RCT →</button>
+        <button type="button" onclick="searchRCTsFromProfile()">下一步：检索对标 RCT →</button>
       </div>
     </fieldset>
   `;
@@ -969,6 +1260,7 @@ async function searchRCTsFromProfile() {{
 
 async function parseIdeaAndSearchRCTs() {{
   showError('');
+  invalidateDownstream(4);
   const ideaText = document.getElementById('idea-input-box').value;
   const resp = await fetch('/api/idea/parse', {{
     method: 'POST',
@@ -1013,6 +1305,7 @@ function needsRctConfirmation(cand) {{
 }}
 
 function onSelectRCTRadio(idx) {{
+  invalidateDownstream(4);
   STATE.selectedRctIdx = idx;
   STATE.confirmArmMismatch = false;
   const cb = document.getElementById('confirm-arm-mismatch-checkbox');
@@ -1037,6 +1330,7 @@ function onSelectRCTRadio(idx) {{
 
 function onToggleMismatchConfirm(checked) {{
   STATE.confirmArmMismatch = Boolean(checked);
+  invalidateDownstream(4);
 }}
 
 async function executeRCTSearch(cond='', intr='', comp='', out='') {{
@@ -1112,13 +1406,16 @@ async function executeRCTSearch(cond='', intr='', comp='', out='') {{
     }}
 
     const da = c.dimension_audit || {{}};
-    const pillKeys = ['arms', 'population', 'outcome', 'followup'];
-    const pillsHtml = pillKeys.map(k => {{
-      const d = da[k];
-      if (!d || !d.pill_zh) return '';
-      const cls = d.tone === 'ok' ? 'pico-pill-ok' : (d.tone === 'warn' ? 'pico-pill-warn' : 'pico-pill-bad');
-      return `<span class="pico-pill ${{cls}}" title="${{escHtml(d.detail_zh || '')}}">${{escHtml(d.pill_zh)}}</span>`;
-    }}).join('');
+    const toneOf = (d) => !d ? 'pico-pill-warn' : (d.tone === 'ok' ? 'pico-pill-ok' : (d.tone === 'warn' ? 'pico-pill-warn' : 'pico-pill-bad'));
+    const markOf = (d) => !d ? '⚠ 待核' : (d.tone === 'ok' ? '✓ 一致' : (d.tone === 'warn' ? '⚠ 偏离' : '✕ 错配'));
+    const matrix = [
+      ['人群 P', da.population],
+      ['试验臂 I', da.arms],
+      ['对照臂 C', da.arms],
+      ['主终点 O', da.outcome],
+      ['随访窗 T', da.followup],
+    ];
+    const pillsHtml = matrix.map(([label, d]) => `<span class="pico-pill ${{toneOf(d)}}" title="${{escHtml((d && d.detail_zh) || '')}}">${{label}} ${{markOf(d)}}</span>`).join('');
 
     const isChecked = idx === STATE.selectedRctIdx;
     const reqConfirm = needsRctConfirmation(c);
@@ -1139,18 +1436,22 @@ async function executeRCTSearch(cond='', intr='', comp='', out='') {{
           </label>
           <a href="${{escHtml(safeRecordHref(c.record_url))}}" target="_blank" rel="noopener"><strong>${{escHtml(c.nct_id)}} ↗</strong></a>
           <span class="tag ${{alignCls}}">${{escHtml(alignText)}}</span>
+          <span class="score-ring" style="--p:${{Math.max(0, Math.min(100, pct))}}"><span>${{pct}}</span></span>
           <span class="tag ${{scoreCls}}">匹配度 ${{pct}}%</span>
           <span class="tag">${{escHtml((c.phases || []).join('/'))}}</span>
           <span class="tag">${{escHtml(c.overall_status)}}</span>
           ${{c.enrollment_count ? `<span class="tag">入组规模 N=${{c.enrollment_count}}</span>` : ''}}
         </div>
         <h3 style="margin:6px 0 8px">${{escHtml(c.brief_title)}}</h3>
-        <div class="pico-pills">${{pillsHtml}}</div>
-        <p style="margin:4px 0;font-size:.9rem"><strong>试验组 (Active)：</strong>${{escHtml((c.experimental_arms||[]).join('；'))}} &nbsp;|&nbsp; <strong>对照组 (Comparator)：</strong>${{escHtml((c.comparator_arms||[]).join('；'))}}</p>
+        <div class="pico-pills" data-picot-matrix="1">${{pillsHtml}}</div>
+        <p style="margin:4px 0;font-size:.9rem"><strong>I</strong> ${{escHtml((c.experimental_arms||[]).join('；'))}} · <strong>C</strong> ${{escHtml((c.comparator_arms||[]).join('；'))}}</p>
         ${{mismatchBanner}}
-        <p style="margin:4px 0;font-size:.9rem"><strong>主要终点与随访期：</strong>${{escHtml(po.measure)}}（随访窗：<code>${{escHtml(po.timeFrame)}}</code> → 建议评估天数：<code>${{(c.parsed_horizon_days||[]).join(', ')}}</code> 天）</p>
-        ${{elig ? `<details style="margin:8px 0;padding:6px 10px"><summary style="font-size:.86rem">查看核心纳排标准要点</summary><ul style="font-size:.85rem;margin:6px 0">${{elig}}</ul></details>` : ''}}
-        <div style="background:#f8fafc;padding:8px 12px;border-radius:5px;margin:8px 0;font-size:.86rem"><strong>与当前研究的四维匹配核验：</strong><ul style="margin:4px 0">${{reasons}}</ul></div>
+        ${{c.effective_score_cap != null && reqConfirm ? `<span class="metric-pill">评分上限 ≤${{Math.round(Number(c.effective_score_cap) * 100)}}%</span>` : ''}}
+        <details><summary>终点、纳排与匹配说明</summary>
+          <p>${{escHtml(po.measure)}} · ${{escHtml(po.timeFrame)}}</p>
+          ${{elig ? `<ul>${{elig}}</ul>` : ''}}
+          <ul>${{reasons}}</ul>
+        </details>
         <button type="button" class="${{reqConfirm ? 'secondary' : ''}}" onclick="chooseTargetRCT(${{idx}})">${{reqConfirm ? '设为局部参考框架（需勾选下方偏离知情确认）' : `选定 ${{escHtml(c.nct_id)}} 作为对标目标试验 →`}}</button>
       </div>
     `;
@@ -1168,6 +1469,7 @@ async function confirmSelectedTargetRCT() {{
 async function chooseTargetRCT(idx) {{
   const rct = STATE.rctCandidates[idx];
   if (!rct) return;
+  invalidateDownstream(4);
   if (STATE.selectedRctIdx !== idx) {{
     onSelectRCTRadio(idx);
   }}
@@ -1225,6 +1527,8 @@ async function chooseTargetRCT(idx) {{
     document.getElementById('step3-sim-config').classList.remove('hidden');
     populateSimConfigForm(data.protocol, rct);
   }}
+  syncListIntoTimelineHorizon();
+  renderStudyTimeline();
   goStep(3);
 }}
 
@@ -1333,7 +1637,7 @@ function addEligibilityRow(crit) {{
     <select class="el-var">${{cols.map(col => `<option value="${{escHtml(col.name)}}" ${{col.name===c.variable?'selected':''}}>${{escHtml(col.name)}}</option>`).join('')}}</select>
     <select class="el-op">${{['>=','<=','>','<','==','!='].map(op => `<option value="${{op}}" ${{op===c.operator?'selected':''}}>${{op}}</option>`).join('')}}</select>
     <input type="text" class="el-val" value="${{escHtml(c.value)}}" placeholder="阈值">
-    <button type="button" class="secondary" style="padding:7px 10px" onclick="this.parentElement.remove()">删除</button>
+    <button type="button" class="secondary" style="padding:7px 10px" onclick="this.parentElement.remove(); invalidateDownstream(4)">删除</button>
   `;
   document.getElementById('eligibility-builder-rows').appendChild(row);
 }}
@@ -1361,8 +1665,92 @@ function populateSimConfigForm(proto, rct) {{
   `;
 }}
 
-async function launchUserCohortRun() {{
-  showError('');
+function fmtNum(v) {{
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(3) : '—';
+}}
+
+function renderPreflight(data) {{
+  STATE.preflight = data;
+  const loaded = (data.funnel || []).find(row => row.id === 'loaded') || {{ n: 0 }};
+  const eligible = (data.funnel || []).find(row => row.id === 'eligible') || {{ n: 0 }};
+  const ess = (data.funnel || []).find(row => row.id === 'ess') || {{ n: 0, ratio: null }};
+  const base = Math.max(loaded.n || 1, 1);
+  const bar = (n) => `<div class="funnel-bar"><i style="width:${{Math.max(4, 100 * (Number(n) || 0) / base)}}%"></i></div>`;
+  document.getElementById('preflight-funnel').innerHTML = [
+    ['原始载入 N', loaded.n],
+    ['符合纳排与地标 n', eligible.n],
+    ['加权有效样本量 ESS', ess.n],
+  ].map(([label, n]) => `<div class="funnel-row"><span>${{label}}</span>${{bar(n)}}<strong>${{n ?? '—'}}</strong></div>`).join('')
+    + (ess.ratio != null ? `<span class="metric-pill">ESS 占比 ${{(Number(ess.ratio) * 100).toFixed(1)}}%</span>` : '');
+  const rows = data.smd || [];
+  const width = 420;
+  const height = Math.max(120, 36 + rows.length * 22);
+  const finiteSmds = [];
+  rows.forEach(r => {{
+    [r.abs_smd_before, r.abs_smd_after, r.abs_smd_unweighted, r.abs_smd_weighted].forEach(v => {{
+      const n = Number(v);
+      if (Number.isFinite(n)) finiteSmds.push(n);
+    }});
+  }});
+  const maxS = Math.max(0.2, ...(finiteSmds.length ? finiteSmds : [0.2]));
+  const gx = 160 + width * Math.min(0.1 / maxS, 1);
+  const marks = rows.map((r, i) => {{
+    const y = 28 + i * 22;
+    const before = Number(r.abs_smd_before != null ? r.abs_smd_before : r.abs_smd_unweighted);
+    const after = Number(r.abs_smd_after != null ? r.abs_smd_after : r.abs_smd_weighted);
+    const beforeOk = Number.isFinite(before);
+    const afterOk = Number.isFinite(after);
+    const label = escHtml(r.covariate) + (beforeOk && afterOk ? '' : ' N/A');
+    const xb = beforeOk ? 160 + width * Math.min(before / maxS, 1) : null;
+    const xa = afterOk ? 160 + width * Math.min(after / maxS, 1) : null;
+    const afterColor = afterOk && after > 0.1 ? '#dc2626' : '#0f766e';
+    const beforeDot = beforeOk ? `<circle cx="${{xb}}" cy="${{y}}" r="4" fill="none" stroke="#94a3b8"/>` : '';
+    const afterDot = afterOk ? `<circle cx="${{xa}}" cy="${{y}}" r="4" fill="${{afterColor}}"/>` : '';
+    return `<text x="152" y="${{y + 4}}" text-anchor="end" font-size="11">${{label}}</text>${{beforeDot}}${{afterDot}}`;
+  }}).join('');
+  document.getElementById('preflight-loveplot').innerHTML = `<figure class="chart-card"><figcaption>协变量 |SMD| 加权前（空心）vs 加权后（实心），虚线 = 0.10</figcaption><svg viewBox="0 0 640 ${{height}}" role="img" aria-label="Love plot"><line x1="160" y1="16" x2="160" y2="${{height - 16}}" stroke="#64748b"/><line x1="${{gx}}" y1="16" x2="${{gx}}" y2="${{height - 16}}" stroke="#64748b" stroke-dasharray="4 3"/>${{marks}}</svg></figure>`;
+  const gate = document.getElementById('preflight-gate');
+  if (data.gate_passed) {{
+    gate.innerHTML = `<div class="gate-ok">✓ 正值性与协变量均衡门禁通过 (max |SMD| = ${{fmtNum(data.max_abs_smd_weighted)}}, ESS 占比 = ${{ess.ratio == null ? '—' : (Number(ess.ratio) * 100).toFixed(1) + '%'}})</div>`;
+  }} else {{
+    const fails = (data.gate_failures || []).map(item => `<li><code>${{escHtml(item.code || item)}}</code> ${{escHtml(item.detail || item.message || '')}}</li>`).join('');
+    gate.innerHTML = `<div class="gate-bad"><strong>预检未通过，不能进入未调整的最终估计。</strong><ul>${{fails}}</ul><button type="button" class="secondary" onclick="goStep(3)">← 返回调整协变量或地标窗</button></div>`;
+  }}
+  document.getElementById('preflight-status').classList.add('hidden');
+  setStep5Enabled(data.gate_passed === true && data.gate_status === 'passed');
+}}
+
+function timelinePayloadFields() {{
+  const tl = currentTimeline();
+  return {{
+    landmark_time: tl.landmark,
+    landmark_days: tl.landmark,
+    horizon: tl.horizon,
+    horizons: tl.horizons,
+    horizon_days: tl.horizons,
+  }};
+}}
+
+function preflightPayload(mapping, simConfig) {{
+  return {{
+    project_mode: STATE.mode,
+    session_id: STATE.sessionId,
+    mapping: mapping,
+    pico: STATE.pico,
+    sim_config: simConfig,
+    target_rct: STATE.selectedRct,
+    ...timelinePayloadFields(),
+    condition: document.getElementById('step3-cond-hidden').value.trim() || document.getElementById('rct-cond-input').value.trim(),
+    intervention: document.getElementById('step3-intr-hidden').value.trim() || document.getElementById('rct-intr-input').value.trim(),
+    comparator: document.getElementById('step3-comp-hidden').value.trim() || document.getElementById('rct-comp-input').value.trim(),
+    outcome: document.getElementById('step3-out-hidden').value.trim() || document.getElementById('rct-out-input').value.trim(),
+    confirm_arm_mismatch: STATE.confirmArmMismatch,
+    confirm_protocol_mismatch: STATE.confirmArmMismatch
+  }};
+}}
+
+function readUserMapping() {{
   const primVals = [], compVals = [], censVals = [];
   document.querySelectorAll('#outcome-values-mapper [data-out-val]').forEach(row => {{
     const val = row.getAttribute('data-out-val');
@@ -1372,7 +1760,7 @@ async function launchUserCohortRun() {{
     else if (role === '2') compVals.push(val);
     else censVals.push(val);
   }});
-  const horizons = document.getElementById('map-horizons').value.split(',').map(x => parseFloat(x.trim())).filter(x => Number.isFinite(x) && x > 0);
+  const horizons = document.getElementById('map-horizons').value.split(',').map(x => parseFloat(x.trim())).filter(x => Number.isFinite(x));
   const elig = [];
   document.querySelectorAll('#eligibility-builder-rows .elig-row').forEach((r, i) => {{
     const v = r.querySelector('.el-val').value.trim();
@@ -1386,8 +1774,7 @@ async function launchUserCohortRun() {{
       value: Number.isFinite(numV) && v !== '' ? numV : v
     }});
   }});
-
-  const mapping = {{
+  return {{
     id_column: (STATE.profile && STATE.profile.id_column_guess) || '',
     study_title: document.getElementById('map-study-title').value.trim(),
     treatment_column: document.getElementById('map-trt-col').value,
@@ -1401,6 +1788,8 @@ async function launchUserCohortRun() {{
     censor_values: censVals,
     covariate_columns: getSelectedCovariates(),
     eligibility_criteria: elig,
+    landmark_time: Number(document.getElementById('timeline-landmark').value),
+    landmark_day: Number(document.getElementById('timeline-landmark').value),
     horizon_days: horizons,
     administrative_end_day: parseFloat(document.getElementById('map-admin-end').value) || 540,
     weight_method: document.getElementById('map-weight-method').value,
@@ -1410,14 +1799,103 @@ async function launchUserCohortRun() {{
     bootstrap_iterations: parseInt(document.getElementById('map-boot').value, 10) || 80,
     seed: 42
   }};
+}}
 
-  const resp = await fetch('/api/dual-runs', {{
+function readSimConfig() {{
+  const horizons = document.getElementById('sim-horizons').value.split(',').map(x => parseFloat(x.trim())).filter(x => Number.isFinite(x));
+  return {{
+    comparator_label: document.getElementById('sim-comp-label').value.trim(),
+    active_label: document.getElementById('sim-act-label').value.trim(),
+    cases: Math.min(800, parseInt(document.getElementById('sim-cases').value, 10) || 400),
+    confounding_strength: document.getElementById('sim-confounding').value,
+    effect_direction: document.getElementById('sim-effect').value,
+    competing_rate_level: document.getElementById('sim-competing-level').value,
+    landmark_time: Number(document.getElementById('timeline-landmark').value),
+    landmark_day: Number(document.getElementById('timeline-landmark').value),
+    horizon_days: horizons,
+    weight_method: document.getElementById('sim-weight-method').value,
+    seed: parseInt(document.getElementById('sim-seed').value, 10) || 42,
+    bootstrap_iterations: 20
+  }};
+}}
+
+async function runPreflight() {{
+  showError('');
+  const tlErr = timelineWindowError(currentTimeline());
+  const errBox = document.getElementById('timeline-window-error');
+  if (tlErr) {{
+    if (errBox) {{ errBox.textContent = tlErr; errBox.classList.remove('hidden'); }}
+    showError(tlErr);
+    return;
+  }}
+  const mapping = STATE.mode === 'user_cohort' ? readUserMapping() : null;
+  const simConfig = STATE.mode === 'simulated_cohort' ? readSimConfig() : null;
+  goStep(4);
+  document.getElementById('preflight-status').classList.remove('hidden');
+  document.getElementById('preflight-status').textContent = '正在做秒级纳排与均衡预检…';
+  const resp = await fetch('/api/v1/tte/diagnose-preflight', {{
+    method: 'POST',
+    headers: {{ 'Content-Type': 'application/json' }},
+    body: JSON.stringify(preflightPayload(mapping, simConfig))
+  }});
+  const data = await resp.json();
+  if (!resp.ok) {{ showError(data.error || '预检失败'); return; }}
+  renderPreflight(data);
+}}
+
+function renderTierDashboard(payload) {{
+  const ladder = payload && payload.estimates && payload.estimates.clinical_comparison_ladder;
+  const note = payload && payload.estimates && payload.estimates.what_tte_controlled_beyond_psm;
+  const host = document.getElementById('clinical-ladder');
+  if (!host) return;
+  if (!payload || payload.gate_status !== 'passed' || !ladder) {{
+    host.innerHTML = '<div class="notice">门禁未通过时不展示三阶点估计。</div>';
+    return;
+  }}
+  const t1 = ladder.tier_1_unadjusted_crude || {{}};
+  const t2 = ladder.tier_2_conventional_ps || {{}};
+  const t3 = ladder.tier_3_target_trial_emulation || {{}};
+  const psm = t2.psm_1to1 || {{}};
+  const modeBadge = STATE.mode === 'simulated_cohort' ? '合成方法学预演（非临床证据）' : '自有脱敏队列探索分析（非因果定论）';
+  const pills = ((note && (note.extra_tte_controls || note.attribution_items)) || []).map(item => `<span class="metric-pill">${{escHtml(item.label_zh || item.category || '')}}</span>`).join('');
+  host.innerHTML = `
+    <div class="tier-row">
+      <article class="tier-card"><h3>① 原始直接粗分析</h3><p>1-KM / CIF RD ${{fmtNum(t1.crude_rd_cif)}}</p><p>Crude HR ${{fmtNum(t1.crude_hr)}}</p><span class="metric-pill">未控混杂与时间偏倚</span></article>
+      <div class="tier-arrow">→</div>
+      <article class="tier-card"><h3>② 常规倾向性评分调整</h3><p>PSM RD ${{fmtNum(psm.psm_rd)}} · HR ${{fmtNum(psm.psm_hr)}}</p><span class="metric-pill">匹配保留 ${{psm.matched_n_total ?? '—'}} · 丢弃 ${{psm.discarded_subjects_pct == null ? '—' : (Number(psm.discarded_subjects_pct) * 100).toFixed(1) + '%'}}</span><p>sIPTW RD ${{fmtNum((t2.simple_iptw || {{}}).iptw_rd)}} · HR ${{fmtNum((t2.simple_iptw || {{}}).iptw_hr)}}</p><span class="metric-pill">仅平衡基线观测协变量</span></article>
+      <div class="tier-arrow">→</div>
+      <article class="tier-card hero"><h3>③ 完整目标试验模拟</h3><p>TTE CIF RD ${{fmtNum(t3.tte_rd)}}</p><p>sHR ${{fmtNum(t3.shr)}} · csHR ${{fmtNum(t3.cshr_1)}} · E-value ${{fmtNum(t3.evalue_point)}}</p><span class="metric-pill">${{modeBadge}}</span></article>
+    </div>
+    <div><strong>相比传统 PSM，TTE 额外控制了什么？</strong><div class="pico-pills">${{pills}}</div><p>${{escHtml((note && note.clinician_takeaway_zh) || '')}}</p></div>
+  `;
+}}
+
+async function launchFromPreflight() {{
+  if (!preflightFreshPassed()) {{
+    showError('均衡预检未通过，不能生成最终估计。');
+    return;
+  }}
+  const tlErr = timelineWindowError(currentTimeline());
+  if (tlErr) {{
+    showError(tlErr);
+    return;
+  }}
+  if (STATE.mode === 'user_cohort') return launchUserCohortRun();
+  return launchSimulatedRun();
+}}
+
+async function launchUserCohortRun() {{
+  showError('');
+  const mapping = readUserMapping();
+
+  const resp = await fetch('/api/v1/tte/run', {{
     method: 'POST',
     headers: {{ 'Content-Type': 'application/json' }},
     body: JSON.stringify({{
       project_mode: 'user_cohort',
       session_id: STATE.sessionId,
       mapping: mapping,
+      ...timelinePayloadFields(),
       target_rct: STATE.selectedRct,
       condition: document.getElementById('step3-cond-hidden').value.trim() || document.getElementById('rct-cond-input').value.trim(),
       intervention: document.getElementById('step3-intr-hidden').value.trim() || document.getElementById('rct-intr-input').value.trim(),
@@ -1434,23 +1912,14 @@ async function launchUserCohortRun() {{
 
 async function launchSimulatedRun() {{
   showError('');
-  const horizons = document.getElementById('sim-horizons').value.split(',').map(x => parseFloat(x.trim())).filter(x => Number.isFinite(x) && x > 0);
-  const simConfig = {{
-    comparator_label: document.getElementById('sim-comp-label').value.trim(),
-    active_label: document.getElementById('sim-act-label').value.trim(),
-    cases: parseInt(document.getElementById('sim-cases').value, 10) || 1500,
-    confounding_strength: document.getElementById('sim-confounding').value,
-    effect_direction: document.getElementById('sim-effect').value,
-    competing_rate_level: document.getElementById('sim-competing-level').value,
-    horizon_days: horizons,
-    weight_method: document.getElementById('sim-weight-method').value,
-    seed: parseInt(document.getElementById('sim-seed').value, 10) || 42,
-    bootstrap_iterations: 80
-  }};
-  const resp = await fetch('/api/dual-runs', {{
+  const simConfig = readSimConfig();
+  simConfig.cases = parseInt(document.getElementById('sim-cases').value, 10) || 1500;
+  simConfig.bootstrap_iterations = 80;
+  const resp = await fetch('/api/v1/tte/run', {{
     method: 'POST',
     headers: {{ 'Content-Type': 'application/json' }},
     body: JSON.stringify({{
+      ...timelinePayloadFields(),
       project_mode: 'simulated_cohort',
       target_rct: STATE.selectedRct,
       pico: STATE.pico,
@@ -1470,14 +1939,17 @@ async function launchSimulatedRun() {{
 
 async function pollDualRun(runId) {{
   STATE.currentRunId = runId;
-  goStep(4);
-  const box = document.getElementById('step4-result-container');
-  box.innerHTML = `<div class="notice"><strong>正在运行确定性 TTE 门禁与竞争风险生存估计（运行号 <code>${{escHtml(runId)}}</code>）…</strong><p>正在执行纳排漏斗、极大似然倾向加权、正值性/ESS/|SMD| 门禁核查、加权 Aalen–Johansen CIF 与 Fine–Gray sHR / 原因特异 Cox 估计，请稍候约 1–3 秒。</p></div>`;
+  goStep(5);
+  const box = document.getElementById('step5-result-container');
+  box.innerHTML = `<div class="notice"><strong>正在生成三阶对比（运行号 <code>${{escHtml(runId)}}</code>）…</strong></div>`;
   for (let i = 0; i < 180; i++) {{
     const r = await fetch(`/api/dual-runs/${{runId}}`);
     const d = await r.json();
     if (d.state !== 'queued' && d.state !== 'running') {{
-      box.innerHTML = d.rendered_html || `<p>已完成：<a href="/runs/${{escHtml(runId)}}">打开完整结果页</a></p>`;
+      STATE.lastRun = d;
+      renderTierDashboard(d);
+      const report = d.rendered_html || `<p>已完成：<a href="/runs/${{escHtml(runId)}}">打开完整结果页</a></p>`;
+      box.innerHTML = `<div class="actions"><a class="primary-link" href="/runs/${{escHtml(runId)}}/report?download=1">导出独立离线 HTML 审计报告</a><a class="secondary-link" href="/runs/${{escHtml(runId)}}/artifacts/bundle/estimates.json">导出 JSON 结果单</a></div><details><summary>方案 JSON、CIF 曲线与方法学说明</summary>${{report}}</details>`;
       return;
     }}
     await new Promise(res => setTimeout(res, 400));
