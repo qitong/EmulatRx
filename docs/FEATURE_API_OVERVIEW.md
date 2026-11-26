@@ -100,7 +100,23 @@ PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python3 -m unittest discover -s
 
 ---
 
-## 7. WorkBuddy 多用户 MCP（`X-EmulatRx-User`、并发池、`.xlsx`）
+## 7. 五步可视化向导与秒级预检（Issue #19）
+
+工作台 `GET /` 与 `GET /dual` 使用同一单焦点五步向导，一次只展开当前步：
+
+1. **选择起点与队列**：脱敏 CSV/TSV 或 CAROLINA / FLAURA 样表，或两行研究想法。
+2. **锁定对标 RCT**：候选卡片上的五维 PICO-T 信号；双臂或方案偏离仍须显式确认。
+3. **时间轴与角色映射**：基线窗、t₀、地标窗与随访窗，以及治疗、时间、终点、协变量槽位。
+4. **秒级均衡预检**：`POST /api/v1/tte/diagnose-preflight` 返回纳排漏斗、加权前/后 `|SMD|` 与 `gate_passed`，不跑生存 bootstrap。
+5. **三阶去偏结果看板**：粗分析 → 1:1 PSM / sIPTW → 完整 TTE，并展示 `what_tte_controlled_beyond_psm`。
+
+`diagnose-preflight` 与 `POST /api/v1/tte/run`（以及 `POST /api/v1/projects/user-cohort/runs`、`POST /api/v1/projects/simulated/runs`）使用同一套 `verify_and_enrich_target_rct` 门禁。未确认的双臂偏离返回 `422 ARM_MISMATCH_CONFIRMATION_REQUIRED`，未确认的 PICO-T 偏离返回 `422 PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED`。`gate_passed=false` 时界面不放行最终估计。第 3 步的 `landmark_time` 与 `horizon` 会进入预检和正式运行：负的地标、非正的随访时点、非有限数，或 `landmark_time >= min(horizons)` 返回 `400 INVALID_TIMELINE_WINDOW`。未知会话在 `POST /api/v1/tte/diagnose-preflight` 上返回 `404 SESSION_NOT_FOUND`。预检通过 `get_session` 只解析当前用户命名空间里的会话。
+
+鉴权、`Content-Security-Policy`、`X-Content-Type-Options: nosniff` 保持不变。`record_url` 只允许 `http://` 与 `https://` 两种方案（服务端 `safe_record_href`、浏览器 `safeRecordHref`）；`javascript:`、`data:` 等其他方案改为 `#`。
+
+---
+
+## 8. WorkBuddy 多用户 MCP（`X-EmulatRx-User`、并发池、`.xlsx`）
 
 完整接入说明见 [`docs/WORKBUDDY_MCP_SETUP.html`](WORKBUDDY_MCP_SETUP.html)。
 

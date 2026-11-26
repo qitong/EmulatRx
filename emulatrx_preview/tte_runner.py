@@ -15,12 +15,17 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
 
+from emulatrx_tte.cohort_ingest import apply_timeline_window
 from emulatrx_tte import (
     build_simulated_protocol_and_dgp,
+    diagnose_cohort,
+    generate_synthetic_cohort,
+    ingest_user_cohort,
     interpret_cohort_profile,
     profile_cohort_dataframe,
     read_tabular_cohort_bytes,
@@ -51,6 +56,53 @@ SESSION_ID = re.compile(r"[0-9a-f]{32}\Z")
 SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 MAX_PROTOCOL_BYTES = 16 * 1024
 MAX_CASES = 5000
+
+
+def _timeline_overlay(payload: dict | None) -> dict:
+    if not isinstance(payload, dict):
+        return {}
+    keys = ("landmark_time", "landmark_days", "landmark_day", "horizons", "horizon_days", "horizon")
+    return {key: payload[key] for key in keys if key in payload}
+
+
+def _optional_float(value: object) -> float | None:
+    text = str(value or "").strip()
+    if not text or text in {"inf", "-inf", "nan"}:
+        return None
+    try:
+        number = float(text)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    return number
+
+
+def _ess_funnel(ess: dict, retained_n: int) -> tuple[float | None, float | None]:
+    ratio_raw = ess.get("min_ess_ratio_observed") if isinstance(ess, dict) else None
+    ratio = _optional_float(ratio_raw)
+    total = 0.0
+    found = False
+    by_arm = ess.get("by_arm") if isinstance(ess, dict) else None
+    if isinstance(by_arm, dict):
+        for item in by_arm.values():
+            if isinstance(item, dict) and item.get("ess") is not None:
+                total += float(item["ess"])
+                found = True
+    pairwise = ess.get("pairwise") if isinstance(ess, dict) else None
+    if not found and isinstance(pairwise, list):
+        for pair in pairwise:
+            if not isinstance(pair, dict):
+                continue
+            for side in ("arm_j", "arm_k"):
+                block = pair.get(side) or {}
+                if isinstance(block, dict) and block.get("ess") is not None:
+                    total += float(block["ess"])
+                    found = True
+    if not found and ratio is not None:
+        total = ratio * float(retained_n)
+        found = True
+    return (round(total, 4) if found else None, ratio)
 MAX_BOOTSTRAP = 300
 MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
 RETENTION_SECONDS = 24 * 60 * 60
@@ -1167,6 +1219,7 @@ class TTERunner:
         confirm_protocol_mismatch: bool = False,
     ) -> dict:
         cfg = dict(sim_config or {})
+        apply_timeline_window(cfg)
         if str(intervention or "").strip():
             cfg.setdefault("intervention", str(intervention).strip())
         if str(comparator or "").strip():
@@ -1283,6 +1336,8 @@ class TTERunner:
                 target_followup_days=target_followup_days_override,
             )
         sess = self.get_session(session_id)
+        mapping = dict(mapping)
+        apply_timeline_window(mapping)
         cohort_path = sess["cohort_path"]
         if not cohort_path.is_file():
             raise ContractError("SESSION_COHORT_MISSING", "会话中的队列数据文件已不存在，请重新上传。")
@@ -1816,4 +1871,194 @@ class TTERunner:
             "next_offset": offset + len(chunk),
             "encoding": "base64",
             "data": base64.b64encode(chunk).decode("ascii"),
+        }
+
+    def diagnose_preflight(self, payload: dict) -> dict:
+        """Eligibility, weighting, ESS, and balance gates with no survival bootstrap.
+
+        Arm and protocol mismatch confirmation uses the same ``verify_and_enrich_target_rct``
+        call as ``start_user_cohort`` / ``start_simulated_cohort``.
+        """
+        if not isinstance(payload, dict):
+            raise ContractError("INVALID_TYPE", "preflight payload must be an object")
+        mode = str(payload.get("project_mode") or "")
+        applied_landmark = 0
+        applied_horizons: list = []
+        target_rct = payload.get("target_rct") if isinstance(payload.get("target_rct"), dict) else None
+        confirm_arm = bool(payload.get("confirm_arm_mismatch") is True)
+        confirm_proto = bool(payload.get("confirm_protocol_mismatch") is True)
+        cond_ovr = str(payload.get("condition") or "").strip()
+        intr_ovr = str(payload.get("intervention") or "").strip()
+        comp_ovr = str(payload.get("comparator") or "").strip()
+        out_ovr = str(payload.get("outcome") or "").strip()
+        fu_raw = payload.get("target_followup_days")
+        fu_ovr = float(fu_raw) if isinstance(fu_raw, (int, float)) and not isinstance(fu_raw, bool) else None
+
+        with tempfile.TemporaryDirectory(prefix="emulatrx-preflight-") as tmp:
+            work = Path(tmp)
+            if mode == SOURCE_MODE_USER_COHORT:
+                session_id = str(payload.get("session_id") or "")
+                sess = self.get_session(session_id)
+                mapping = payload.get("mapping")
+                if mapping is None:
+                    mapping = recommend_column_mapping(sess["profile"], target_rct=target_rct)
+                if not isinstance(mapping, dict):
+                    raise ContractError("INVALID_MAPPING", "mapping must be an object")
+                mapping = dict(mapping)
+                apply_timeline_window(mapping, _timeline_overlay(payload))
+                if target_rct:
+                    pctx = self.resolve_user_cohort_pico_context(
+                        sess,
+                        mapping,
+                        condition_override=cond_ovr,
+                        intervention_override=intr_ovr,
+                        comparator_override=comp_ovr,
+                        outcome_override=out_ovr,
+                        target_followup_days_override=fu_ovr,
+                    )
+                    verify_and_enrich_target_rct(
+                        target_rct,
+                        intervention=pctx["intervention"],
+                        comparator=pctx["comparator"],
+                        target_condition=pctx["target_condition"],
+                        target_outcome=pctx["target_outcome"],
+                        target_followup_days=pctx["target_followup_days"],
+                        project_mode=SOURCE_MODE_USER_COHORT,
+                        confirm_arm_mismatch=confirm_arm,
+                        confirm_protocol_mismatch=confirm_proto,
+                    )
+                weight_method = str(mapping.get("weight_method") or "overlap")
+                ingest_user_cohort(sess["cohort_path"], mapping, out_dir=work / "ingest", target_rct=target_rct)
+                protocol_path = work / "ingest" / "normalized_protocol.json"
+                cohort_path = work / "ingest" / "standardized_cohort.csv"
+            elif mode == SOURCE_MODE_SIMULATED_COHORT:
+                pico = payload.get("pico") if isinstance(payload.get("pico"), dict) else None
+                proto_in = payload.get("protocol") if isinstance(payload.get("protocol"), dict) else None
+                cfg = dict(payload.get("sim_config")) if isinstance(payload.get("sim_config"), dict) else {}
+                apply_timeline_window(cfg, _timeline_overlay(payload))
+                if intr_ovr:
+                    cfg.setdefault("intervention", intr_ovr)
+                if comp_ovr:
+                    cfg.setdefault("comparator", comp_ovr)
+                cases = int(cfg.get("cases", 400))
+                seed = int(cfg.get("seed", 1))
+                weight_method = str(cfg.get("weight_method") or "overlap")
+                if not 100 <= cases <= MAX_CASES:
+                    raise ContractError("INVALID_CASE_COUNT", f"模拟样本量须在 100 至 {MAX_CASES} 之间。")
+                if not 0 <= seed <= 2**32 - 1:
+                    raise ContractError("INVALID_SEED", "随机种子须在有效非负整数范围内。")
+                if weight_method not in ("overlap", "stabilized_iptw", "iptw"):
+                    raise ContractError("INVALID_WEIGHT_METHOD", f"不支持的加权方式：{weight_method}")
+                eff_pico, sim_intr, sim_comp = self.resolve_simulated_effective_pico(
+                    pico=pico,
+                    idea_text=str(payload.get("idea_text") or ""),
+                    condition=cond_ovr,
+                    intervention=intr_ovr,
+                    comparator=comp_ovr,
+                    outcome=out_ovr,
+                    sim_config=cfg,
+                    protocol=proto_in,
+                    target_rct=target_rct,
+                )
+                if target_rct:
+                    verify_and_enrich_target_rct(
+                        target_rct,
+                        intervention=sim_intr,
+                        comparator=sim_comp,
+                        target_condition=str((eff_pico or {}).get("condition_query_en") or "").strip(),
+                        target_outcome=str((eff_pico or {}).get("outcome_query_en") or (eff_pico or {}).get("primary_outcome") or "").strip(),
+                        project_mode=SOURCE_MODE_SIMULATED_COHORT,
+                        confirm_arm_mismatch=confirm_arm,
+                        confirm_protocol_mismatch=confirm_proto,
+                    )
+                normalized_proto, dgp_params = build_simulated_protocol_and_dgp(
+                    target_rct=target_rct,
+                    pico=eff_pico,
+                    sim_config=cfg,
+                )
+                protocol_path = work / "protocol.json"
+                protocol_path.write_text(json.dumps(normalized_proto), encoding="utf-8")
+                dgp_path = work / "dgp.json"
+                dgp_path.write_text(json.dumps(dgp_params), encoding="utf-8")
+                generate_synthetic_cohort(
+                    protocol_path,
+                    seed=seed,
+                    cases=cases,
+                    out_dir=work / "synth",
+                    dgp_params_path=dgp_path,
+                    id_prefix="SIM",
+                )
+                cohort_path = work / "synth" / "cohort.csv"
+            else:
+                raise ContractError("UNSUPPORTED_SOURCE_MODE", f"Unsupported project_mode: {mode}")
+
+            if weight_method not in ("overlap", "stabilized_iptw", "iptw"):
+                raise ContractError("INVALID_WEIGHT_METHOD", f"不支持的加权方式：{weight_method}")
+            summary, _code = diagnose_cohort(
+                protocol_path,
+                cohort_path,
+                weight_method=weight_method,
+                out_dir=work / "diag",
+            )
+            summary_path = work / "diag" / "diagnostics_summary.json"
+            if summary_path.is_file():
+                summary = {**json.loads(summary_path.read_text(encoding="utf-8")), **summary}
+            balance_path = work / "diag" / "balance_diagnostics.csv"
+            attrition_path = work / "diag" / "attrition_table.csv"
+            smd_rows = []
+            if balance_path.is_file():
+                with balance_path.open(encoding="utf-8", newline="") as stream:
+                    for row in csv.DictReader(stream):
+                        smd_rows.append(
+                            {
+                                "covariate": row.get("covariate") or "",
+                                "abs_smd_before": _optional_float(row.get("abs_smd_unweighted")),
+                                "abs_smd_after": _optional_float(row.get("abs_smd_weighted")),
+                                "abs_smd_unweighted": _optional_float(row.get("abs_smd_unweighted")),
+                                "abs_smd_weighted": _optional_float(row.get("abs_smd_weighted")),
+                            }
+                        )
+            waterfall = []
+            if attrition_path.is_file():
+                with attrition_path.open(encoding="utf-8", newline="") as stream:
+                    for row in csv.DictReader(stream):
+                        waterfall.append(
+                            {
+                                "step_id": row.get("step_id") or "",
+                                "description": row.get("description") or "",
+                                "remaining_n": int(float(row["remaining_n"])) if row.get("remaining_n") else 0,
+                                "excluded_n": int(float(row["excluded_n"])) if row.get("excluded_n") else 0,
+                            }
+                        )
+            applied_proto = json.loads(protocol_path.read_text(encoding="utf-8"))
+            applied_landmark = int(applied_proto["time_zero"]["landmark_day"])
+            applied_horizons = list(applied_proto["followup"]["horizon_days"])
+        loaded_n = int(summary.get("initial_n") or 0)
+        eligible_n = int(summary.get("retained_n") or 0)
+        ess_n, ess_ratio = _ess_funnel(summary.get("ess_diagnostics") or {}, eligible_n)
+        gate_status = str(summary.get("gate_status") or "blocked")
+        return {
+            "project_mode": mode,
+            "gate_passed": gate_status == "passed",
+            "gate_status": gate_status,
+            "gate_failures": summary.get("gate_failures") or [],
+            "funnel": [
+                {"id": "loaded", "label_zh": "原始载入 N", "n": loaded_n},
+                {"id": "eligible", "label_zh": "符合纳排与地标 n", "n": eligible_n},
+                {
+                    "id": "ess",
+                    "label_zh": "加权有效样本量 ESS",
+                    "n": ess_n,
+                    "ratio": ess_ratio,
+                },
+            ],
+            "smd": smd_rows,
+            "max_abs_smd_unweighted": summary.get("max_abs_smd_unweighted"),
+            "max_abs_smd_weighted": summary.get("max_abs_smd_weighted"),
+            "ess_ratio": ess_ratio,
+            "waterfall": waterfall,
+            "weight_method": summary.get("weight_method"),
+            "landmark_time": applied_landmark,
+            "horizon_days": applied_horizons,
+            "landmark_excluded_n": int(summary.get("landmark_excluded_n") or 0),
         }

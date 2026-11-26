@@ -305,6 +305,141 @@ class PreviewServiceTests(unittest.TestCase):
         recovered = TTERunner(self.service.runner.root)
         self.assertEqual(recovered.get(run_id)["state"], "interrupted")
 
+    def test_five_step_wizard_preflight_progression_and_mismatch_gates(self):
+        for path in ("/", "/dual"):
+            page = self.client.get(path, headers=self.web_auth)
+            self.assertEqual(page.status_code, 200, path)
+            for marker in (
+                'data-wizard-step="1"',
+                'data-wizard-step="2"',
+                'data-wizard-step="3"',
+                'data-wizard-step="4"',
+                'data-wizard-step="5"',
+                "study-timeline-svg",
+                "preflight-loveplot",
+                "clinical-ladder",
+                "function safeRecordHref",
+            ):
+                self.assertIn(marker, page.text, path)
+            self.assertIn("Content-Security-Policy", page.headers)
+            self.assertIn("nosniff", page.headers.get("x-content-type-options", ""))
+
+        naked = self.client.post("/api/v1/tte/diagnose-preflight", json={"project_mode": "simulated_cohort"})
+        self.assertEqual(naked.status_code, 401)
+
+        with mock.patch.dict(os.environ, {"EMULATRX_OFFLINE_RCT_CATALOG": "1"}):
+            uploaded = self.client.post(
+                "/api/sessions/upload",
+                headers={**self.web_auth, "Content-Type": "application/json"},
+                json={"sample_id": "t2dm_cv_carolina"},
+            )
+            self.assertEqual(uploaded.status_code, 200, uploaded.text)
+            session = uploaded.json()
+            session_id = session["session_id"]
+            mapping = dict(session["default_mapping"])
+            mapping["bootstrap_iterations"] = 20
+
+            found = self.client.post(
+                "/api/rcts/search",
+                headers=self.web_auth,
+                json={
+                    "query": "NCT01243424",
+                    "session_id": session_id,
+                    "project_mode": "user_cohort",
+                    "max_results": 4,
+                },
+            )
+            self.assertEqual(found.status_code, 200, found.text)
+            carolina = next(item for item in found.json()["candidates"] if item["nct_id"] == "NCT01243424")
+            mismatched = self.client.post(
+                "/api/rcts/search",
+                headers=self.web_auth,
+                json={"query": "NCT02296125", "project_mode": "user_cohort", "session_id": session_id, "max_results": 4},
+            )
+            self.assertEqual(mismatched.status_code, 200, mismatched.text)
+            flaura = next(item for item in mismatched.json()["candidates"] if item["nct_id"] == "NCT02296125")
+
+            blocked_body = {
+                "project_mode": "user_cohort",
+                "session_id": session_id,
+                "mapping": mapping,
+                "target_rct": flaura,
+            }
+            for endpoint in ("/api/v1/tte/diagnose-preflight", "/api/v1/projects/user-cohort/runs"):
+                blocked = self.client.post(endpoint, headers=self.web_auth, json=blocked_body)
+                self.assertEqual(blocked.status_code, 422, blocked.text)
+                self.assertIn(blocked.json()["error_code"], ("ARM_MISMATCH_CONFIRMATION_REQUIRED", "PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED"))
+
+            preflight = self.client.post(
+                "/api/v1/tte/diagnose-preflight",
+                headers=self.web_auth,
+                json={
+                    "project_mode": "user_cohort",
+                    "session_id": session_id,
+                    "mapping": mapping,
+                    "target_rct": carolina,
+                },
+            )
+            self.assertEqual(preflight.status_code, 200, preflight.text)
+            body = preflight.json()
+            self.assertIn("gate_passed", body)
+            self.assertGreaterEqual(len(body["funnel"]), 3)
+            self.assertTrue(body["smd"])
+            self.assertIn("abs_smd_unweighted", body["smd"][0])
+            self.assertIn("abs_smd_weighted", body["smd"][0])
+
+            simulated = self.client.post(
+                "/api/v1/tte/diagnose-preflight",
+                headers=self.web_auth,
+                json={
+                    "project_mode": "simulated_cohort",
+                    "idea_text": "比较达格列净与西格列汀对心衰住院或心血管死亡的影响",
+                    "sim_config": {"cases": 200, "seed": 3, "weight_method": "overlap"},
+                    "target_rct": carolina,
+                    "confirm_arm_mismatch": True,
+                    "confirm_protocol_mismatch": True,
+                },
+            )
+            self.assertEqual(simulated.status_code, 200, simulated.text)
+            self.assertGreaterEqual(len(simulated.json()["funnel"]), 3)
+            self.assertIn("gate_passed", simulated.json())
+
+            started = self.client.post(
+                "/api/v1/projects/user-cohort/runs",
+                headers=self.web_auth,
+                json={
+                    "session_id": session_id,
+                    "mapping": mapping,
+                    "target_rct": carolina,
+                },
+            )
+            self.assertEqual(started.status_code, 202, started.text)
+            finished = self.wait_run(started.json()["run_id"])
+            self.assertEqual(finished["state"], "completed", finished.get("error"))
+            self.assertIn("clinical_comparison_ladder", finished["estimates"])
+            removed = self.client.delete(f"/api/sessions/{session_id}", headers=self.web_auth)
+            self.assertEqual(removed.status_code, 200, removed.text)
+            self.assertEqual(self.client.get(f"/api/sessions/{session_id}", headers=self.web_auth).status_code, 404)
+            missing = self.client.post(
+                "/api/v1/tte/diagnose-preflight",
+                headers=self.web_auth,
+                json={"project_mode": "user_cohort", "session_id": "ab" * 16},
+            )
+            self.assertEqual(missing.status_code, 404, missing.text)
+            self.assertEqual(missing.json()["error_code"], "SESSION_NOT_FOUND")
+            inverted = self.client.post(
+                "/api/v1/tte/diagnose-preflight",
+                headers=self.web_auth,
+                json={
+                    "project_mode": "simulated_cohort",
+                    "landmark_time": 400,
+                    "horizon_days": [365],
+                    "sim_config": {"cases": 120, "seed": 1, "weight_method": "overlap"},
+                },
+            )
+            self.assertEqual(inverted.status_code, 400, inverted.text)
+            self.assertEqual(inverted.json()["error_code"], "INVALID_TIMELINE_WINDOW")
+
 
 class RoundTwoAuditPolishTests(unittest.TestCase):
     def test_static_and_ccw_ess_hints_stay_distinct(self):
@@ -322,8 +457,29 @@ class RoundTwoAuditPolishTests(unittest.TestCase):
         self.assertEqual(safe_record_href("javascript:alert(1)"), "#")
         self.assertEqual(safe_record_href("data:text/html,hi"), "#")
         self.assertTrue(safe_record_href("https://clinicaltrials.gov/study/NCT00000099").startswith("https://"))
+        self.assertTrue(safe_record_href("http://clinicaltrials.gov/study/NCT00000099").startswith("http://"))
+        overview_md = Path(__file__).resolve().parents[1].joinpath("docs/FEATURE_API_OVERVIEW.md").read_text(encoding="utf-8")
+        overview_html = Path(__file__).resolve().parents[1].joinpath("docs/FEATURE_API_OVERVIEW.html").read_text(encoding="utf-8")
+        for overview in (overview_md, overview_html):
+            self.assertIn("http://", overview)
+            self.assertIn("https://", overview)
+            self.assertIn("safe_record_href", overview)
+            self.assertIn("safeRecordHref", overview)
+            self.assertIn("Content-Security-Policy", overview)
         page = workbench_home_view()
         self.assertIn("function safeRecordHref", page)
+        self.assertIn("startsWith('http://')", page)
+        self.assertIn("step3Panel.addEventListener('change', (event) => { onStep3ConfigChanged(event); invalidateDownstream(4); })", page)
+        from emulatrx_preview.dualmode_views import _love_plot_svg
+
+        svg = _love_plot_svg(
+            [{"covariate": "age", "abs_smd_unweighted": float("nan"), "abs_smd_weighted": float("nan")}],
+            {"age": "年龄"},
+            0.1,
+        )
+        self.assertIn("<svg", svg)
+        self.assertIn("N/A", svg)
+        self.assertNotIn("nan", svg.lower())
         self.assertNotIn("escHtml(c.record_url)", page)
         self.assertNotIn("escHtml(activeRct.record_url)", page)
         result = {
