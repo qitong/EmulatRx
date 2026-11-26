@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -180,6 +181,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     serve.add_argument("--runs-dir", type=Path, default=Path("/tmp/emulatrx-mcp-stdio-runs"))
     serve.add_argument("--allow-ingest-dir", action="append", default=None)
+    serve.add_argument(
+        "--user-namespace",
+        default=os.environ.get("EMULATRX_DEFAULT_USER_NAMESPACE", "default"),
+        help="Namespace for stdio MCP calls (or set EMULATRX_DEFAULT_USER_NAMESPACE). Named users are stored under users/<namespace>/.",
+    )
 
     args = parser.parse_args(argv)
     if args.command == "mcp-serve":
@@ -187,7 +193,13 @@ def main(argv: list[str] | None = None) -> int:
 
         from emulatrx_preview.mcp_tools import register_tools
         from emulatrx_preview.tte_runner import TTERunner
+        from emulatrx_preview.user_context import CURRENT_USER_NAMESPACE, InvalidUserNamespace, coerce_user_namespace
 
+        try:
+            namespace = coerce_user_namespace(args.user_namespace)
+        except InvalidUserNamespace as exc:
+            parser.error(str(exc))
+        CURRENT_USER_NAMESPACE.set(namespace)
         runs_dir = args.runs_dir.expanduser().resolve()
         allow = [Path(item).expanduser().resolve() for item in (args.allow_ingest_dir or [])]
         local_runner = TTERunner(runs_dir)

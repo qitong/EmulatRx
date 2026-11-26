@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import csv
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -42,6 +43,7 @@ from emulatrx_tte.llm_assist import (
     is_whitelisted_clinical_category,
 )
 from .tte_screen import screen_cohort, validate_screening_criteria
+from .user_context import CURRENT_USER_NAMESPACE, resolve_user_namespace
 
 
 RUN_ID = re.compile(r"[0-9a-f]{32}\Z")
@@ -52,10 +54,34 @@ MAX_CASES = 5000
 MAX_BOOTSTRAP = 300
 MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
 RETENTION_SECONDS = 24 * 60 * 60
-MAX_RUNS = 100
-MAX_SESSIONS = 60
+MAX_RUNS_PER_USER = 100
+MAX_SESSIONS_PER_USER = 60
+MAX_RUNS = MAX_RUNS_PER_USER
+MAX_SESSIONS = MAX_SESSIONS_PER_USER
 RUN_TIMEOUT_SECONDS = 90
 MCP_CHUNK_BYTES = 16 * 1024
+_LEGACY_ROOT_SKIP = frozenset({"sessions", "users", "upload_tickets"})
+
+
+def _bounded_int_env(name: str, default: int, *, low: int, high: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(low, min(high, value))
+
+
+def _bounded_float_env(name: str, default: float, *, low: float, high: float) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(low, min(high, value))
+
+
+def _mkdir_0700(path: Path) -> None:
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(path, 0o700)
 
 
 def _bytes(value):
@@ -178,27 +204,126 @@ def _read_curve_series(curves_dir: Path) -> list[dict]:
 class TTERunner:
     def __init__(self, root):
         self.root = Path(root).resolve()
-        self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _mkdir_0700(self.root)
         self.sessions_root = self.root / "sessions"
-        self.sessions_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self._slot = threading.BoundedSemaphore(1)
+        _mkdir_0700(self.sessions_root)
+        slots = _bounded_int_env("EMULATRX_MAX_CONCURRENT_RUNS", 8, low=1, high=32)
+        self._slot = threading.BoundedSemaphore(slots)
         self._maintenance = threading.Lock()
+        self._lock_guard = threading.Lock()
+        self._user_locks: dict[str, threading.RLock] = {}
         self.cleanup(startup=True)
 
-    def _path(self, run_id):
+    def _user_lock(self, ns: str) -> threading.RLock:
+        with self._lock_guard:
+            lock = self._user_locks.get(ns)
+            if lock is None:
+                lock = threading.RLock()
+                self._user_locks[ns] = lock
+            return lock
+
+    def _namespace(self, explicit: str | None = None) -> str:
+        return resolve_user_namespace(explicit)
+
+    def _assert_contained(self, path: Path) -> Path:
+        """Reject symlink escapes. The resolved path must stay inside ``self.root``."""
+        root = self.root.resolve()
+        try:
+            relative = path.resolve().relative_to(root)
+        except ValueError as exc:
+            raise ContractError("PATH_TRAVERSAL_BLOCKED", "resolved path escaped the runs root") from exc
+        cursor = root
+        for part in relative.parts:
+            cursor = cursor / part
+            if cursor.is_symlink():
+                raise ContractError("PATH_TRAVERSAL_BLOCKED", "symlink traversal blocked")
+        return cursor
+
+    def _user_dirs(self, ns: str) -> tuple[Path, Path]:
+        """Return ``(sessions_dir, runs_dir)`` for a namespace.
+
+        ``default`` keeps the historical layout (``<root>/sessions`` and ``<root>/<run_id>``)
+        so existing white-box tests that read ``runner.sessions_root`` and ``runner.root / run_id``
+        stay valid. Every other namespace is physically isolated under ``<root>/users/<ns>/``.
+        """
+        if ns == "default":
+            return self.sessions_root, self.root
+        users = self.root / "users"
+        user_root = users / ns
+        sessions = user_root / "sessions"
+        runs = user_root / "runs"
+        for directory in (users, user_root, sessions, runs):
+            if directory.is_symlink():
+                raise ContractError("PATH_TRAVERSAL_BLOCKED", "symlink traversal blocked")
+            _mkdir_0700(directory)
+            self._assert_contained(directory)
+        return sessions, runs
+
+    def _sessions_parent(self, ns: str | None = None) -> Path:
+        sessions, _runs = self._user_dirs(self._namespace(ns))
+        return sessions
+
+    def _runs_parent(self, ns: str | None = None) -> Path:
+        _sessions, runs = self._user_dirs(self._namespace(ns))
+        return runs
+
+    def _slot_wait_seconds(self) -> float:
+        return _bounded_float_env("EMULATRX_SLOT_WAIT_SECONDS", 60.0, low=0.0, high=300.0)
+
+    def _acquire_slot(self) -> None:
+        if not self._slot.acquire(timeout=self._slot_wait_seconds()):
+            raise ContractError("BUSY", "all TTE execution slots are busy")
+
+    @contextmanager
+    def execution_slot(self):
+        """Hold one pool slot for a synchronous MCP analysis (CCW or inline TTE)."""
+        self._acquire_slot()
+        try:
+            yield
+        finally:
+            self._slot.release()
+
+    def _allocate_run_dir(self, ns: str) -> tuple[str, Path]:
+        run_id = uuid.uuid4().hex
+        parent = self._runs_parent(ns)
+        path = parent / run_id
+        if path.is_symlink():
+            raise ContractError("PATH_TRAVERSAL_BLOCKED", "symlink traversal blocked")
+        path.mkdir(mode=0o700)
+        os.chmod(path, 0o700)
+        self._assert_contained(path)
+        return run_id, path
+
+    def _allocate_published_run(self, ns: str, status_for) -> tuple[str, Path, dict]:
+        """Create a run directory and its initial status while holding the user lock.
+
+        ``cleanup`` takes the same lock before it can delete a directory, so a
+        brand-new run is never observed without ``status.json``.
+        """
+        with self._user_lock(ns):
+            run_id, path = self._allocate_run_dir(ns)
+            status = status_for(run_id)
+            self._write_status(path, status)
+            return run_id, path, status
+
+    def _path(self, run_id, user_namespace: str | None = None):
         if not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id):
             raise ContractError("INVALID_RUN_ID", "invalid run ID")
-        path = self.root / run_id
+        ns = self._namespace(user_namespace)
+        path = self._runs_parent(ns) / run_id
         if path.is_symlink() or not path.is_dir() or time.time() - path.stat().st_mtime > RETENTION_SECONDS:
-            raise ContractError("RUN_NOT_FOUND", "run expired or unavailable")
+            raise ContractError("RUN_NOT_FOUND", "RUN_NOT_FOUND")
+        self._assert_contained(path)
         return path
 
-    def _session_path(self, session_id: str) -> Path:
+    def _session_path(self, session_id: str, *, user_namespace: str | None = None) -> Path:
         if not isinstance(session_id, str) or not SESSION_ID.fullmatch(session_id):
             raise ContractError("INVALID_SESSION_ID", "无效的会话编号。")
-        path = self.sessions_root / session_id
+        ns = self._namespace(user_namespace)
+        path = self._sessions_parent(ns) / session_id
         if path.is_symlink() or not path.is_dir() or time.time() - path.stat().st_mtime > RETENTION_SECONDS:
-            raise ContractError("SESSION_NOT_FOUND", "会话不存在、已清除或已过期。")
+            raise ContractError("SESSION_NOT_FOUND", "SESSION_NOT_FOUND")
+        self._assert_contained(path)
         return path
 
     def _status(self, path):
@@ -209,35 +334,57 @@ class TTERunner:
 
     def cleanup(self, startup=False):
         with self._maintenance:
+            self._cleanup_namespace(self.root, self.sessions_root, "default", startup=startup, skip_names=_LEGACY_ROOT_SKIP)
+            users = self.root / "users"
+            if users.is_symlink() or not users.is_dir():
+                return
+            for child in list(users.iterdir()):
+                if child.is_symlink() or not child.is_dir():
+                    continue
+                if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}", child.name):
+                    continue
+                self._cleanup_namespace(child / "runs", child / "sessions", child.name, startup=startup, skip_names=frozenset())
+
+    def _cleanup_namespace(self, runs_parent: Path, sessions_parent: Path, ns: str, *, startup: bool, skip_names: frozenset[str]) -> None:
+        """Apply the per-user retention cap without holding the lock across statistical work."""
+        with self._user_lock(ns):
             now = time.time()
             retained = []
-            for path in self.root.iterdir():
-                if path.name == "sessions":
-                    continue
-                if path.is_symlink():
-                    path.unlink()
-                    continue
-                if not path.is_dir() or not RUN_ID.fullmatch(path.name):
-                    continue
-                if now - path.stat().st_mtime > RETENTION_SECONDS:
-                    shutil.rmtree(path, ignore_errors=True)
-                    continue
-                try:
-                    status = self._status(path)
-                except (OSError, ValueError):
-                    shutil.rmtree(path, ignore_errors=True)
-                    continue
-                if startup and status["state"] in ("queued", "running"):
-                    status.update(state="interrupted", error="Server restarted before this run finished")
-                    self._write_status(path, status)
-                retained.append(path)
-            for path in sorted(retained, key=lambda p: p.stat().st_mtime)[:-MAX_RUNS]:
+            if runs_parent.is_dir() and not runs_parent.is_symlink():
+                for path in runs_parent.iterdir():
+                    if path.name in skip_names:
+                        continue
+                    if path.is_symlink():
+                        path.unlink()
+                        continue
+                    if not path.is_dir() or not RUN_ID.fullmatch(path.name):
+                        continue
+                    try:
+                        age = now - path.stat().st_mtime
+                    except OSError:
+                        continue
+                    if age > RETENTION_SECONDS:
+                        shutil.rmtree(path, ignore_errors=True)
+                        continue
+                    try:
+                        status = self._status(path)
+                    except (OSError, ValueError):
+                        # A just-created run may not have status.json yet. Never
+                        # delete that directory inside the allocation race window.
+                        if age < 60.0:
+                            continue
+                        shutil.rmtree(path, ignore_errors=True)
+                        continue
+                    if startup and status.get("state") in ("queued", "running"):
+                        status.update(state="interrupted", error="Server restarted before this run finished")
+                        self._write_status(path, status)
+                    retained.append(path)
+            for path in sorted(retained, key=lambda p: p.stat().st_mtime)[:-MAX_RUNS_PER_USER]:
                 shutil.rmtree(path, ignore_errors=True)
 
-            # Cleanup expired isolated sessions
-            if self.sessions_root.is_dir():
+            if sessions_parent.is_dir() and not sessions_parent.is_symlink():
                 sess_retained = []
-                for spath in self.sessions_root.iterdir():
+                for spath in sessions_parent.iterdir():
                     if spath.is_symlink():
                         spath.unlink()
                         continue
@@ -247,7 +394,7 @@ class TTERunner:
                         shutil.rmtree(spath, ignore_errors=True)
                         continue
                     sess_retained.append(spath)
-                for spath in sorted(sess_retained, key=lambda p: p.stat().st_mtime)[:-MAX_SESSIONS]:
+                for spath in sorted(sess_retained, key=lambda p: p.stat().st_mtime)[:-MAX_SESSIONS_PER_USER]:
                     shutil.rmtree(spath, ignore_errors=True)
 
     # ------------------------------------------------------------------
@@ -262,6 +409,7 @@ class TTERunner:
         session_id: str | None = None,
         user_note: str = "",
         sample_id: str | None = None,
+        user_namespace: str | None = None,
     ) -> dict:
         if len(raw_bytes) > MAX_USER_COHORT_BYTES:
             raise ContractError("COHORT_FILE_TOO_LARGE", "上传数据文件超过 25 MB 限制。")
@@ -283,20 +431,57 @@ class TTERunner:
             sample_id=sample_id,
         )
 
+        ns = self._namespace(user_namespace)
         self.cleanup()
-        if session_id and SESSION_ID.fullmatch(session_id) and (self.sessions_root / session_id).is_dir():
+        sessions_parent = self._sessions_parent(ns)
+        with self._user_lock(ns):
+            saved = self._write_session_cohort(
+                ns,
+                sessions_parent,
+                df_profile=(profile, interpretation, default_mapping, forbidden_list),
+                raw_bytes=raw_bytes,
+                filename=filename,
+                session_id=session_id,
+                user_note=user_note,
+                sample_id=sample_id,
+                input_sha=input_sha,
+                delimiter=delimiter,
+                encoding=encoding,
+            )
+        return saved
+
+    def _write_session_cohort(
+        self,
+        ns: str,
+        sessions_parent: Path,
+        *,
+        df_profile: tuple,
+        raw_bytes: bytes,
+        filename: str,
+        session_id: str | None,
+        user_note: str,
+        sample_id: str | None,
+        input_sha: str,
+        delimiter: str,
+        encoding: str,
+    ) -> dict:
+        profile, interpretation, default_mapping, forbidden_list = df_profile
+        existing = sessions_parent / session_id if session_id else None
+        if existing is not None and SESSION_ID.fullmatch(session_id or "") and existing.is_dir() and not existing.is_symlink():
             sid = session_id
-            sdir = self.sessions_root / sid
+            sdir = existing
             raw_dir = sdir / "raw"
             if raw_dir.is_dir():
                 shutil.rmtree(raw_dir)
         else:
             sid = uuid.uuid4().hex
-            sdir = self.sessions_root / sid
-            sdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            sdir = sessions_parent / sid
+            _mkdir_0700(sdir)
+        self._assert_contained(sdir)
+        os.chmod(sdir, 0o700)
 
         raw_dir = sdir / "raw"
-        raw_dir.mkdir(mode=0o700, exist_ok=True)
+        _mkdir_0700(raw_dir)
         safe_fname = SAFE_FILENAME_RE.sub("_", Path(filename).name).strip("_") or "cohort.csv"
         cohort_file = raw_dir / safe_fname
         _atomic_write_bytes(cohort_file, raw_bytes)
@@ -311,6 +496,7 @@ class TTERunner:
 
         meta = {
             "session_id": sid,
+            "user_namespace": ns,
             "filename": safe_fname,
             "cohort_relpath": f"raw/{safe_fname}",
             "input_sha256": input_sha,
@@ -326,9 +512,9 @@ class TTERunner:
         _atomic_write_bytes(sdir / "default_mapping.json", _bytes(default_mapping))
         _atomic_write_bytes(sdir / "forbidden_tokens.json", _bytes(forbidden_list))
         _atomic_write_bytes(meta_path, _bytes(meta))
-
         return {
             "session_id": sid,
+            "user_namespace": ns,
             "meta": meta,
             "profile": profile,
             "interpretation": interpretation,
@@ -352,23 +538,29 @@ class TTERunner:
         }
 
     def issue_upload_ticket(self, filename: str = "cohort.csv") -> dict:
-        """Reserve a single-use 600s upload ticket and a session id for a remote CSV stream."""
+        """Reserve a single-use 600s upload ticket bound to the caller's user namespace."""
+        ns = self._namespace()
         ticket = secrets.token_urlsafe(32)
         session_id = uuid.uuid4().hex
         folder = self.root / "upload_tickets"
-        folder.mkdir(mode=0o700, exist_ok=True)
-        (self.sessions_root / session_id).mkdir(mode=0o700, exist_ok=True)
+        if folder.is_symlink():
+            raise ContractError("PATH_TRAVERSAL_BLOCKED", "symlink traversal blocked")
+        _mkdir_0700(folder)
+        session_dir = self._sessions_parent(ns) / session_id
+        _mkdir_0700(session_dir)
+        self._assert_contained(session_dir)
         record = {
             "ticket_id": ticket,
             "session_id": session_id,
             "filename": filename or "cohort.csv",
+            "user_namespace": ns,
             "expires_at": time.time() + 600,
             "used": False,
         }
         _atomic_write_bytes(folder / f"{ticket}.json", _bytes(record))
         return record
 
-    def consume_upload_ticket(self, ticket_id: str, raw: bytes) -> dict:
+    def consume_upload_ticket(self, ticket_id: str, raw: bytes, filename: str | None = None) -> dict:
         if not isinstance(ticket_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", ticket_id):
             raise ContractError("UPLOAD_TICKET_INVALID", "upload ticket is unknown or already used")
         path = self.root / "upload_tickets" / f"{ticket_id}.json"
@@ -378,7 +570,14 @@ class TTERunner:
         path.unlink()
         if time.time() > float(record["expires_at"]):
             raise ContractError("UPLOAD_TICKET_EXPIRED", "upload ticket expired")
-        return self.save_session_cohort(raw, str(record.get("filename") or "cohort.csv"), session_id=record["session_id"])
+        chosen = filename or str(record.get("filename") or "cohort.csv")
+        ns = str(record.get("user_namespace") or "default")
+        return self.save_session_cohort(
+            raw,
+            chosen,
+            session_id=record["session_id"],
+            user_namespace=ns,
+        )
 
     def adopt_ccw_directory(
         self,
@@ -389,42 +588,75 @@ class TTERunner:
         case_count: int,
         session_id: str | None = None,
     ) -> dict:
-        """Publish a finished CCW directory under the preview run root so status and artifact tools can read it."""
-        self.cleanup()
-        run_id = uuid.uuid4().hex
-        dest = self.root / run_id
-        dest.mkdir(mode=0o700)
-        for item in source.iterdir():
-            target = dest / item.name
-            if item.is_dir():
-                shutil.copytree(item, target)
-            elif item.is_file():
-                shutil.copyfile(item, target)
-        state = "completed" if gate_status == "passed" else "blocked"
-        status = {
-            "run_id": run_id,
-            "state": state,
-            "kind": "grace_period_ccw",
-            "project_mode": SOURCE_MODE_SYNTHETIC_ONLY,
-            "gate_status": gate_status,
-            "stage": state,
-            "seed": seed,
-            "case_count": case_count,
-            "started_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "finished_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        }
+        """Publish a finished CCW directory under the caller's run root so status and artifact tools can read it."""
         if session_id:
             if not isinstance(session_id, str) or not SESSION_ID.fullmatch(session_id):
                 raise ContractError("INVALID_SESSION_ID", "无效的会话编号。")
-            status["session_id"] = session_id
-        self._write_status(dest, status)
-        return status
+        ns = self._namespace()
+        self.cleanup()
+        parent = self._runs_parent(ns)
+        run_id = uuid.uuid4().hex
+        staging = parent / f".{run_id}.adopting.tmp"
+        dest = parent / run_id
+        now_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        _mkdir_0700(staging)
+        try:
+            if staging.is_symlink():
+                raise ContractError("PATH_TRAVERSAL_BLOCKED", "symlink traversal blocked")
+            with self._user_lock(ns):
+                self._write_status(
+                    staging,
+                    {
+                        "run_id": run_id,
+                        "user_namespace": ns,
+                        "state": "adopting",
+                        "kind": "grace_period_ccw",
+                        "project_mode": SOURCE_MODE_SYNTHETIC_ONLY,
+                        "gate_status": gate_status,
+                        "stage": "adopting",
+                        "seed": seed,
+                        "case_count": case_count,
+                        "started_utc": now_utc,
+                    },
+                )
+            for item in source.iterdir():
+                target = staging / item.name
+                if item.is_dir():
+                    shutil.copytree(item, target)
+                elif item.is_file():
+                    shutil.copyfile(item, target)
+            state = "completed" if gate_status == "passed" else "blocked"
+            status = {
+                "run_id": run_id,
+                "user_namespace": ns,
+                "state": state,
+                "kind": "grace_period_ccw",
+                "project_mode": SOURCE_MODE_SYNTHETIC_ONLY,
+                "gate_status": gate_status,
+                "stage": state,
+                "seed": seed,
+                "case_count": case_count,
+                "started_utc": now_utc,
+                "finished_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            }
+            if session_id:
+                status["session_id"] = session_id
+            with self._user_lock(ns):
+                self._write_status(staging, status)
+                os.replace(staging, dest)
+                os.chmod(dest, 0o700)
+                self._assert_contained(dest)
+            return status
+        except Exception:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+            raise
 
     def get_session_forbidden_values(self, session_id: str) -> tuple[str, ...]:
         """Return persisted forbidden cohort/note tokens for a session (fail-safe empty tuple if session not found)."""
         if not isinstance(session_id, str) or not SESSION_ID.fullmatch(session_id):
             return ()
-        fpath = self.sessions_root / session_id / "forbidden_tokens.json"
+        fpath = self._sessions_parent() / session_id / "forbidden_tokens.json"
         if not fpath.is_file():
             return ()
         try:
@@ -467,8 +699,12 @@ class TTERunner:
         """Physically delete isolated session directory AND unconditionally sweep all derived run directories."""
         if not isinstance(session_id, str) or not SESSION_ID.fullmatch(session_id):
             raise ContractError("INVALID_SESSION_ID", "无效的会话编号。")
-        sdir = self.sessions_root / session_id
-        with self._maintenance:
+        ns = self._namespace()
+        sdir = self._sessions_parent(ns) / session_id
+        runs_parent = self._runs_parent(ns)
+        if sdir.is_symlink() or not sdir.is_dir():
+            raise ContractError("SESSION_NOT_FOUND", "SESSION_NOT_FOUND")
+        with self._user_lock(ns):
             purged_files = 0
             candidate_run_dirs: dict[str, Path] = {}
 
@@ -479,15 +715,15 @@ class TTERunner:
                     if isinstance(meta, dict) and isinstance(meta.get("run_ids"), list):
                         for rid in meta["run_ids"]:
                             if isinstance(rid, str) and RUN_ID.fullmatch(rid):
-                                rpath = self.root / rid
+                                rpath = runs_parent / rid
                                 if os.path.lexists(rpath):
                                     candidate_run_dirs[rid] = rpath
                 except Exception:
                     pass
 
-            # 2. Unconditionally scan all run directories in self.root for status.json referencing session_id
-            for rpath in self.root.iterdir():
-                if rpath.name == "sessions" or not RUN_ID.fullmatch(rpath.name):
+            # 2. Scan only this user's run directories for status.json referencing session_id
+            for rpath in runs_parent.iterdir():
+                if rpath.name in _LEGACY_ROOT_SKIP or not RUN_ID.fullmatch(rpath.name):
                     continue
                 if rpath.is_dir() and not rpath.is_symlink():
                     matches_session = False
@@ -527,8 +763,8 @@ class TTERunner:
 
             # 5. Post-deletion disk verification: never report session_deleted=True if any residue remains
             residual_runs = [rid for rid, rp in candidate_run_dirs.items() if os.path.lexists(rp)]
-            for rpath in self.root.iterdir():
-                if rpath.name == "sessions" or not RUN_ID.fullmatch(rpath.name):
+            for rpath in runs_parent.iterdir():
+                if rpath.name in _LEGACY_ROOT_SKIP or not RUN_ID.fullmatch(rpath.name):
                     continue
                 if rpath.is_dir() and not rpath.is_symlink():
                     try:
@@ -550,6 +786,7 @@ class TTERunner:
                 "purged_files": purged_files,
                 "purged_runs": purged_runs,
                 "session_exists_on_disk": False,
+                "user_namespace": ns,
             }
 
     # ------------------------------------------------------------------
@@ -586,28 +823,30 @@ class TTERunner:
             raise ContractError("INVALID_BOOTSTRAP_ITERATIONS", "preview bootstrap iterations must be 20..300")
         if weight_method != "overlap" or len(normalized["treatment_strategies"]) != 2:
             raise ContractError("INVALID_WEIGHT_METHOD", "preview supports two-arm overlap weighting")
-        if not self._slot.acquire(blocking=False):
-            raise ContractError("BUSY", "another TTE run is in progress")
+        self._acquire_slot()
         try:
+            ns = self._namespace()
             self.cleanup()
-            run_id = uuid.uuid4().hex
-            path = self.root / run_id
-            path.mkdir(mode=0o700)
+            started_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+            def _queued(run_id: str) -> dict:
+                return {
+                    "run_id": run_id,
+                    "user_namespace": ns,
+                    "state": "queued",
+                    "kind": "synthetic_tte",
+                    "project_mode": SOURCE_MODE_SYNTHETIC_ONLY,
+                    "case_count": cases,
+                    "seed": seed,
+                    "bootstrap_iterations": bootstrap_iterations,
+                    "weight_method": weight_method,
+                    "gate_status": None,
+                    "stage": "queued",
+                    "started_utc": started_utc,
+                }
+
+            run_id, path, status = self._allocate_published_run(ns, _queued)
             (path / "protocol.json").write_bytes(_bytes(protocol))
-            status = {
-                "run_id": run_id,
-                "state": "queued",
-                "kind": "synthetic_tte",
-                "project_mode": SOURCE_MODE_SYNTHETIC_ONLY,
-                "case_count": cases,
-                "seed": seed,
-                "bootstrap_iterations": bootstrap_iterations,
-                "weight_method": weight_method,
-                "gate_status": None,
-                "stage": "queued",
-                "started_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            }
-            self._write_status(path, status)
             threading.Thread(target=self._execute, args=(path, status, normalized), daemon=True).start()
             return status
         except Exception:
@@ -751,13 +990,14 @@ class TTERunner:
         """Persist researcher-supplied Step 2 PICO overrides & register any untrusted tokens into `forbidden_tokens.json`."""
         if not session_id or not SESSION_ID.fullmatch(session_id):
             return
-        sdir = self.sessions_root / session_id
+        ns = self._namespace()
+        sdir = self._sessions_parent(ns) / session_id
         meta_file = sdir / "session_meta.json"
-        if not meta_file.is_file():
+        if sdir.is_symlink() or not meta_file.is_file():
             return
         raw_probe = " ".join(p for p in (condition, intervention, comparator, outcome) if p)
         new_forbidden = extract_untrusted_Note_forbidden_tokens(raw_probe) if raw_probe else []
-        with self._maintenance:
+        with self._user_lock(ns):
             try:
                 meta = json.loads(meta_file.read_text(encoding="utf-8"))
             except Exception:
@@ -977,34 +1217,36 @@ class TTERunner:
             pico=eff_pico,
             sim_config=cfg,
         )
-        if not self._slot.acquire(blocking=False):
-            raise ContractError("BUSY", "当前已有另一个 TTE 分析任务正在运行，请稍候。")
+        self._acquire_slot()
         try:
+            ns = self._namespace()
             self.cleanup()
-            run_id = uuid.uuid4().hex
-            path = self.root / run_id
-            path.mkdir(mode=0o700)
+            started_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+            def _queued(run_id: str) -> dict:
+                return {
+                    "run_id": run_id,
+                    "user_namespace": ns,
+                    "state": "queued",
+                    "kind": "simulated_cohort_tte",
+                    "project_mode": SOURCE_MODE_SIMULATED_COHORT,
+                    "case_count": cases,
+                    "seed": seed,
+                    "bootstrap_iterations": bootstrap_iterations,
+                    "weight_method": weight_method,
+                    "sim_config": cfg,
+                    "gate_status": None,
+                    "stage": "queued",
+                    "started_utc": started_utc,
+                }
+
+            run_id, path, status = self._allocate_published_run(ns, _queued)
             _atomic_write_bytes(path / "protocol.json", _bytes(normalized_proto))
             _atomic_write_bytes(path / "dgp_params.json", _bytes(dgp_params))
             if target_rct:
                 _atomic_write_bytes(path / "target_rct.json", _bytes(target_rct))
             if eff_pico:
                 _atomic_write_bytes(path / "pico.json", _bytes(eff_pico))
-            status = {
-                "run_id": run_id,
-                "state": "queued",
-                "kind": "simulated_cohort_tte",
-                "project_mode": SOURCE_MODE_SIMULATED_COHORT,
-                "case_count": cases,
-                "seed": seed,
-                "bootstrap_iterations": bootstrap_iterations,
-                "weight_method": weight_method,
-                "sim_config": cfg,
-                "gate_status": None,
-                "stage": "queued",
-                "started_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            }
-            self._write_status(path, status)
             threading.Thread(target=self._execute_simulated, args=(path, status), daemon=True).start()
             return status
         except Exception:
@@ -1075,38 +1317,40 @@ class TTERunner:
                 confirm_protocol_mismatch=confirm_protocol_mismatch,
             )
 
-        if not self._slot.acquire(blocking=False):
-            raise ContractError("BUSY", "当前已有另一个 TTE 分析任务正在运行，请稍候。")
+        self._acquire_slot()
         try:
+            ns = self._namespace()
             self.cleanup()
-            run_id = uuid.uuid4().hex
-            path = self.root / run_id
-            path.mkdir(mode=0o700)
+            started_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+            def _queued(run_id: str) -> dict:
+                return {
+                    "run_id": run_id,
+                    "user_namespace": ns,
+                    "session_id": session_id,
+                    "state": "queued",
+                    "kind": "user_cohort_tte",
+                    "project_mode": SOURCE_MODE_USER_COHORT,
+                    "seed": seed_i,
+                    "bootstrap_iterations": boot_i,
+                    "weight_method": chosen_weight,
+                    "gate_status": None,
+                    "stage": "queued",
+                    "started_utc": started_utc,
+                }
+
+            run_id, path, status = self._allocate_published_run(ns, _queued)
             _atomic_write_bytes(path / "mapping.json", _bytes(mapping))
             if target_rct:
                 _atomic_write_bytes(path / "target_rct.json", _bytes(target_rct))
 
-            # Register run_id atomically inside session metadata under maintenance lock
-            with self._maintenance:
-                sdir = self._session_path(session_id)
+            with self._user_lock(ns):
+                sdir = self._session_path(session_id, user_namespace=ns)
                 smeta = dict(sess["meta"])
                 smeta["run_ids"] = list(dict.fromkeys([*smeta.get("run_ids", []), run_id]))
+                smeta["user_namespace"] = ns
                 _atomic_write_bytes(sdir / "session_meta.json", _bytes(smeta))
 
-            status = {
-                "run_id": run_id,
-                "session_id": session_id,
-                "state": "queued",
-                "kind": "user_cohort_tte",
-                "project_mode": SOURCE_MODE_USER_COHORT,
-                "seed": seed_i,
-                "bootstrap_iterations": boot_i,
-                "weight_method": chosen_weight,
-                "gate_status": None,
-                "stage": "queued",
-                "started_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            }
-            self._write_status(path, status)
             threading.Thread(
                 target=self._execute_user_cohort,
                 args=(path, status, cohort_path, mapping, target_rct),
@@ -1275,6 +1519,7 @@ class TTERunner:
             status["state"] = "completed" if code == 0 else "blocked"
             status["stage"] = "complete"
             status["finished_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            self._publish_dualmode_report(path, status)
             self._write_status(path, status)
         except ContractError as exc:
             self._write_status(
@@ -1341,6 +1586,7 @@ class TTERunner:
             status["state"] = "completed" if code == 0 else "blocked"
             status["stage"] = "complete"
             status["finished_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            self._publish_dualmode_report(path, status)
             self._write_status(path, status)
         except ContractError as exc:
             self._write_status(
@@ -1365,9 +1611,33 @@ class TTERunner:
         finally:
             self._slot.release()
 
+    def _bind_worker_namespace(self, status: dict):
+        return CURRENT_USER_NAMESPACE.set(str(status.get("user_namespace") or "default"))
+
+    def _publish_dualmode_report(self, path: Path, status: dict) -> None:
+        if status.get("kind") not in ("user_cohort_tte", "simulated_cohort_tte"):
+            return
+        token = self._bind_worker_namespace(status)
+        try:
+            from .dualmode_views import render_dualmode_run_view
+
+            view = self._materialize(path, status)
+            if "normalized_protocol" not in view:
+                return
+            html = render_dualmode_run_view(view, self.root, standalone_report=True)
+            _atomic_write_bytes(path / "dualmode_report.html", html.encode("utf-8"))
+        except Exception:
+            return
+        finally:
+            CURRENT_USER_NAMESPACE.reset(token)
+
     def get(self, run_id):
         path = self._path(run_id)
         status = self._status(path)
+        return self._materialize(path, status)
+
+    def _materialize(self, path: Path, status: dict):
+        run_id = status["run_id"]
         if status["state"] not in ("completed", "blocked"):
             return status
 
@@ -1495,6 +1765,7 @@ class TTERunner:
 
         # Dual-mode bundle artifacts (note: for user_cohort, expose aggregated reports/curves/manifests, omit raw individual rows if desired; standardized/weighted cohorts stay inside isolated session/run and are wiped on session delete)
         candidates = [
+            "dualmode_report.html",
             "preview_manifest.json",
             "target_rct.json",
             "bundle/normalized_protocol.json",
