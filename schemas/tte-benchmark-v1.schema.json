@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/qitong/EmulatRx/blob/main/schemas/tte-benchmark-v1.schema.json",
+  "title": "EmulatRx TTE benchmark and negative-control report v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "status",
+    "benchmarkable",
+    "effect_comparison",
+    "consistency_conclusion_allowed",
+    "ipd_used",
+    "interpretive_guardrail"
+  ],
+  "properties": {
+    "schema_version": {"const": "tte-benchmark-v1"},
+    "status": {
+      "type": "string",
+      "enum": [
+        "benchmarked",
+        "blocked_upstream_gate",
+        "blocked_protocol_mismatch",
+        "unavailable_no_public_results",
+        "scale_mismatch",
+        "invalid_effect_bounds",
+        "disabled",
+        "eligible",
+        "resolved"
+      ]
+    },
+    "gate_code": {
+      "type": ["string", "null"],
+      "enum": [
+        null,
+        "BENCHMARK_BLOCKED_UPSTREAM_DIAGNOSTIC_FAILED",
+        "BENCHMARK_BLOCKED_PROTOCOL_OR_ENDPOINT_MISMATCH",
+        "BENCHMARK_UNAVAILABLE_NO_RESULTS_SECTION",
+        "BENCHMARK_SCALE_MISMATCH",
+        "BENCHMARK_INVALID_EFFECT_BOUNDS",
+        "BENCHMARKING_FEATURE_DISABLED",
+        "NEGATIVE_CONTROL_BIAS_DETECTED",
+        "INVALID_NEGATIVE_CONTROL_COLUMN"
+      ]
+    },
+    "benchmarkable": {"type": "boolean"},
+    "effect_comparison": {"type": ["object", "null"]},
+    "consistency_conclusion_allowed": {"type": "boolean"},
+    "ipd_used": {"const": false},
+    "numerical_proximity_proves_causality": {"const": false},
+    "overall_validity_flag": {
+      "type": "string",
+      "enum": ["numerical_proximity_only", "high_residual_bias_risk", "not_interpretable", "nco_inconclusive_underpowered"]
+    },
+    "interpretive_guardrail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "numerical_proximity_proves_causality",
+        "clinical_efficacy_claim_prohibited",
+        "summary_zh",
+        "summary_en"
+      ],
+      "properties": {
+        "numerical_proximity_proves_causality": {"const": false},
+        "clinical_efficacy_claim_prohibited": {"const": true},
+        "summary_zh": {"type": "string", "minLength": 1},
+        "summary_en": {"type": "string", "minLength": 1}
+      }
+    },
+    "source_receipt": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["nct_id", "source_mode", "retrieved_at_utc", "has_posted_results", "payload_sha256", "ipd_used"],
+      "properties": {
+        "nct_id": {"type": "string"},
+        "source_mode": {
+          "type": "string",
+          "enum": ["clinicaltrials_results_section", "curated_published_summary"]
+        },
+        "source_url": {"type": "string"},
+        "source_citation": {"type": "string"},
+        "retrieved_at_utc": {"type": "string"},
+        "has_posted_results": {"type": "boolean"},
+        "payload_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "official_title": {"type": "string"},
+        "primary_outcome_title": {"type": "string"},
+        "primary_outcome_timeframe": {"type": "string"},
+        "ipd_used": {"const": false}
+      }
+    }
+  }
+}

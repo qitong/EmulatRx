@@ -228,8 +228,28 @@ class MultiUserAppTests(unittest.TestCase):
             ("ingest_cohort_session", {"session_id": session_id}, "SESSION_NOT_FOUND"),
             ("export_tte_artifact", {"run_id": started["run_id"], "artifact_name": "dualmode_report.html"}, "RUN_NOT_FOUND"),
             ("delete_cohort_session", {"session_id": session_id}, "SESSION_NOT_FOUND"),
+            (
+                "benchmark_rct_and_negative_control",
+                {
+                    "run_id": started["run_id"],
+                    "nct_id": "NCT01243424",
+                    "negative_control_outcome_col": "event",
+                },
+                "RUN_NOT_FOUND",
+            ),
         ):
             self.assertIn(needle, self.mcp_error(tool, arguments, headers=li))
+        cross_benchmark = self.client.post(
+            "/api/v1/tte/benchmark",
+            headers={"Authorization": "Bearer " + self.user_tokens["dr_li"]},
+            json={
+                "run_id": started["run_id"],
+                "nct_id": "NCT01243424",
+                "negative_control_outcome_col": "event",
+            },
+        )
+        self.assertEqual(cross_benchmark.status_code, 404, cross_benchmark.text)
+        self.assertEqual(cross_benchmark.json()["code"], "RUN_NOT_FOUND")
         self.assertTrue(session_dir.is_dir())
         self.assertTrue(run_dir.is_dir())
 

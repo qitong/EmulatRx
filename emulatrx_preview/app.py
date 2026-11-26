@@ -34,10 +34,11 @@ from emulatrx_tte import (
     verify_and_enrich_target_rct,
 )
 from emulatrx_tte._common import ContractError, MAX_USER_COHORT_BYTES
+from emulatrx_tte.benchmarking import benchmarking_disabled_payload, interpretive_guardrail, is_benchmarking_enabled
 from emulatrx_tte.cohort_ingest import apply_timeline_window
 from emulatrx_tte.llm_assist import extract_untrusted_Note_forbidden_tokens
 from .dualmode_views import render_dualmode_run_view, workbench_home_view
-from .mcp_tools import detect_missing_clinical_semantics_from_profile, register_tools
+from .mcp_tools import benchmark_from_payload, detect_missing_clinical_semantics_from_profile, register_tools
 from .tte_runner import TTERunner
 from .user_context import CURRENT_USER_NAMESPACE, InvalidUserNamespace, USER_NAMESPACE_RE, presented_user_namespace
 from .tte_views import cohort_view, form, report_view, result_view, review_view
@@ -836,6 +837,30 @@ async def home(request):
     return page(workbench_home_view())
 
 
+async def api_v1_tte_benchmark(request):
+    if not is_benchmarking_enabled():
+        return JSONResponse(
+            benchmarking_disabled_payload(),
+            status_code=503,
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        payload = await _read_json_body(request)
+        report = benchmark_from_payload(payload, runner)
+        return JSONResponse(report, headers={"Cache-Control": "no-store"})
+    except ContractError as exc:
+        status_code = 404 if exc.code in {"RUN_NOT_FOUND", "INVALID_RUN_ID"} else 400
+        return JSONResponse(
+            {
+                "error": f"{exc.code}: {exc}",
+                "code": exc.code,
+                "interpretive_guardrail": interpretive_guardrail(),
+            },
+            status_code=status_code,
+            headers={"Cache-Control": "no-store"},
+        )
+
+
 async def new_protocol(request):
     return page(form(DEFAULT_PROTOCOL))
 
@@ -971,6 +996,7 @@ inner = Starlette(
         Route("/api/dual-runs/{run_id}", api_get_dual_run),
         Route("/api/v1/projects/user-cohort/runs", api_start_v1_user_cohort_run, methods=["POST"]),
         Route("/api/v1/projects/simulated/runs", api_start_v1_simulated_run, methods=["POST"]),
+        Route("/api/v1/tte/benchmark", api_v1_tte_benchmark, methods=["POST"]),
         Route("/protocol/new", new_protocol),
         Route("/protocol/edit", edit_protocol, methods=["POST"]),
         Route("/validate", validate_form, methods=["POST"]),

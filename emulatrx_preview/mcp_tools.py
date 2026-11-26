@@ -876,4 +876,88 @@ def register_tools(mcp, runner, *, transport: str = "http", allow_ingest_dirs: l
             "Exit 3 POSITIVITY_VIOLATION / ESS_RATIO_BELOW_MIN / SMD_EXCEEDS_MAX / POST_GRACE_SMD_EXCEEDS_MAX: diagnostic gate blocked. Do not report point estimates.\n"
             "PATH_TRAVERSAL_BLOCKED: HTTP file_path must stay inside EMULATRX_MCP_ALLOWED_INGEST_DIR.\n"
             "UPLOAD_TICKET_EXPIRED / UPLOAD_TICKET_INVALID: tickets are single-use and live for 600 seconds.\n"
+            "BENCHMARK_UNAVAILABLE_NO_RESULTS_SECTION / BENCHMARK_BLOCKED_PROTOCOL_OR_ENDPOINT_MISMATCH / "
+            "BENCHMARK_SCALE_MISMATCH / NEGATIVE_CONTROL_BIAS_DETECTED: public-result benchmarking is fail-closed. "
+            "Numerical proximity never proves causality. BENCHMARKING_FEATURE_DISABLED when EMULATRX_ENABLE_BENCHMARKING=0.\n"
         )
+
+    register_benchmark_tools(mcp, runner)
+
+
+def load_run_weights(runner, run_id: str):
+    """Read server-side analysis weights. Row-level values stay in-process and are not returned."""
+    import pandas as pd
+
+    path = runner._path(run_id)
+    for relative in ("diagnostics/weighted_cohort.csv", "bundle/weighted_cohort.csv"):
+        candidate = path / relative
+        if not candidate.is_file():
+            continue
+        frame = pd.read_csv(candidate)
+        for column in ("analysis_weight", "normalized_weight", "raw_weight"):
+            if column in frame.columns:
+                return frame, frame[column].to_numpy(dtype=float)
+    return None, None
+
+
+def benchmark_from_payload(payload: dict, runner) -> dict:
+    from emulatrx_tte.benchmarking import benchmarking_disabled_payload, execute_benchmark_request, is_benchmarking_enabled
+
+    if not is_benchmarking_enabled():
+        return benchmarking_disabled_payload()
+    run_record = None
+    cohort = None
+    weights = None
+    run_id = str(payload.get("run_id") or "").strip()
+    if run_id:
+        run_record = runner.get(run_id)
+        run_record = {key: value for key, value in run_record.items() if key != "sample_cases"}
+        # Persisted run state is authoritative. Drop caller overrides before they can
+        # upgrade gate_passed, alignment, or a synthetic demo pasted next to run_id.
+        payload = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"tte_result", "alignment_audit", "synthetic_demo"}
+        }
+        if payload.get("negative_control_outcome_col"):
+            cohort, weights = load_run_weights(runner, run_id)
+    return execute_benchmark_request(payload, run_record=run_record, cohort=cohort, weights=weights)
+
+
+def register_benchmark_tools(mcp, runner) -> None:
+    @mcp.tool(
+        description=(
+            "Benchmark a completed TTE run against public study-level RCT aggregates and an optional "
+            "prespecified negative control. Numerical proximity never proves causality or clinical efficacy. "
+            "ipd_used is always false. Returns BENCHMARKING_FEATURE_DISABLED when the rollback switch is off."
+        )
+    )
+    def benchmark_rct_and_negative_control(
+        nct_id: str = "NCT01243424",
+        run_id: str = "",
+        tte_result: dict | None = None,
+        alignment_audit: dict | None = None,
+        negative_control_outcome_col: str = "",
+        negative_control_time_col: str = "",
+        curated_published_summary: dict | None = None,
+        synthetic_demo: str = "",
+        n: int = 2500,
+        seed: int = 20261125,
+        confirm_protocol_mismatch: bool = False,
+        confirm_arm_mismatch: bool = False,
+    ) -> dict:
+        payload = {
+            "nct_id": nct_id,
+            "run_id": run_id,
+            "tte_result": tte_result,
+            "alignment_audit": alignment_audit,
+            "negative_control_outcome_col": negative_control_outcome_col or None,
+            "negative_control_time_col": negative_control_time_col or None,
+            "curated_published_summary": curated_published_summary,
+            "synthetic_demo": synthetic_demo or None,
+            "n": n,
+            "seed": seed,
+            "confirm_protocol_mismatch": confirm_protocol_mismatch,
+            "confirm_arm_mismatch": confirm_arm_mismatch,
+        }
+        return benchmark_from_payload(payload, runner)
