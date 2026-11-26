@@ -84,8 +84,10 @@ def _session_view(saved: dict) -> dict:
         "pii_columns_quarantined": semantics["pii_columns_quarantined"],
     }
     interpretation = saved.get("interpretation") or {}
+    meta = saved.get("meta") or {}
     return {
         "session_id": saved["session_id"],
+        "user_namespace": saved.get("user_namespace") or meta.get("user_namespace") or "default",
         "profile": public_profile,
         "interpretation": {key: value for key, value in interpretation.items() if key != "sanitized_llm_payload"},
         "default_mapping": saved.get("default_mapping"),
@@ -670,7 +672,7 @@ def register_tools(mcp, runner, *, transport: str = "http", allow_ingest_dirs: l
         )
         if synthetic_scenario not in ("null_effect", "protective_effect", "custom") and ccw_protocol is None:
             raise ContractError("INVALID_CCW_SCENARIO", "synthetic_scenario must be null_effect, protective_effect, or custom")
-        with tempfile.TemporaryDirectory(prefix="emulatrx-ccw-") as tmp:
+        with runner.execution_slot(), tempfile.TemporaryDirectory(prefix="emulatrx-ccw-") as tmp:
             out = Path(tmp) / "out"
             result, code = run_ccw_synthetic_pipeline(
                 protocol,
@@ -695,6 +697,7 @@ def register_tools(mcp, runner, *, transport: str = "http", allow_ingest_dirs: l
         mapped = {"completed": "completed", "blocked": "gate_blocked", "failed": "failed", "queued": "running", "running": "running"}.get(state, state)
         return {
             "run_id": run_id,
+            "user_namespace": status.get("user_namespace") or "default",
             "state": state,
             "status": mapped,
             "gate_status": status.get("gate_status"),
@@ -765,6 +768,7 @@ def register_tools(mcp, runner, *, transport: str = "http", allow_ingest_dirs: l
             failures = diagnostics.get("gate_failures") or []
             return {
                 "run_id": run_id,
+                "user_namespace": status.get("user_namespace") or "default",
                 "run_type": run_type,
                 "project_mode": project_mode,
                 "evidence_boundary_notice": notice,
@@ -779,6 +783,7 @@ def register_tools(mcp, runner, *, transport: str = "http", allow_ingest_dirs: l
         horizons = estimates.get("horizon_estimates") or estimates.get("co_presented_comparison_table") or []
         return {
             "run_id": run_id,
+            "user_namespace": status.get("user_namespace") or "default",
             "run_type": run_type,
             "project_mode": project_mode,
             "evidence_boundary_notice": notice,

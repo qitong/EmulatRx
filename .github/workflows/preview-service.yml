@@ -17,6 +17,8 @@ jobs:
       - run: PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -p 'test_mcp_agent_suite.py' -v
       - name: Test RCT benchmark CLI, REST, MCP, and feature flag
         run: PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -p 'test_tte_benchmarking.py' -v
+      - name: Test credential-bound multi-user MCP concurrency
+        run: PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -p 'test_mcp_multiuser_concurrency.py' -v
   arm64-image:
     runs-on: ubuntu-24.04-arm
     steps:
