@@ -8,6 +8,7 @@ import html
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 from urllib.parse import parse_qs, urlsplit
 
@@ -38,12 +39,14 @@ from emulatrx_tte.llm_assist import extract_untrusted_Note_forbidden_tokens
 from .dualmode_views import render_dualmode_run_view, workbench_home_view
 from .mcp_tools import detect_missing_clinical_semantics_from_profile, register_tools
 from .tte_runner import TTERunner
+from .user_context import CURRENT_USER_NAMESPACE, InvalidUserNamespace, USER_NAMESPACE_RE, presented_user_namespace
 from .tte_views import cohort_view, form, report_view, result_view, review_view
 from .web_protocol import FIELD_NAMES, FormError, protocol_from_fields
 
 
 UPLOAD_READ_CHUNK_BYTES = 65536
 MAX_MULTIPART_OVERHEAD_BYTES = 128 * 1024
+_UPLOAD_TICKET_PATH = re.compile(r"^/api/sessions/upload-ticket/[A-Za-z0-9_-]{16,128}\Z")
 
 
 class _UploadTooLargeError(Exception):
@@ -83,20 +86,76 @@ DEPENDENCY_COMMIT = os.environ.get("EMULATRX_TTE_DEPENDENCY_COMMIT", "developmen
 runner = TTERunner(os.environ.get("EMULATRX_RUNS_DIR", "/tmp/emulatrx-tte-preview-runs"))
 
 
-def _read_secret(name):
+def _is_token_material(value) -> bool:
+    return isinstance(value, str) and 32 <= len(value) <= 256 and all(32 <= ord(ch) <= 126 for ch in value)
+
+
+def _read_secret(name, *, required=True):
     path = os.environ.get(name)
     if not path:
-        raise RuntimeError(f"{name} is required")
+        if required:
+            raise RuntimeError(f"{name} is required")
+        return None
     value = Path(path).read_text(encoding="utf-8").strip()
-    if len(value) < 32 or len(value) > 256 or not value.isascii():
-        raise RuntimeError(f"{name} must contain 32..256 ASCII characters")
+    if not _is_token_material(value):
+        raise RuntimeError(f"{name} must contain 32..256 printable ASCII characters")
     return value
 
 
+def _load_mcp_user_tokens() -> dict[str, str]:
+    """Load ``EMULATRX_MCP_USER_TOKENS_FILE`` when it is set.
+
+    Keys are user namespaces. ``default`` is accepted only because it appears
+    explicitly in the file. ``users`` is reserved for the parent directory.
+    Token values are pairwise-distinct printable ASCII and must not match the
+    web password or the shared MCP token (checked after both are loaded).
+    """
+    path = os.environ.get("EMULATRX_MCP_USER_TOKENS_FILE")
+    if not path:
+        return {}
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"EMULATRX_MCP_USER_TOKENS_FILE is not valid UTF-8 JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("EMULATRX_MCP_USER_TOKENS_FILE must be a JSON object of namespace to token")
+    tokens: dict[str, str] = {}
+    for key, value in payload.items():
+        if (
+            not isinstance(key, str)
+            or key == "users"
+            or USER_NAMESPACE_RE.fullmatch(key) is None
+        ):
+            raise RuntimeError(
+                "EMULATRX_MCP_USER_TOKENS_FILE keys must match "
+                "^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$ and must not be the reserved namespace 'users' "
+                "('default' is allowed only when it is an explicit key)"
+            )
+        if not _is_token_material(value):
+            raise RuntimeError(
+                f"EMULATRX_MCP_USER_TOKENS_FILE token for {key!r} must be 32..256 printable ASCII characters"
+            )
+        if value in tokens.values():
+            raise RuntimeError("EMULATRX_MCP_USER_TOKENS_FILE tokens must be pairwise distinct")
+        tokens[key] = value
+    return tokens
+
+
 WEB_PASSWORD = _read_secret("EMULATRX_WEB_PASSWORD_FILE")
-MCP_TOKEN = _read_secret("EMULATRX_MCP_TOKEN_FILE")
-if secrets.compare_digest(WEB_PASSWORD, MCP_TOKEN):
+MCP_USER_TOKENS = _load_mcp_user_tokens()
+MCP_TOKEN = _read_secret("EMULATRX_MCP_TOKEN_FILE", required=not bool(MCP_USER_TOKENS))
+if MCP_TOKEN is not None and secrets.compare_digest(WEB_PASSWORD, MCP_TOKEN):
     raise RuntimeError("web and MCP credentials must differ")
+for _bound_ns, _user_token in MCP_USER_TOKENS.items():
+    if secrets.compare_digest(_user_token, WEB_PASSWORD):
+        raise RuntimeError(f"per-user MCP token for {_bound_ns!r} must not equal the web password")
+    if MCP_TOKEN is not None and secrets.compare_digest(_user_token, MCP_TOKEN):
+        raise RuntimeError(f"per-user MCP token for {_bound_ns!r} must not equal EMULATRX_MCP_TOKEN_FILE")
+
+# kind is "user" (bound to that map key) or "shared" (EMULATRX_MCP_TOKEN_FILE, namespace "default" only).
+_BEARER_ROWS = tuple((ns, token, "user") for ns, token in MCP_USER_TOKENS.items())
+if MCP_TOKEN is not None:
+    _BEARER_ROWS = (*_BEARER_ROWS, ("default", MCP_TOKEN, "shared"))
 
 allowed_hosts = [
     item.strip()
@@ -247,14 +306,38 @@ async def api_upload_with_ticket(request):
     """Single-use ticket stream. Authentication is the unguessable ticket, not Web Basic."""
     try:
         content_length = request.headers.get("content-length")
-        if content_length is not None and int(content_length) > MAX_USER_COHORT_BYTES:
+        if content_length is not None and int(content_length) > MAX_USER_COHORT_BYTES + MAX_MULTIPART_OVERHEAD_BYTES:
             raise ContractError("COHORT_FILE_TOO_LARGE", "上传数据文件超过 25 MB 限制。")
-        body = bytearray()
-        async for chunk in request.stream():
-            if len(body) + len(chunk) > MAX_USER_COHORT_BYTES:
+        ctype = request.headers.get("content-type", "").lower()
+        upload_name = None
+        if ctype.startswith("multipart/form-data"):
+            form = await request.form()
+            upload = form.get("file")
+            if upload is None:
+                upload = next((value for value in form.values() if hasattr(value, "read")), None)
+            if upload is None or not hasattr(upload, "read"):
+                raise ContractError("UPLOAD_TICKET_INVALID", "multipart upload requires a file field")
+            try:
+                raw = await upload.read()
+                upload_name = getattr(upload, "filename", None) or None
+            finally:
+                close = getattr(upload, "close", None)
+                if close is not None:
+                    closed = close()
+                    if hasattr(closed, "__await__"):
+                        await closed
+        else:
+            if content_length is not None and int(content_length) > MAX_USER_COHORT_BYTES:
                 raise ContractError("COHORT_FILE_TOO_LARGE", "上传数据文件超过 25 MB 限制。")
-            body.extend(chunk)
-        saved = runner.consume_upload_ticket(request.path_params["ticket_id"], bytes(body))
+            body = bytearray()
+            async for chunk in request.stream():
+                if len(body) + len(chunk) > MAX_USER_COHORT_BYTES:
+                    raise ContractError("COHORT_FILE_TOO_LARGE", "上传数据文件超过 25 MB 限制。")
+                body.extend(chunk)
+            raw = bytes(body)
+        if len(raw) > MAX_USER_COHORT_BYTES:
+            raise ContractError("COHORT_FILE_TOO_LARGE", "上传数据文件超过 25 MB 限制。")
+        saved = runner.consume_upload_ticket(request.path_params["ticket_id"], raw, filename=upload_name)
         from .mcp_tools import _session_view
 
         return JSONResponse(_session_view(saved), headers={"Cache-Control": "no-store"})
@@ -393,9 +476,10 @@ async def api_delete_session(request):
         res = runner.delete_session(request.path_params["session_id"])
         return JSONResponse(res, status_code=200, headers={"Cache-Control": "no-store"})
     except ContractError as exc:
+        status_http = 404 if exc.code == "SESSION_NOT_FOUND" else 400
         return JSONResponse(
             {"error": f"{exc.code}: {exc}", "code": exc.code, "session_deleted": False},
-            status_code=400,
+            status_code=status_http,
             headers={"Cache-Control": "no-store"},
         )
     except (OSError, RuntimeError) as exc:
@@ -696,6 +780,33 @@ async def api_start_v1_simulated_run(request):
         return _contract_error_json(exc)
 
 
+def _ccw_report_html(run_id: str) -> str | None:
+    """Read a published CCW report when the dual-mode renderer has no protocol payload."""
+    try:
+        path = runner._path(run_id) / "ccw_preview_report.html"
+    except ContractError:
+        return None
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+
+
+def _render_dualmode_or_ccw(result: dict, *, standalone_report: bool = False) -> str:
+    kind = result.get("run_kind") or result.get("kind")
+    if kind == "grace_period_ccw" or "normalized_protocol" not in result:
+        try:
+            return render_dualmode_run_view(result, runner.root, standalone_report=standalone_report)
+        except KeyError:
+            report = _ccw_report_html(str(result.get("run_id") or ""))
+            if report is not None:
+                return report
+            return f"<p>运行状态：{html.escape(str(result.get('state') or ''))}</p>"
+    return render_dualmode_run_view(result, runner.root, standalone_report=standalone_report)
+
+
 async def api_get_dual_run(request):
     try:
         result = runner.get(request.path_params["run_id"])
@@ -703,7 +814,16 @@ async def api_get_dual_run(request):
         return JSONResponse({"error": "运行不存在或已清除。"}, status_code=404)
     out = dict(result)
     if result.get("state") not in ("queued", "running") and result.get("kind") != "synthetic_tte":
-        out["rendered_html"] = render_dualmode_run_view(result, runner.root)
+        kind = result.get("run_kind") or result.get("kind")
+        if kind == "grace_period_ccw" or "normalized_protocol" not in result:
+            try:
+                out["rendered_html"] = render_dualmode_run_view(result, runner.root)
+            except KeyError:
+                report = _ccw_report_html(request.path_params["run_id"])
+                if report is not None:
+                    out["report_html"] = report
+        else:
+            out["rendered_html"] = render_dualmode_run_view(result, runner.root)
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
@@ -760,7 +880,7 @@ async def show_run(request):
         return page("运行不存在或已过期。", status=404)
     is_running = result["state"] in ("queued", "running")
     if result.get("kind", "synthetic_tte") != "synthetic_tte":
-        return page(render_dualmode_run_view(result, runner.root), refresh=is_running)
+        return page(_render_dualmode_or_ccw(result), refresh=is_running)
     return page(result_view(result, runner.root), refresh=is_running)
 
 
@@ -791,7 +911,7 @@ async def show_report(request):
                 else "目标试验模拟（无数据模拟预演项目）可行性报告"
             )
             response = page(
-                render_dualmode_run_view(result, runner.root, standalone_report=True),
+                _render_dualmode_or_ccw(result, standalone_report=True),
                 title=f"EmulatRx · {title_prefix}",
             )
             if request.query_params.get("download") == "1":
@@ -865,40 +985,144 @@ inner = Starlette(
 )
 
 
+class _UserNamespaceMismatch(Exception):
+    """Credential and ``X-EmulatRx-User`` name different namespaces."""
+
+
+def _fixed_digest_equal(presented: bytes, expected: str) -> bool:
+    """Compare a presented bearer secret to one stored token without returning early on length."""
+    expected_b = expected.encode("ascii")
+    same_length = len(presented) == len(expected_b)
+    left = presented[:256].ljust(256, b"\x00")
+    right = expected_b[:256].ljust(256, b"\x00")
+    return bool(secrets.compare_digest(left, right) and same_length)
+
+
+def _match_bearer(authorization: bytes) -> tuple[str, str] | None:
+    """Return ``(kind, bound_namespace)`` after comparing every configured bearer token.
+
+    The scan does not stop at the first hit, so a match against an earlier
+    colleague does not shorten the comparison work. ``kind`` is ``user`` for
+    ``EMULATRX_MCP_USER_TOKENS_FILE`` and ``shared`` for ``EMULATRX_MCP_TOKEN_FILE``.
+    """
+    prefix = b"Bearer "
+    prefix_ok = len(authorization) >= len(prefix) and secrets.compare_digest(authorization[: len(prefix)], prefix)
+    presented = authorization[len(prefix) :] if prefix_ok else b""
+    found: tuple[str, str] | None = None
+    for namespace, token, kind in _BEARER_ROWS:
+        matched = _fixed_digest_equal(presented, token)
+        if prefix_ok and matched and found is None:
+            found = (kind, namespace)
+    return found
+
+
+def _basic_password_ok(authorization: bytes) -> bool:
+    scheme = b""
+    user = ""
+    password = ""
+    try:
+        scheme, encoded = authorization.split(b" ", 1)
+        decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
+        user, password = decoded.split(":", 1)
+    except (ValueError, UnicodeError):
+        pass
+    password_ok = secrets.compare_digest(password, WEB_PASSWORD)
+    return bool(password_ok and scheme.lower() == b"basic" and user == "preview")
+
+
+def _accepts_user_bearer(path: str) -> bool:
+    return path.startswith("/api/") or path == "/runs" or path.startswith("/runs/")
+
+
+def _trust_unbound_user_header() -> bool:
+    # Default off. Production and the preview container must not set this:
+    # it lets the shared MCP token select a namespace it is not bound to.
+    return os.environ.get("EMULATRX_DEV_TRUST_UNBOUND_USER_HEADER") == "1"
+
+
+def _namespace_for_credential(raw_headers, bound_ns: str, *, allow_unbound_header: bool) -> str:
+    presented = presented_user_namespace(raw_headers)
+    if presented is None:
+        return bound_ns
+    if presented == bound_ns or allow_unbound_header:
+        return presented
+    raise _UserNamespaceMismatch
+
+
+def _invalid_namespace_response(exc: InvalidUserNamespace) -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": str(exc),
+            "code": "INVALID_USER_NAMESPACE",
+            "error_code": "INVALID_USER_NAMESPACE",
+        },
+        status_code=400,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _namespace_mismatch_response() -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": "USER_NAMESPACE_MISMATCH: token is bound to a different user namespace",
+            "code": "USER_NAMESPACE_MISMATCH",
+            "error_code": "USER_NAMESPACE_MISMATCH",
+        },
+        status_code=403,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _unauthorized(challenge: bytes) -> JSONResponse:
+    return JSONResponse(
+        {"error": "authentication required"},
+        status_code=401,
+        headers={"WWW-Authenticate": challenge.decode("ascii"), "Cache-Control": "no-store"},
+    )
+
+
 class AuthenticationGate:
     def __init__(self, app):
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope["path"] == "/healthz" or scope["path"].startswith("/api/sessions/upload-ticket/"):
+        path = scope.get("path") or ""
+        if scope["type"] != "http" or path == "/healthz" or _UPLOAD_TICKET_PATH.fullmatch(path):
             return await self.app(scope, receive, send)
-        headers = {key.lower(): value for key, value in scope.get("headers", [])}
-        authorization = headers.get(b"authorization", b"")
-        if scope["path"].startswith("/mcp"):
-            expected = b"Bearer " + MCP_TOKEN.encode("ascii")
-            valid = secrets.compare_digest(authorization, expected)
-            challenge = b"Bearer"
+        raw_headers = list(scope.get("headers") or [])
+        authorization = b""
+        for key, value in raw_headers:
+            if key.lower() == b"authorization":
+                authorization = value
+                break
+        bearer = _match_bearer(authorization)
+        is_mcp = path.startswith("/mcp")
+        if is_mcp:
+            if bearer is None:
+                return await _unauthorized(b"Bearer")(scope, receive, send)
+            kind, bound_ns = bearer
+            allow_unbound = kind == "shared" and _trust_unbound_user_header()
         else:
-            try:
-                scheme, encoded = authorization.split(b" ", 1)
-                decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
-                user, password = decoded.split(":", 1)
-                valid = (
-                    scheme.lower() == b"basic"
-                    and user == "preview"
-                    and secrets.compare_digest(password, WEB_PASSWORD)
-                )
-            except (ValueError, UnicodeError):
-                valid = False
-            challenge = b'Basic realm="EmulatRx synthetic TTE preview"'
-        if not valid:
-            response = JSONResponse(
-                {"error": "authentication required"},
-                status_code=401,
-                headers={"WWW-Authenticate": challenge.decode("ascii"), "Cache-Control": "no-store"},
-            )
-            return await response(scope, receive, send)
-        return await self.app(scope, receive, send)
+            basic_ok = _basic_password_ok(authorization)
+            if bearer is not None and _accepts_user_bearer(path):
+                kind, bound_ns = bearer
+                allow_unbound = kind == "shared" and _trust_unbound_user_header()
+            elif basic_ok:
+                kind, bound_ns = "basic", "default"
+                allow_unbound = False
+            else:
+                return await _unauthorized(b'Basic realm="EmulatRx synthetic TTE preview"')(scope, receive, send)
+        try:
+            namespace = _namespace_for_credential(raw_headers, bound_ns, allow_unbound_header=allow_unbound)
+        except InvalidUserNamespace as exc:
+            return await _invalid_namespace_response(exc)(scope, receive, send)
+        except _UserNamespaceMismatch:
+            return await _namespace_mismatch_response()(scope, receive, send)
+        token = CURRENT_USER_NAMESPACE.set(namespace)
+        try:
+            return await self.app(scope, receive, send)
+        finally:
+            CURRENT_USER_NAMESPACE.reset(token)
 
 
 app = AuthenticationGate(inner)

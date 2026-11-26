@@ -943,7 +943,7 @@ function currentTimeline() {{
   const landmark = Number(document.getElementById('timeline-landmark') && document.getElementById('timeline-landmark').value);
   const horizon = Number(document.getElementById('timeline-horizon') && document.getElementById('timeline-horizon').value);
   const listEl = document.getElementById(horizonsListId());
-  const listed = parseHorizonList(listEl && listEl.value).filter(n => n > 0);
+  const listed = parseHorizonList(listEl && listEl.value);
   const horizons = listed.length ? listed : (Number.isFinite(horizon) ? [horizon] : []);
   return {{ landmark, horizon, horizons }};
 }}
@@ -965,7 +965,7 @@ function syncTimelineHorizonIntoList() {{
   if (!el || !Number.isFinite(horizon)) return;
   timelineSyncing = true;
   try {{
-    const nums = parseHorizonList(el.value).filter(n => n > 0);
+    const nums = parseHorizonList(el.value);
     if (!nums.length) {{
       el.value = String(horizon);
       return;
@@ -1637,7 +1637,7 @@ function addEligibilityRow(crit) {{
     <select class="el-var">${{cols.map(col => `<option value="${{escHtml(col.name)}}" ${{col.name===c.variable?'selected':''}}>${{escHtml(col.name)}}</option>`).join('')}}</select>
     <select class="el-op">${{['>=','<=','>','<','==','!='].map(op => `<option value="${{op}}" ${{op===c.operator?'selected':''}}>${{op}}</option>`).join('')}}</select>
     <input type="text" class="el-val" value="${{escHtml(c.value)}}" placeholder="阈值">
-    <button type="button" class="secondary" style="padding:7px 10px" onclick="this.parentElement.remove()">删除</button>
+    <button type="button" class="secondary" style="padding:7px 10px" onclick="this.parentElement.remove(); invalidateDownstream(4)">删除</button>
   `;
   document.getElementById('eligibility-builder-rows').appendChild(row);
 }}
@@ -1760,7 +1760,7 @@ function readUserMapping() {{
     else if (role === '2') compVals.push(val);
     else censVals.push(val);
   }});
-  const horizons = document.getElementById('map-horizons').value.split(',').map(x => parseFloat(x.trim())).filter(x => Number.isFinite(x) && x > 0);
+  const horizons = document.getElementById('map-horizons').value.split(',').map(x => parseFloat(x.trim())).filter(x => Number.isFinite(x));
   const elig = [];
   document.querySelectorAll('#eligibility-builder-rows .elig-row').forEach((r, i) => {{
     const v = r.querySelector('.el-val').value.trim();
@@ -1802,7 +1802,7 @@ function readUserMapping() {{
 }}
 
 function readSimConfig() {{
-  const horizons = document.getElementById('sim-horizons').value.split(',').map(x => parseFloat(x.trim())).filter(x => Number.isFinite(x) && x > 0);
+  const horizons = document.getElementById('sim-horizons').value.split(',').map(x => parseFloat(x.trim())).filter(x => Number.isFinite(x));
   return {{
     comparator_label: document.getElementById('sim-comp-label').value.trim(),
     active_label: document.getElementById('sim-act-label').value.trim(),

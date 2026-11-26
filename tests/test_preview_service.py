@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -282,13 +283,15 @@ class PreviewServiceTests(unittest.TestCase):
         self.assertIn("二元标记只能与 0 或 1 比较", validation_error.text)
         with self.assertRaises(ContractError):
             self.service.runner.artifact_path("a" * 32, "../../secrets/web_password")
-        self.assertTrue(self.service.runner._slot.acquire(blocking=False))
-        try:
-            with self.assertRaises(ContractError) as raised:
-                self.service.runner.start(PROTOCOL, cases=1000, seed=42, bootstrap_iterations=20)
-            self.assertEqual(raised.exception.code, "BUSY")
-        finally:
-            self.service.runner._slot.release()
+        self.service.runner._slot = threading.BoundedSemaphore(1)
+        with mock.patch.dict(os.environ, {"EMULATRX_SLOT_WAIT_SECONDS": "0"}):
+            self.assertTrue(self.service.runner._slot.acquire(blocking=False))
+            try:
+                with self.assertRaises(ContractError) as raised:
+                    self.service.runner.start(PROTOCOL, cases=1000, seed=42, bootstrap_iterations=20)
+                self.assertEqual(raised.exception.code, "BUSY")
+            finally:
+                self.service.runner._slot.release()
 
     def test_build_provenance_and_interrupted_restart(self):
         self.assertEqual(code_provenance(), ("b" * 40, False))

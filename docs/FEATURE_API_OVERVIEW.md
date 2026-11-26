@@ -23,12 +23,15 @@
 1. **Web 界面与 REST API 鉴权**：
    - 采用 HTTP Basic 鉴权（`preview:<WEB_PASSWORD>`，由只读密钥文件 `EMULATRX_WEB_PASSWORD_FILE` 注入，部署规范对应 `EMULATRX_PREVIEW_USER` / `EMULATRX_PREVIEW_PASS`）与 `Origin`/`Host` 同源校验；`ymadmin` 私网部署仅监听 Tailscale 私网地址 `100.121.92.1:8602`（本机 SSH 隧道 `127.0.0.1:18602`），零公网暴露；仅 `/healthz` 为无状态存活探针。
 2. **MCP 端点独立鉴权（`/mcp`）**：
-   - 采用独立 `Authorization: Bearer <MCP_TOKEN>`（由 `EMULATRX_MCP_TOKEN_FILE` / `EMULATRX_PREVIEW_MCP_TOKEN` 注入），启动时通过常量时间比对强制校验与 Web 密码绝不相同，亦绝不复用 GigaTIME 或 MedGemma 等其他服务 Token。
+   - 采用独立 `Authorization: Bearer <MCP_TOKEN>`（由 `EMULATRX_MCP_TOKEN_FILE` 注入，只绑定命名空间 `default`）。可选 `EMULATRX_MCP_USER_TOKENS_FILE`（UTF-8 JSON，建议 `0400`，例如 `/run/secrets/mcp_user_tokens.json`）把每位同事的令牌固定到 `/data/tte/users/<user>/`，形如 `{"zhangsan": "<token>", "lisi": "<token>"}`。键必须匹配 `^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`（`users` 保留；`default` 仅在文件里显式出现时允许），令牌为 32–256 个可打印 ASCII、两两不同，且不得等于 Web 密码或共享 `MCP_TOKEN`。用户令牌文件存在时可以不设共享令牌文件，两者也可以同时提供。启动时用 `secrets.compare_digest` 比对全部令牌，命中后仍继续比完，避免提前返回。
+   - 省略 `X-EmulatRx-User` 时进入令牌绑定的命名空间。头若出现，必须与该令牌一致，否则 `403 USER_NAMESPACE_MISMATCH`（例如 lisi 的令牌携带 `X-EmulatRx-User: zhangsan`）。共享 `MCP_TOKEN` 只能进入 `default`。共享 Web Basic（`preview:<WEB_PASSWORD>`）同样只能进入 `default`，不能读取、导出或删除任何命名用户目录。`/api/*` 与 `/runs/*` 接受对应用户的 Bearer 或 Web Basic；`/mcp` 只接受 Bearer。生产与预览容器不要打开默认关闭的 `EMULATRX_DEV_TRUST_UNBOUND_USER_HEADER`。
 3. **LLM 网关只读密钥与三层外发隐私红线**：
    - `emulatrx_tte/llm_assist.py` 按优先级读取只读挂载文件 `EMULATRX_LLM_API_KEY_FILE=/run/secrets/llm_api_key`（`0400`，容器非特权用户 `UID 10001`）> `EMULATRX_LLM_API_KEY` > `OPENAI_API_KEY`；未挂载密钥或网络异常时 100% 自动回退本地确定性规则引擎，任何接口与日志零密钥回显。
    - 外发载荷严格执行三层隔离（`system` 提示词 / `cohort_outbound_context` 白名单表头汇总与匿名 `CATEGORY_LEVEL_*` 占位符 / `public_reference_context` 公开试验元数据），经 `sanitize_profile_for_llm` 与 `assert_llm_payload_privacy_safe` 双重校验，**确保个体患者行记录与非白名单单元格值 0 外发**。
 4. **会话级隔离存储与一键物理清除**：
-   - 上传队列按 `sessions/<session_id>/` 私网隔离落盘（`0700`），调用 `DELETE /api/cohorts/{session_id}`（或 `DELETE /api/sessions/{session_id}`、MCP `delete_cohort_session`）即使在 `session_meta.json` 损坏时仍无条件全盘扫描 `status.json` 同步物理擦除全部派生运行目录，删除后再次读取会话、运行或下载产物一律返回 `404`。
+   - 共享令牌或 Web Basic 未携带用户头时仍落在历史单用户目录 `sessions/<session_id>/` 与 `<runs>/<run_id>/`（`0700`）。用户令牌绑定的命名用户写入 `users/<user_namespace>/sessions/` 与 `users/<user_namespace>/runs/`，跨用户读取或删除返回 `SESSION_NOT_FOUND` / `RUN_NOT_FOUND`。用别人的令牌或共享 Web Basic 冒充该用户返回 `403 USER_NAMESPACE_MISMATCH`。
+   - 调用 `DELETE /api/cohorts/{session_id}`（或 `DELETE /api/sessions/{session_id}`、MCP `delete_cohort_session`）只擦除**当前用户命名空间**内的会话与派生运行；`session_meta.json` 损坏时仍扫描该用户自己的 `status.json`。删除后再次读取返回 `404`。
+   - 单次上传票据把 `user_namespace` 写进票据。`POST /api/sessions/upload-ticket/{ticket_id}` 不要求用户头，消费票据时仍写入签发者的目录。
 
 ---
 
@@ -54,13 +57,15 @@
 | **CLI / 统计引擎** | 退出码 `0` | — | 协议契约与全部统计门禁通过，同级临时目录写齐全部产物与 `run_manifest.json` 后原子重命名发布 |
 | **CLI / 统计引擎** | 退出码 `2` | `INVALID_JSON`、`MISSING_TIME_ZERO`、`POST_TIME_ZERO_ELIGIBILITY`、`POST_LANDMARK_COVARIATE_LEAK`、`NON_SYNTHETIC_COHORT_REJECTED`、`UNSUPPORTED_EVALUE_MEASURE`、`MISSING_USER_COHORT_INGEST_MANIFEST`、`OUTPUT_EXISTS` 等 | 协议结构/时间零点穿越/非 `SYN-*` 合成主键/目标目录已存在等契约违例：**立即终止且不发布任何目标目录** |
 | **CLI / 统计引擎** | 退出码 `3` | `POSITIVITY_VIOLATION`、`ESS_RATIO_BELOW_MIN`、`SMD_EXCEEDS_MAX`、`ZERO_RISK_SET`、CCW `UNCENSORED_BELOW_MIN` / `PRE_TRUNCATION_WEIGHT_EXCEEDED` / `EXCESSIVE_WEIGHT_TRUNCATION` / `MAX_WEIGHT_EXCEEDED` / `POST_GRACE_SMD_EXCEEDS_MAX`、`UPSTREAM_GATE_NOT_PASSED` | 统计正值性、有效样本量、残余失衡或截尾前极值违背方案门禁：**仅发布诊断与流失证据包，100% 拒绝产出加权生存点估计（`estimates.json` / `ccw_estimates.json`）** |
-| **HTTP / MCP 服务** | `401`（及 `403` 主机保护） | `authentication required` | 未携带凭证、密码/Token 错误、或混用 Web Basic 凭证访问 `/mcp`（及反之）时立即拦截 |
+| **HTTP / MCP 服务** | `401`（及 `403` 主机保护） | `authentication required` | 未携带凭证、密码/Token 错误，或用 Web Basic 访问 `/mcp`、用 MCP Bearer 访问未开放 Bearer 的页面路由时立即拦截 |
+| **HTTP / MCP 服务** | `403` | `USER_NAMESPACE_MISMATCH` | 令牌或 Web Basic 绑定的命名空间与 `X-EmulatRx-User` 不一致。共享 `MCP_TOKEN` 与共享 Web Basic 只能进入 `default`；lisi 的令牌不能读取 zhangsan 的目录 |
 | **HTTP / MCP 服务** | `404` | `SESSION_NOT_FOUND` / `RUN_NOT_FOUND` / `ARTIFACT_NOT_FOUND` | 访问未知、过期或已通过一键物理清除擦除的会话、派生运行及产物路径时返回 `404` |
 | **HTTP / MCP 服务** | `413` | `COHORT_FILE_TOO_LARGE` | 上传请求头或 `64 KiB` 流式分块读取累计超过 `25 MB` 上限时立即中断读取并清理缓冲 |
 | **HTTP / MCP 服务** | `400` | `PRIVACY_VIOLATION_BLOCKED`、`ORIGIN_MISMATCH`、`INVALID_MAPPING` 等 | 发送前隐私拦截器检出个体 ID/敏感词泄漏风险、跨源请求或非法字段参数时阻断请求 |
 | **HTTP / MCP 服务** | `422` | `ARM_MISMATCH_CONFIRMATION_REQUIRED` | 目标 RCT 双臂与研究干预/对照不一致（如 `NCT06642272` 同类互比、缺联合背景药、单臂/`0` 分组或匿名 `0/1` 队列未声明通用名）且未传 `confirm_arm_mismatch=true` |
 | **HTTP / MCP 服务** | `422` | `PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED` | 双臂药物虽匹配但四维 PICO-T 任一维度偏离——健康受试者/药代试验（如 `NCT00842556` 上限 `0.20`）、缺失核心合并症如心衰（上限 `0.55`，含 `Exclusion Criteria` 陷阱拦截）、主要终点为血酮/HbA1c 等短期替代指标（如 `NCT03959501` 上限 `0.48`）或随访窗过短——且未传 `confirm_protocol_mismatch=true` |
-| **HTTP / MCP 服务** | `429` | `BUSY` | 单容器有界并发槽位占用时拒绝超额并发计算请求 |
+| **HTTP / MCP 服务** | `400` | `INVALID_USER_NAMESPACE` | `X-EmulatRx-User` / `X-WorkBuddy-User` 含路径片段、空白、控制字符或超过 63 字符；头重复或两个别名冲突；头已出现但值为空（含 HTTP/1.1 剥掉可选空白后的空字节）。头完全省略才使用令牌绑定的命名空间 |
+| **HTTP / MCP 服务** | `429` | `BUSY` | 执行池 `EMULATRX_MAX_CONCURRENT_RUNS`（默认 `8`，范围 1–32）在 `EMULATRX_SLOT_WAIT_SECONDS`（默认 `60`）内仍无空闲槽位时拒绝。`run_static_or_landmark_tte` 与 `run_grace_period_ccw` 共用该池 |
 
 ---
 
@@ -105,6 +110,22 @@ PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 python3 -m unittest discover -s
 4. **秒级均衡预检**：`POST /api/v1/tte/diagnose-preflight` 返回纳排漏斗、加权前/后 `|SMD|` 与 `gate_passed`，不跑生存 bootstrap。
 5. **三阶去偏结果看板**：粗分析 → 1:1 PSM / sIPTW → 完整 TTE，并展示 `what_tte_controlled_beyond_psm`。
 
-`diagnose-preflight` 与 `POST /api/v1/tte/run`（以及 `POST /api/v1/projects/user-cohort/runs`、`POST /api/v1/projects/simulated/runs`）使用同一套 `verify_and_enrich_target_rct` 门禁。未确认的双臂偏离返回 `422 ARM_MISMATCH_CONFIRMATION_REQUIRED`，未确认的 PICO-T 偏离返回 `422 PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED`。`gate_passed=false` 时界面不放行最终估计。第 3 步的 `landmark_time` 与 `horizon` 会进入预检和正式运行：负的地标、非正的随访时点、非有限数，或 `landmark_time >= min(horizons)` 返回 `400 INVALID_TIMELINE_WINDOW`。未知会话在 `POST /api/v1/tte/diagnose-preflight` 上返回 `404 SESSION_NOT_FOUND`。
+`diagnose-preflight` 与 `POST /api/v1/tte/run`（以及 `POST /api/v1/projects/user-cohort/runs`、`POST /api/v1/projects/simulated/runs`）使用同一套 `verify_and_enrich_target_rct` 门禁。未确认的双臂偏离返回 `422 ARM_MISMATCH_CONFIRMATION_REQUIRED`，未确认的 PICO-T 偏离返回 `422 PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED`。`gate_passed=false` 时界面不放行最终估计。第 3 步的 `landmark_time` 与 `horizon` 会进入预检和正式运行：负的地标、非正的随访时点、非有限数，或 `landmark_time >= min(horizons)` 返回 `400 INVALID_TIMELINE_WINDOW`。未知会话在 `POST /api/v1/tte/diagnose-preflight` 上返回 `404 SESSION_NOT_FOUND`。预检通过 `get_session` 只解析当前用户命名空间里的会话。
 
 鉴权、`Content-Security-Policy`、`X-Content-Type-Options: nosniff` 保持不变。`record_url` 只允许 `http://` 与 `https://` 两种方案（服务端 `safe_record_href`、浏览器 `safeRecordHref`）；`javascript:`、`data:` 等其他方案改为 `#`。
+
+---
+
+## 8. WorkBuddy 多用户 MCP（`X-EmulatRx-User`、并发池、`.xlsx`）
+
+完整接入说明见 [`docs/WORKBUDDY_MCP_SETUP.html`](WORKBUDDY_MCP_SETUP.html)。
+
+| 机制 | 行为 |
+| --- | --- |
+| 用户令牌 | `EMULATRX_MCP_USER_TOKENS_FILE` 的 JSON（`{"zhangsan": "<token>", "lisi": "<token>"}`）把 Bearer 绑定到 `/data/tte/users/<user>/`。省略用户头即进入该命名空间。可选 `X-EmulatRx-User: zhangsan` 必须与令牌一致，冒充他人为 `403 USER_NAMESPACE_MISMATCH`。共享 `MCP_TOKEN` 与 Web Basic 只能进入 `default`。显式空头或纯空白头为 `400 INVALID_USER_NAMESPACE` |
+| 用户头 | 已认证请求读取 `X-EmulatRx-User`；该头缺失时才接受 `X-WorkBuddy-User`。正则 `^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`，拒绝 `.` / `..` 路径段、重复头和空字节。头完全省略才沿用凭证绑定的命名空间 |
+| 物理目录 | `default` 保持 `<runs>/sessions` 与 `<runs>/<run_id>`。命名用户使用 `<runs>/users/<user_namespace>/{sessions,runs}`，目录模式 `0700`，解析后必须仍在 runs 根目录内 |
+| 上传票据 | `issue_upload_ticket` 把 `user_namespace` 写入票据。无头 `curl -F file=@cohort.xlsx` 仍落到签发者目录 |
+| 并发 | `EMULATRX_MAX_CONCURRENT_RUNS` 默认 `8`；`EMULATRX_SLOT_WAIT_SECONDS` 默认 `60`。每用户会话上限 60、运行上限 100，互不挤占 |
+| 表格 | `requirements-preview.txt` 固定 `openpyxl==3.1.5`。`.xlsx` 与 CSV/TSV 走同一 `ingest_cohort_session` → `run_static_or_landmark_tte` → `get_tte_result_summary` 路径，并写出 `dualmode_report.html` |
+| stdio | `python -m emulatrx_tte mcp-serve --user-namespace <slug>`，也可用环境变量 `EMULATRX_DEFAULT_USER_NAMESPACE` |

@@ -187,8 +187,8 @@
         </tr>
         <tr>
           <td><strong>Streamable HTTP MCP（<code>/mcp</code>）</strong></td>
-          <td>独立 Bearer Token（<code>Authorization: Bearer &lt;MCP_TOKEN&gt;</code>，读取 <code>EMULATRX_MCP_TOKEN_FILE</code> / <code>EMULATRX_PREVIEW_MCP_TOKEN</code>）</td>
-          <td>服务启动时强制校验与 Web 密码绝不相同（相同则拒绝启动），绝不复用 GigaTIME 或 MedGemma 等外部服务凭证；拿 Web Basic 访问 <code>/mcp</code> 或拿 MCP Token 访问 Web 均返回 <code>401</code>。</td>
+          <td>独立 Bearer Token。共享 <code>EMULATRX_MCP_TOKEN_FILE</code> 只绑定 <code>default</code>。可选 <code>EMULATRX_MCP_USER_TOKENS_FILE</code>（UTF-8 JSON，建议 <code>0400</code>）形如 <code>{"zhangsan": "&lt;token&gt;", "lisi": "&lt;token&gt;"}</code>，把每枚令牌固定到 <code>/data/tte/users/&lt;user&gt;/</code></td>
+          <td>令牌为 32–256 个可打印 ASCII，两两不同，且不得等于 Web 密码或共享 MCP 令牌。比对走完全表 <code>secrets.compare_digest</code>。省略用户头时进入令牌绑定的命名空间；头与令牌不一致返回 <code>403 USER_NAMESPACE_MISMATCH</code>。共享 MCP 令牌和共享 Web Basic 都不能进入命名用户目录。显式空头或纯空白头返回 <code>400 INVALID_USER_NAMESPACE</code>。</td>
         </tr>
         <tr>
           <td><strong>LLM 兼容网关（DeepSeek / 百炼 / OpenAI）</strong></td>
@@ -285,7 +285,12 @@
         <tr>
           <td class="code-err">HTTP <code>401</code> / <code>403</code></td>
           <td><code>authentication required</code></td>
-          <td>缺失凭证、密码或 Token 不匹配、跨通道混用 Web Basic 与 MCP Bearer 凭证或非白名单 Host 请求。</td>
+          <td>缺失凭证、密码或 Token 不匹配、用 Web Basic 访问 <code>/mcp</code>，或用 MCP Bearer 访问未开放 Bearer 的页面路由，以及非白名单 Host 请求。</td>
+        </tr>
+        <tr>
+          <td class="code-err">HTTP <code>403</code></td>
+          <td><code>USER_NAMESPACE_MISMATCH</code></td>
+          <td>凭证绑定的命名空间与 <code>X-EmulatRx-User</code> 不一致。共享 MCP 令牌和共享 Web Basic 只能进入 <code>default</code>；lisi 的令牌不能读取 zhangsan 的目录。</td>
         </tr>
         <tr>
           <td class="code-err">HTTP <code>404</code></td>
@@ -299,8 +304,8 @@
         </tr>
         <tr>
           <td class="code-err">HTTP <code>400</code></td>
-          <td><code>PRIVACY_VIOLATION_BLOCKED</code> · <code>ORIGIN_MISMATCH</code> · <code>INVALID_MAPPING</code></td>
-          <td>外发 LLM 请求体隐私守卫检出潜在个体标识/非白名单单元格值、跨站 Origin 不符或映射/协议参数非法。</td>
+          <td><code>PRIVACY_VIOLATION_BLOCKED</code> · <code>ORIGIN_MISMATCH</code> · <code>INVALID_MAPPING</code> · <code>INVALID_USER_NAMESPACE</code></td>
+          <td>外发 LLM 请求体隐私守卫检出潜在个体标识/非白名单单元格值、跨站 Origin 不符或映射/协议参数非法。用户头 <code>X-EmulatRx-User</code>（缺省时 <code>X-WorkBuddy-User</code>）若含路径、空白、空字节或超过 63 字符，或重复/冲突，在进入路由前返回 <code>400</code>。头完全省略才使用令牌绑定的命名空间。</td>
         </tr>
         <tr>
           <td class="code-warn">HTTP <code>422</code></td>
@@ -357,8 +362,12 @@
 
   <h2>7. 五步可视化向导与秒级预检</h2>
   <p><code>GET /</code> 与 <code>GET /dual</code> 渲染同一单焦点五步向导：选择起点与队列、锁定对标 RCT、时间轴与角色映射、秒级均衡预检、三阶去偏结果看板。一次只展开当前步，已完成步骤收成可回改的摘要芯片。</p>
-  <p><code>POST /api/v1/tte/diagnose-preflight</code> 复用现有纳排、加权与均衡诊断，不跑生存 bootstrap。返回 <code>funnel</code>（原始载入、符合纳排与地标、ESS）、<code>smd</code>（加权前 <code>abs_smd_unweighted</code> 与加权后 <code>abs_smd_weighted</code>）和 <code>gate_passed</code>。它与 <code>POST /api/v1/tte/run</code>、<code>POST /api/v1/projects/user-cohort/runs</code>、<code>POST /api/v1/projects/simulated/runs</code> 共用 <code>verify_and_enrich_target_rct</code>：未确认双臂偏离为 <code>422 ARM_MISMATCH_CONFIRMATION_REQUIRED</code>，未确认 PICO-T 偏离为 <code>422 PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED</code>。<code>gate_passed=false</code> 时不放行最终估计。通过后的第 5 步展示 <code>clinical_comparison_ladder</code> 与 <code>what_tte_controlled_beyond_psm</code>。</p>
+  <p><code>POST /api/v1/tte/diagnose-preflight</code> 复用现有纳排、加权与均衡诊断，不跑生存 bootstrap。返回 <code>funnel</code>（原始载入、符合纳排与地标、ESS）、<code>smd</code>（加权前 <code>abs_smd_unweighted</code> 与加权后 <code>abs_smd_weighted</code>）和 <code>gate_passed</code>。它与 <code>POST /api/v1/tte/run</code>、<code>POST /api/v1/projects/user-cohort/runs</code>、<code>POST /api/v1/projects/simulated/runs</code> 共用 <code>verify_and_enrich_target_rct</code>：未确认双臂偏离为 <code>422 ARM_MISMATCH_CONFIRMATION_REQUIRED</code>，未确认 PICO-T 偏离为 <code>422 PROTOCOL_MISMATCH_CONFIRMATION_REQUIRED</code>。<code>gate_passed=false</code> 时不放行最终估计。通过后的第 5 步展示 <code>clinical_comparison_ladder</code> 与 <code>what_tte_controlled_beyond_psm</code>。预检通过 <code>get_session</code> 只解析当前用户命名空间里的会话。</p>
   <p>第 3 步的 <code>landmark_time</code> 与 <code>horizon</code> 会进入预检和正式运行：负的地标、非正的随访时点、非有限数，或 <code>landmark_time &gt;= min(horizons)</code> 返回 <code>400 INVALID_TIMELINE_WINDOW</code>。未知会话在 <code>POST /api/v1/tte/diagnose-preflight</code> 上返回 <code>404 SESSION_NOT_FOUND</code>。鉴权、<code>Content-Security-Policy</code> 与 <code>X-Content-Type-Options: nosniff</code> 保持不变。<code>record_url</code> 只允许 <code>http://</code> 与 <code>https://</code>（服务端 <code>safe_record_href</code>、浏览器 <code>safeRecordHref</code>）；<code>javascript:</code>、<code>data:</code> 等其他方案改为 <code>#</code>。</p>
+  <h2>8. WorkBuddy 多用户 MCP</h2>
+  <p>离线步骤说明见 <a href="WORKBUDDY_MCP_SETUP.html"><code>docs/WORKBUDDY_MCP_SETUP.html</code></a>。<code>EMULATRX_MCP_USER_TOKENS_FILE</code>（<code>{"zhangsan": "&lt;token&gt;", "lisi": "&lt;token&gt;"}</code>）把每位同事的 Bearer 绑定到 <code>/data/tte/users/&lt;user&gt;/</code>。可选 <code>X-EmulatRx-User: zhangsan</code> 必须与令牌一致；冒充他人返回 <code>403 USER_NAMESPACE_MISMATCH</code>。共享 Web Basic 不能进入命名用户目录。显式空头或纯空白头返回 <code>400 INVALID_USER_NAMESPACE</code>。头完全省略时使用令牌绑定的命名空间：共享 <code>MCP_TOKEN</code> 与 Web Basic 仍是 <code>default</code>，继续使用原来的 <code>sessions/</code> 与运行根目录。命名用户写入 <code>users/&lt;user_namespace&gt;/sessions</code> 与 <code>users/&lt;user_namespace&gt;/runs</code>，模式 <code>0700</code>。别人的 <code>session_id</code> / <code>run_id</code> 得到 <code>SESSION_NOT_FOUND</code> 或 <code>RUN_NOT_FOUND</code>。</p>
+  <p>并发池由 <code>EMULATRX_MAX_CONCURRENT_RUNS</code>（默认 <code>8</code>，夹在 1–32）和 <code>EMULATRX_SLOT_WAIT_SECONDS</code>（默认 <code>60</code>）控制。<code>run_static_or_landmark_tte</code> 与 <code>run_grace_period_ccw</code> 在槽位耗尽并超过等待时间后才返回 <code>429 BUSY</code>。每个命名空间单独保留最多 60 个会话和 100 次运行。</p>
+  <p>队列文件支持 UTF-8/GB18030 CSV、TSV 以及 <code>.xlsx</code>（<code>openpyxl==3.1.5</code>）。上传票据记录签发时的 <code>user_namespace</code>，<code>POST /api/sessions/upload-ticket/{ticket_id}</code> 本身不需要用户头。<code>stdio</code> 用 <code>python -m emulatrx_tte mcp-serve --user-namespace &lt;slug&gt;</code> 或 <code>EMULATRX_DEFAULT_USER_NAMESPACE</code>。通过门禁的运行会在运行目录写入 <code>dualmode_report.html</code>，<code>get_tte_result_summary</code> 仍返回三阶梯队与 <code>user_namespace</code>。</p>
 </main>
 </body>
 </html>
